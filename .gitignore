@@ -5,3 +5,5 @@ __pycache__/
 build/
 dist/
 .spit-bash/
+examples/*/output/
+examples/*/*.spitdag

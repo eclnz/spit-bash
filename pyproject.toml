@@ -7,6 +7,10 @@ name = "spit-bash"
 version = "0.1.0"
 description = "A local job runner for SPIT DAGs"
 requires-python = ">=3.10"
+dependencies = ["pydantic>=2,<3"]
+
+[project.optional-dependencies]
+dev = ["messie @ git+https://github.com/eclnz/messie.git@ec77290ac604310d091ce70e9ed3082982df016b"]
 
 [project.scripts]
 spit-bash = "spit_bash.cli:main"

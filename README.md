@@ -2,12 +2,14 @@
 
 `spit-bash` runs the jobs in a [SPIT](https://github.com/eclnz/spit) `dag --json` result or saved `.spitdag`. It reads the resolved jobs directly; it does not need the original `.spit` pipeline or `.spitout` inventory. This first version supports SPIT DAG format 4.
 
+See the [runnable examples](examples/README.md) for complete recipes, input files, commands, and expected output.
+
 ## Install and use
 
 Requires Python 3.10 or newer. From this repository:
 
 ```sh
-python3 -m pip install -e .
+python3 -m pip install .
 spit dag dataset.spitin -o jobs.spitdag
 spit-bash plan jobs.spitdag
 spit-bash run jobs.spitdag -j 4
@@ -32,9 +34,13 @@ Jobs with no command can only be skipped when all their outputs already exist an
 
 The file checks use size and modification time, not content hashes. If another tool changes a file while preserving both, the runner will not notice. The state path can be changed with `--state PATH`; keep one state file per dataset root.
 
+SPIT DAG version 4 is validated with Pydantic before planning. Invalid field types, unknown fields, malformed argument parts and paths outside the dataset root are rejected before any command runs.
+
 ## Development
 
 ```sh
+python3 -m pip install -e '.[dev]'
+messie -af .
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 

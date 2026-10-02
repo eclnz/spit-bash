@@ -26,12 +26,17 @@ def sample(root):
     second = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text() + '!')"
     return {
         "version": 4,
+        "generator": {"name": "spit", "version": "0.2.1"},
         "root": str(root),
         "external_inputs": [artifact("source.txt")],
+        "targets": [artifact("final.txt")],
+        "executables": [],
+        "removed": [],
         "left_out": [],
         "jobs": [
             {
                 "id": 1, "operation": "upper", "fingerprint": "a" * 16,
+                "stage": [], "dependents": [2],
                 "inputs": {"source": [artifact("source.txt")]},
                 "outputs": {"output": artifact("work/upper.txt")},
                 "depends_on": [], "verify": [],
@@ -39,6 +44,7 @@ def sample(root):
             },
             {
                 "id": 2, "operation": "finish", "fingerprint": "b" * 16,
+                "stage": [], "dependents": [],
                 "inputs": {"input": [artifact("work/upper.txt")]},
                 "outputs": {"output": artifact("final.txt")},
                 "depends_on": [1], "verify": [],
@@ -105,6 +111,8 @@ class SchedulerTests(unittest.TestCase):
             (root / "source.txt").write_text("source")
             data = sample(root)
             data["jobs"] = [data["jobs"][0]]
+            data["jobs"][0]["dependents"] = []
+            data["targets"] = [artifact("work/upper.txt")]
             data["jobs"][0]["command"] = None
             dag = read(data)
             state = State(root / "state.json")
@@ -128,6 +136,21 @@ class SchedulerTests(unittest.TestCase):
             data = sample(Path(directory))
             data["jobs"][1]["depends_on"] = []
             with self.assertRaisesRegex(DagError, "do not match"):
+                read(data)
+
+    def test_pydantic_rejects_missing_and_wrong_typed_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = sample(Path(directory))
+            del data["jobs"][0]["verify"]
+            with self.assertRaisesRegex(DagError, "verify"):
+                read(data)
+            data = sample(Path(directory))
+            data["jobs"][0]["id"] = "1"
+            with self.assertRaisesRegex(DagError, "int_type"):
+                read(data)
+            data = sample(Path(directory))
+            data["jobs"][0]["command"][0] = [{"unknown": "program"}]
+            with self.assertRaisesRegex(DagError, "unknown"):
                 read(data)
 
     def test_reads_real_spit_version_four_fixture(self):

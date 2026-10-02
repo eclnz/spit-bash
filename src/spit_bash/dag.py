@@ -1,12 +1,14 @@
-"""Read and validate the execution fields of a SPIT DAG."""
+"""Turn a validated SPIT document into runnable jobs."""
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TextIO
+
+from pydantic import ValidationError
+
+from .schema import Command, DirPart, PathPart, SpitDag, StemPart
 
 
 class DagError(ValueError):
@@ -39,127 +41,73 @@ class Dag:
         return path
 
 
-def _relative(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise DagError(f"{label} must be a nonempty relative path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in (".", "..") for part in value.split("/")):
-        raise DagError(f"{label} must stay within the dataset root: {value}")
-    return value
-
-
-def _artifact_path(value: Any, label: str) -> str:
-    if not isinstance(value, dict):
-        raise DagError(f"{label} must be an artifact")
-    return _relative(value.get("path"), f"{label}.path")
-
-
-def _command(value: Any, label: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not value:
-        raise DagError(f"{label} must be a nonempty argument list")
+def _command(command: Command) -> tuple[str, ...]:
     arguments = []
-    for argument in value:
-        if not isinstance(argument, list) or not argument:
-            raise DagError(f"{label} contains an empty argument")
+    for argument in command:
         parts = []
         for part in argument:
             if isinstance(part, str):
                 parts.append(part)
-            elif isinstance(part, dict) and set(part) == {"path"}:
-                parts.append(_relative(part["path"], f"{label} path"))
-            elif isinstance(part, dict) and set(part) in ({"dir", "of"}, {"stem", "of"}):
-                _relative(part["of"], f"{label} source path")
-                key = "dir" if "dir" in part else "stem"
-                if not isinstance(part[key], str):
-                    raise DagError(f"{label} {key} must be text")
-                parts.append(part[key])
-            else:
-                raise DagError(f"{label} contains an unknown argument part: {part!r}")
+            elif isinstance(part, PathPart):
+                parts.append(part.path)
+            elif isinstance(part, DirPart):
+                parts.append(part.dir)
+            elif isinstance(part, StemPart):
+                parts.append(part.stem)
         arguments.append("".join(parts))
     if not arguments[0]:
-        raise DagError(f"{label} has no executable")
+        raise DagError("command has no executable")
     return tuple(arguments)
 
 
-def load_dag(source: Any, root_override: str | None = None) -> Dag:
+def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     try:
-        data = json.load(source)
-    except (json.JSONDecodeError, UnicodeError) as exc:
-        raise DagError(f"invalid DAG JSON: {exc}") from exc
-    if not isinstance(data, dict) or data.get("version") != 4:
-        raise DagError("expected a SPIT .spitdag with version 4")
-    root_value = root_override if root_override is not None else data.get("root")
-    if not isinstance(root_value, str) or not root_value:
+        document = SpitDag.model_validate_json(source.read())
+    except (ValidationError, UnicodeError) as exc:
+        raise DagError(f"invalid SPIT DAG: {exc}") from exc
+    root_value = root_override if root_override is not None else document.root
+    if not root_value:
         raise DagError("DAG has no root; pass --root DIRECTORY")
     root = Path(root_value).expanduser().resolve()
     if not root.is_dir():
         raise DagError(f"dataset root is not a directory: {root}")
 
-    external = data.get("external_inputs")
-    jobs_data = data.get("jobs")
-    left_out = data.get("left_out", [])
-    if not isinstance(external, list) or not isinstance(jobs_data, list) or not isinstance(left_out, list):
-        raise DagError("external_inputs, jobs and left_out must be arrays")
-    external_paths = tuple(_artifact_path(item, "external input") for item in external)
+    external_paths = tuple(artifact.path for artifact in document.external_inputs)
+    external_set = set(external_paths)
     jobs = []
     seen_ids: set[int] = set()
     producers: dict[str, int] = {}
-    for item in jobs_data:
-        if not isinstance(item, dict):
-            raise DagError("each job must be an object")
-        job_id = item.get("id")
-        if type(job_id) is not int or job_id < 1 or job_id in seen_ids:
-            raise DagError(f"job id must be a unique positive integer: {job_id!r}")
-        inputs = item.get("inputs")
-        outputs = item.get("outputs")
-        depends = item.get("depends_on")
-        verify = item.get("verify")
-        if not isinstance(inputs, dict) or not isinstance(outputs, dict) or not isinstance(depends, list) or not isinstance(verify, list):
-            raise DagError(f"job {job_id} has invalid inputs, outputs, dependencies or verify")
-        input_paths = []
-        for port, artifacts in inputs.items():
-            if not isinstance(artifacts, list):
-                raise DagError(f"job {job_id} input {port} must be an array")
-            input_paths.extend(_artifact_path(a, f"job {job_id} input {port}") for a in artifacts)
-        output_paths = tuple(_artifact_path(a, f"job {job_id} output {port}") for port, a in outputs.items())
-        if not output_paths:
-            raise DagError(f"job {job_id} has no outputs")
-        if any(type(dep) is not int or dep not in seen_ids for dep in depends) or len(depends) != len(set(depends)):
-            raise DagError(f"job {job_id} dependencies must name earlier jobs once each")
-        for path in output_paths:
-            if path in producers or path in external_paths:
+    for item in document.jobs:
+        if item.id in seen_ids:
+            raise DagError(f"duplicate job id: {item.id}")
+        inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
+        outputs = tuple(artifact.path for artifact in item.outputs.values())
+        if len(item.depends_on) != len(set(item.depends_on)) or any(dep not in seen_ids for dep in item.depends_on):
+            raise DagError(f"job {item.id} dependencies must name earlier jobs once each")
+        for path in outputs:
+            if path in producers or path in external_set:
                 raise DagError(f"multiple jobs or sources claim path: {path}")
-            producers[path] = job_id
-        command_data = item.get("command")
-        command = None if command_data is None else _command(command_data, f"job {job_id} command")
-        fingerprint = item.get("fingerprint")
-        if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None:
-            raise DagError(f"job {job_id} has an invalid fingerprint")
-        operation = item.get("operation")
-        if not isinstance(operation, str) or not operation:
-            raise DagError(f"job {job_id} has no operation")
+            producers[path] = item.id
         jobs.append(Job(
-            id=job_id,
-            operation=operation,
-            fingerprint=fingerprint,
-            inputs=tuple(input_paths),
-            outputs=output_paths,
-            depends_on=tuple(depends),
-            command=command,
-            verify=tuple(_command(v, f"job {job_id} verify") for v in verify),
+            id=item.id,
+            operation=item.operation,
+            fingerprint=item.fingerprint,
+            inputs=inputs,
+            outputs=outputs,
+            depends_on=tuple(item.depends_on),
+            command=None if item.command is None else _command(item.command),
+            verify=tuple(_command(command) for command in item.verify),
         ))
-        seen_ids.add(job_id)
+        seen_ids.add(item.id)
 
     for job in jobs:
         expected = {producers[path] for path in job.inputs if path in producers}
         if set(job.depends_on) != expected:
             raise DagError(f"job {job.id} dependencies do not match its input producers")
         for path in job.inputs:
-            if path not in producers and path not in external_paths:
+            if path not in producers and path not in external_set:
                 raise DagError(f"job {job.id} input is neither produced nor external: {path}")
-    if any(not isinstance(item, dict) for item in left_out):
-        raise DagError("left_out entries must be objects")
-    dag = Dag(root, tuple(jobs), external_paths, tuple(str(item.get("identity", "?")) for item in left_out))
+    dag = Dag(root, tuple(jobs), external_paths, tuple(item.identity for item in document.left_out))
     for path in (*external_paths, *(path for job in jobs for path in (*job.inputs, *job.outputs))):
         dag.path(path)
     return dag

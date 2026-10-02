@@ -7,6 +7,9 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .dag import Dag, DagError, Job
 
@@ -28,23 +31,39 @@ def stamps(dag: Dag, paths: tuple[str, ...]) -> dict[str, list[int] | None]:
     return {path: stamp(dag.path(path)) for path in paths}
 
 
+FileStamp = Annotated[list[int], Field(min_length=2, max_length=2)]
+
+
+class RunRecord(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    fingerprint: str
+    inputs: dict[str, FileStamp]
+    outputs: dict[str, FileStamp]
+
+
+class StateDocument(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    version: Literal[1]
+    jobs: dict[str, RunRecord]
+
+
 class State:
     def __init__(self, path: Path):
         self.path = path
         if path.exists():
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
+                document = StateDocument.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValidationError) as exc:
                 raise DagError(f"cannot read state at {path}: {exc}") from exc
-            if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("jobs"), dict):
-                raise DagError(f"unsupported state format at {path}")
-            self.jobs = data["jobs"]
+            self.jobs = document.jobs
         else:
-            self.jobs = {}
+            self.jobs: dict[str, RunRecord] = {}
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"version": 1, "jobs": self.jobs}, sort_keys=True, indent=2) + "\n"
+        payload = StateDocument(version=1, jobs=self.jobs).model_dump_json(indent=2) + "\n"
         fd, temporary = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -97,13 +116,13 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
             decision = Decision(job, "run", "forced")
         else:
             record = state.jobs.get(job_key(dag, job))
-            if not isinstance(record, dict):
+            if record is None:
                 decision = Decision(job, "run", "no successful run recorded")
-            elif record.get("fingerprint") != job.fingerprint:
+            elif record.fingerprint != job.fingerprint:
                 decision = Decision(job, "run", "job fingerprint changed")
-            elif record.get("inputs") != stamps(dag, job.inputs):
+            elif record.inputs != stamps(dag, job.inputs):
                 decision = Decision(job, "run", "input changed")
-            elif record.get("outputs") != stamps(dag, job.outputs):
+            elif record.outputs != stamps(dag, job.outputs):
                 decision = Decision(job, "run", "output changed")
             else:
                 decision = Decision(job, "skip", "current")

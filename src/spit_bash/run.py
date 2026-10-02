@@ -7,7 +7,7 @@ import shlex
 from dataclasses import dataclass
 
 from .dag import Dag, Job
-from .plan import Decision, State, job_key, stamps
+from .plan import Decision, RunRecord, State, job_key, stamps
 
 
 @dataclass(frozen=True)
@@ -66,11 +66,11 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
             outputs = stamps(dag, job.outputs)
             if any(value is None for value in outputs.values()):
                 return Result(job, "command succeeded but did not create every output")
-            state.jobs[job_key(dag, job)] = {
-                "fingerprint": job.fingerprint,
-                "inputs": after,
-                "outputs": outputs,
-            }
+            state.jobs[job_key(dag, job)] = RunRecord(
+                fingerprint=job.fingerprint,
+                inputs=after,
+                outputs=outputs,
+            )
             state.save()
             print(f"[{job.id}] done", flush=True)
             return Result(job)
