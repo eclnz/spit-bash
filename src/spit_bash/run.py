@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import shutil
 import signal
 from collections import deque
 from dataclasses import dataclass
@@ -67,6 +68,19 @@ async def _command(dag: Dag, args: tuple[str, ...], step: Step, index: int, log:
     return None if code == 0 else f"{kind} exited with status {code}"
 
 
+def _clear(path: Path) -> None:
+    """Remove what an earlier run left at a folder output's path.
+
+    The job owns the folder, as SPIT puts nothing else inside it, so files an
+    earlier run left would only mix with this run's. The tool makes the folder
+    itself: some refuse to write into one that exists.
+    """
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path) -> tuple[Result, ...]:
     """Run every job planned to run; stop them all if the process gets SIGTERM."""
     semaphore = asyncio.Semaphore(workers)
@@ -95,7 +109,10 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                     if error:
                         return Result(job, error, path)
                 for output in job.outputs:
-                    dag.path(output).parent.mkdir(parents=True, exist_ok=True)
+                    written = dag.path(output)
+                    if output in dag.folders:
+                        _clear(written)
+                    written.parent.mkdir(parents=True, exist_ok=True)
                 error = await _command(dag, job.command, Step.COMMAND, 0, log)
             if error:
                 return Result(job, error, path)

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TextIO
+from typing import Iterator, TextIO
 
 from pydantic import ValidationError
 
-from .schema import Command, DirPart, PathPart, SpitDag, StemPart
+from .schema import Artifact, Command, DirPart, PathPart, SpitDag, StemPart
 
 
 class DagError(ValueError):
@@ -44,6 +44,8 @@ class Dag:
     external_inputs: tuple[str, ...]
     executables: tuple[str, ...]
     left_out: tuple[str, ...]
+    # The paths of artifacts that are folders rather than files.
+    folders: frozenset[str] = frozenset()
 
     def path(self, relative: str) -> Path:
         path = self.root.joinpath(*PurePosixPath(relative).parts)
@@ -71,6 +73,16 @@ def _command(command: Command) -> tuple[str, ...]:
     return tuple(arguments)
 
 
+def _artifacts(document: SpitDag) -> Iterator[Artifact]:
+    """Every artifact the document names, wherever it appears."""
+    yield from document.external_inputs
+    yield from document.targets
+    for job in document.jobs:
+        for port in job.inputs.values():
+            yield from port
+        yield from job.outputs.values()
+
+
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     try:
         document = SpitDag.model_validate_json(source.read())
@@ -83,6 +95,14 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     if not root.is_dir():
         raise DagError(f"dataset root is not a directory: {root}")
 
+    if document.version == 4 and any(
+        artifact.kind == "folder" for artifact in _artifacts(document)
+    ):
+        raise DagError("a version 4 DAG has no folders; `kind` came with version 5")
+    folders = frozenset(artifact.path for artifact in _artifacts(document) if artifact.kind == "folder")
+    for artifact in _artifacts(document):
+        if (artifact.kind == "folder") != (artifact.path in folders):
+            raise DagError(f"path is both a file and a folder: {artifact.path}")
     external_paths = tuple(artifact.path for artifact in document.external_inputs)
     external_set = set(external_paths)
     jobs = []
@@ -129,6 +149,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         external_paths,
         tuple(document.executables),
         tuple(item.identity for item in document.left_out),
+        folders,
     )
     for path in (*external_paths, *(path for job in jobs for path in (*job.inputs, *job.outputs))):
         dag.path(path)

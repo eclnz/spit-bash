@@ -23,7 +23,17 @@ def job_key(job: Job) -> str:
     return json.dumps(sorted(job.outputs), separators=(",", ":"))
 
 
-def stamp(path: Path) -> list[int] | None:
+def stamp(path: Path, folder: bool = False) -> list[int] | None:
+    """A file's size and modification time, or None when it is not a file.
+
+    A folder's stamp is the total size of the files under it, the latest
+    modification time of any of them or of any folder under it, and how many
+    files it holds, or None when it is not a folder. A folder's own time
+    changes only when an entry directly in it is added, removed or renamed, so
+    a change deeper down shows only in what is under it.
+    """
+    if folder:
+        return _folder_stamp(path)
     try:
         info = path.stat()
     except FileNotFoundError:
@@ -31,11 +41,35 @@ def stamp(path: Path) -> list[int] | None:
     return [info.st_size, info.st_mtime_ns] if path.is_file() else None
 
 
+def _folder_stamp(path: Path) -> list[int] | None:
+    if not path.is_dir():
+        return None
+    size, latest, count = 0, path.stat().st_mtime_ns, 0
+    for directory, folders, files in os.walk(path):
+        for name in folders:
+            try:
+                latest = max(latest, os.stat(os.path.join(directory, name)).st_mtime_ns)
+            except FileNotFoundError:
+                pass
+        for name in files:
+            try:
+                info = os.stat(os.path.join(directory, name))
+            except FileNotFoundError:
+                # A link to nothing names no file.
+                continue
+            size += info.st_size
+            latest = max(latest, info.st_mtime_ns)
+            count += 1
+    return [size, latest, count]
+
+
 def stamps(dag: Dag, paths: tuple[str, ...]) -> dict[str, list[int] | None]:
-    return {path: stamp(dag.path(path)) for path in paths}
+    return {path: stamp(dag.path(path), path in dag.folders) for path in paths}
 
 
-FileStamp = Annotated[list[int], Field(min_length=2, max_length=2)]
+# A file's size and time, or a folder's, with how many files it holds. Both
+# start with a size and a time, so either can be compared by time.
+FileStamp = Annotated[list[int], Field(min_length=2, max_length=3)]
 
 
 class RunRecord(BaseModel):
@@ -180,7 +214,7 @@ def _missing_programs(dag: Dag) -> set[str]:
 def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
-    missing_external = {path for path in dag.external_inputs if stamp(dag.path(path)) is None}
+    missing_external = {path for path in dag.external_inputs if stamp(dag.path(path), path in dag.folders) is None}
     missing_programs = _missing_programs(dag)
     for job in dag.jobs:
         missing = [path for path in job.inputs if path in missing_external]

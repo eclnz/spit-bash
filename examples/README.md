@@ -40,4 +40,15 @@ cat examples/verify/output/copied/part=one.txt
 
 The result is `Verified input.`. If you empty `examples/verify/input/one.txt`, the job's `verify` command fails and the copy does not run. `run` prints the end of the job's log, `examples/verify/.spit-bash/logs/1-copy.log`, which shows the failing `test -s input/one.txt`. Restore the input before planning another run.
 
-`tests/test_examples.py` runs both examples, and checks the results above.
+## Folders in and out
+
+Each trip's notes are a folder, and each job copies a folder whole, then packs the copy into an archive. The source and the copy are declared with a `/` after their types, so SPIT finds `input/alpha` and `input/beta` as folders and the runner treats each copy as one output:
+
+```sh
+spit-bash run examples/folders/albums.spitin -j 2
+tar -tf examples/folders/output/archive/trip=alpha.tar
+```
+
+The alpha archive holds `./day1/morning.txt` and `./evening.txt`. `cp -R` makes each copy itself. Before it runs, the runner removes any copy an earlier run left, so the command never copies into an existing folder. Edit a file anywhere under `examples/folders/input/alpha/` and plan again: the alpha copy and its archive rerun, because a folder counts as changed when any file under it does.
+
+`tests/test_examples.py` runs these examples, and checks the results above.

@@ -1,4 +1,4 @@
-"""The version 4 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 4 and 5 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
@@ -40,6 +40,8 @@ class Artifact(SchemaModel):
     entities: dict[NonEmpty, str]
     artifact_type: NamedType | VariableType | None = Field(alias="type")
     path: RelativePath
+    # Version 5 added `kind`; every artifact of a version 4 DAG is a file.
+    kind: Literal["file", "folder"] = "file"
 
 
 class PathPart(SchemaModel):
@@ -94,7 +96,7 @@ class SpitJob(SchemaModel):
 
 
 class SpitDag(SchemaModel):
-    version: Literal[4]
+    version: Literal[4, 5]
     generator: Generator
     root: str | None
     external_inputs: list[Artifact]

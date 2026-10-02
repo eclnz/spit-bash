@@ -23,14 +23,28 @@ jobs:
 
   examples:
     # Builds SPIT from `usability`, the branch its work merges into (its `main`
-    # is far behind), and runs the examples end to end.
+    # is far behind), and runs the examples end to end. A change made in both
+    # repositories has one branch name in each, so a branch that SPIT also has
+    # builds SPIT's branch instead, and the two are tested together.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Choose SPIT's branch
+        id: spit
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          ref=usability
+          if [ "$BRANCH" != main ] && [ "$BRANCH" != usability ] &&
+              git ls-remote --exit-code --heads https://github.com/eclnz/spit "refs/heads/$BRANCH" > /dev/null; then
+            ref=$BRANCH
+          fi
+          echo "Building SPIT from $ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: eclnz/spit
-          ref: usability
+          ref: ${{ steps.spit.outputs.ref }}
           path: spit
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --manifest-path spit/Cargo.toml
