@@ -32,6 +32,7 @@ class Dag:
     root: Path
     jobs: tuple[Job, ...]
     external_inputs: tuple[str, ...]
+    executables: tuple[str, ...]
     left_out: tuple[str, ...]
 
     def path(self, relative: str) -> Path:
@@ -107,7 +108,13 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         for path in job.inputs:
             if path not in producers and path not in external_set:
                 raise DagError(f"job {job.id} input is neither produced nor external: {path}")
-    dag = Dag(root, tuple(jobs), external_paths, tuple(item.identity for item in document.left_out))
+    dag = Dag(
+        root,
+        tuple(jobs),
+        external_paths,
+        tuple(document.executables),
+        tuple(item.identity for item in document.left_out),
+    )
     for path in (*external_paths, *(path for job in jobs for path in (*job.inputs, *job.outputs))):
         dag.path(path)
     return dag

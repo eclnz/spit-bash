@@ -32,4 +32,6 @@ spit-bash run examples/verify/checked_copy.spitdag
 cat examples/verify/output/copied/part=one.txt
 ```
 
-The result is `Verified input.`. If you empty `examples/verify/input/one.txt`, the job's `verify` command fails and the copy does not run. Restore the input before planning another run.
+The result is `Verified input.`. If you empty `examples/verify/input/one.txt`, the job's `verify` command fails and the copy does not run. `run` prints the end of the job's log, `examples/verify/.spit-bash/logs/1-copy.log`, which shows the failing `test -s input/one.txt`. Restore the input before planning another run.
+
+`tests/test_examples.py` runs both examples, and checks the results above.

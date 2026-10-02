@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import IO, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .dag import Dag, DagError, Job
 
 
-def job_key(dag: Dag, job: Job) -> str:
-    # Job IDs may change when SPIT resolves a different inventory.
-    return json.dumps(sorted(str(dag.path(path)) for path in job.outputs), separators=(",", ":"))
+def job_key(job: Job) -> str:
+    # Job IDs may change when SPIT resolves a different inventory. Paths are
+    # relative to the root, so a dataset keeps its state when it moves.
+    return json.dumps(sorted(job.outputs), separators=(",", ":"))
 
 
 def stamp(path: Path) -> list[int] | None:
@@ -42,32 +45,95 @@ class RunRecord(BaseModel):
     outputs: dict[str, FileStamp]
 
 
-class StateDocument(BaseModel):
+class StateHeader(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    version: Literal[1]
-    jobs: dict[str, RunRecord]
+    version: Literal[2]
+
+
+class StateEntry(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    key: str
+    record: RunRecord | None
 
 
 class State:
+    """Successful runs, kept as a log of JSON lines.
+
+    The first line is a header. Each later line records or forgets one job, and
+    the last line for a key wins, so finishing a job appends one line instead of
+    rewriting the file. `compact` rewrites the file with one line per job.
+    """
+
     def __init__(self, path: Path):
         self.path = path
-        if path.exists():
-            try:
-                document = StateDocument.model_validate_json(path.read_text(encoding="utf-8"))
-            except (OSError, ValidationError) as exc:
-                raise DagError(f"cannot read state at {path}: {exc}") from exc
-            self.jobs = document.jobs
-        else:
-            self.jobs: dict[str, RunRecord] = {}
+        self.jobs: dict[str, RunRecord] = {}
+        self._log: IO[str] | None = None
+        self._lock: IO[str] | None = None
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise DagError(f"cannot read state at {path}: {exc}") from exc
+        if not text:
+            return
+        lines = text.split("\n")
+        # A run that was killed mid-write may leave a partial last line, which
+        # holds no complete record and is ignored.
+        complete, partial = lines[:-1], lines[-1]
+        try:
+            StateHeader.model_validate_json(complete[0] if complete else partial)
+            for line in complete[1:]:
+                entry = StateEntry.model_validate_json(line)
+                if entry.record is None:
+                    self.jobs.pop(entry.key, None)
+                else:
+                    self.jobs[entry.key] = entry.record
+        except ValidationError as exc:
+            raise DagError(f"cannot read state at {path}: {exc}") from exc
+        if partial and complete:
+            self.compact()
 
-    def save(self) -> None:
+    def lock(self) -> None:
+        """Hold the state for this process until `close`, or fail if another holds it."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = StateDocument(version=1, jobs=self.jobs).model_dump_json(indent=2) + "\n"
+        stream = open(self.path.with_name(self.path.name + ".lock"), "w", encoding="utf-8")
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            stream.close()
+            raise DagError(f"another spit-bash run is using {self.path}") from None
+        self._lock = stream
+
+    def record(self, key: str, record: RunRecord) -> None:
+        self._append(StateEntry(key=key, record=record))
+        self.jobs[key] = record
+
+    def forget(self, key: str) -> None:
+        if self.jobs.pop(key, None) is not None:
+            self._append(StateEntry(key=key, record=None))
+
+    def _append(self, entry: StateEntry) -> None:
+        if self._log is None:
+            if not self.path.exists():
+                self.compact()
+            self._log = open(self.path, "a", encoding="utf-8")
+        self._log.write(entry.model_dump_json() + "\n")
+        self._log.flush()
+
+    def compact(self) -> None:
+        if self._log is not None:
+            self._log.close()
+            self._log = None
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [StateHeader(version=2).model_dump_json()]
+        lines.extend(StateEntry(key=key, record=record).model_dump_json() for key, record in sorted(self.jobs.items()))
         fd, temporary = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                stream.write(payload)
+                stream.write("\n".join(lines) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
@@ -75,18 +141,43 @@ class State:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
+    def close(self) -> None:
+        if self._log is not None:
+            self.compact()
+        if self._lock is not None:
+            self._lock.close()
+            self._lock = None
+
+
+Status = Literal["run", "skip", "blocked"]
+
 
 @dataclass(frozen=True)
 class Decision:
     job: Job
-    status: str  # run, skip, blocked
+    status: Status
     reason: str
+
+
+def _missing_programs(dag: Dag) -> set[str]:
+    """Programs that commands start with but that cannot be run."""
+    missing = {name for name in dag.executables if shutil.which(name) is None}
+    for job in dag.jobs:
+        for command in (job.command, *job.verify):
+            # SPIT leaves a program named by a path out of `executables`. It is
+            # run from the root, so check it there.
+            if command is not None and "/" in command[0] and command[0] not in missing:
+                program = dag.root / command[0]
+                if not (program.is_file() and os.access(program, os.X_OK)):
+                    missing.add(command[0])
+    return missing
 
 
 def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
     missing_external = {path for path in dag.external_inputs if stamp(dag.path(path)) is None}
+    missing_programs = _missing_programs(dag)
     for job in dag.jobs:
         missing = [path for path in job.inputs if path in missing_external]
         blocked = [dep for dep in job.depends_on if by_id[dep].status == "blocked"]
@@ -115,7 +206,7 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
         elif force:
             decision = Decision(job, "run", "forced")
         else:
-            record = state.jobs.get(job_key(dag, job))
+            record = state.jobs.get(job_key(job))
             if record is None:
                 decision = Decision(job, "run", "no successful run recorded")
             elif record.fingerprint != job.fingerprint:
@@ -126,6 +217,39 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
                 decision = Decision(job, "run", "output changed")
             else:
                 decision = Decision(job, "skip", "current")
+        if decision.status == "run":
+            programs = sorted({command[0] for command in (job.command, *job.verify) if command is not None} & missing_programs)
+            if programs:
+                decision = Decision(job, "blocked", "program not found: " + ", ".join(programs))
         decisions.append(decision)
         by_id[job.id] = decision
     return tuple(decisions)
+
+
+AdoptStatus = Literal["adopted", "left"]
+
+
+@dataclass(frozen=True)
+class Adoption:
+    job: Job
+    status: AdoptStatus
+    reason: str
+
+
+def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
+    """Record every command job whose files exist as current, without running it."""
+    adoptions = []
+    for job in dag.jobs:
+        inputs = stamps(dag, job.inputs)
+        outputs = stamps(dag, job.outputs)
+        if job.command is None:
+            adoption = Adoption(job, "left", "no command")
+        elif any(value is None for value in outputs.values()):
+            adoption = Adoption(job, "left", "output missing")
+        elif any(value is None for value in inputs.values()):
+            adoption = Adoption(job, "left", "input missing")
+        else:
+            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=inputs, outputs=outputs))
+            adoption = Adoption(job, "adopted", "outputs exist")
+        adoptions.append(adoption)
+    return tuple(adoptions)
