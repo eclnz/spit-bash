@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import IO, Annotated, Literal
 
@@ -149,7 +150,10 @@ class State:
             self._lock = None
 
 
-Status = Literal["run", "skip", "blocked"]
+class Status(Enum):
+    RUN = "run"
+    SKIP = "skip"
+    BLOCKED = "blocked"
 
 
 @dataclass(frozen=True)
@@ -180,53 +184,55 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
     missing_programs = _missing_programs(dag)
     for job in dag.jobs:
         missing = [path for path in job.inputs if path in missing_external]
-        blocked = [dep for dep in job.depends_on if by_id[dep].status == "blocked"]
+        blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
         if missing:
-            decision = Decision(job, "blocked", "missing external input: " + ", ".join(missing))
+            decision = Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
         elif blocked:
-            decision = Decision(job, "blocked", "dependency blocked: " + ", ".join(map(str, blocked)))
+            decision = Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
         elif job.command is None:
             outputs = stamps(dag, job.outputs)
             if any(value is None for value in outputs.values()):
-                decision = Decision(job, "blocked", "no command and output is missing")
-            elif any(by_id[dep].status == "run" for dep in job.depends_on):
-                decision = Decision(job, "blocked", "no command and dependency will run")
+                decision = Decision(job, Status.BLOCKED, "no command and output is missing")
+            elif any(by_id[dep].status is Status.RUN for dep in job.depends_on):
+                decision = Decision(job, Status.BLOCKED, "no command and dependency will run")
             elif any(value is None for value in stamps(dag, job.inputs).values()):
-                decision = Decision(job, "blocked", "input is missing")
+                decision = Decision(job, Status.BLOCKED, "input is missing")
             elif job.inputs and max(value[1] for value in stamps(dag, job.inputs).values()) > min(value[1] for value in outputs.values()):
-                decision = Decision(job, "blocked", "no command and output is older than an input")
+                decision = Decision(job, Status.BLOCKED, "no command and output is older than an input")
             else:
-                decision = Decision(job, "skip", "no command; outputs exist")
-        elif any(by_id[dep].status == "run" for dep in job.depends_on):
-            decision = Decision(job, "run", "dependency will run")
+                decision = Decision(job, Status.SKIP, "no command; outputs exist")
+        elif any(by_id[dep].status is Status.RUN for dep in job.depends_on):
+            decision = Decision(job, Status.RUN, "dependency will run")
         elif any(value is None for value in stamps(dag, job.outputs).values()):
-            decision = Decision(job, "run", "output missing")
+            decision = Decision(job, Status.RUN, "output missing")
         elif any(value is None for value in stamps(dag, job.inputs).values()):
-            decision = Decision(job, "blocked", "input is missing")
+            decision = Decision(job, Status.BLOCKED, "input is missing")
         elif force:
-            decision = Decision(job, "run", "forced")
+            decision = Decision(job, Status.RUN, "forced")
         else:
             record = state.jobs.get(job_key(job))
             if record is None:
-                decision = Decision(job, "run", "no successful run recorded")
+                decision = Decision(job, Status.RUN, "no successful run recorded")
             elif record.fingerprint != job.fingerprint:
-                decision = Decision(job, "run", "job fingerprint changed")
+                decision = Decision(job, Status.RUN, "job fingerprint changed")
             elif record.inputs != stamps(dag, job.inputs):
-                decision = Decision(job, "run", "input changed")
+                decision = Decision(job, Status.RUN, "input changed")
             elif record.outputs != stamps(dag, job.outputs):
-                decision = Decision(job, "run", "output changed")
+                decision = Decision(job, Status.RUN, "output changed")
             else:
-                decision = Decision(job, "skip", "current")
-        if decision.status == "run":
+                decision = Decision(job, Status.SKIP, "current")
+        if decision.status is Status.RUN:
             programs = sorted({command[0] for command in (job.command, *job.verify) if command is not None} & missing_programs)
             if programs:
-                decision = Decision(job, "blocked", "program not found: " + ", ".join(programs))
+                decision = Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
         decisions.append(decision)
         by_id[job.id] = decision
     return tuple(decisions)
 
 
-AdoptStatus = Literal["adopted", "left"]
+class AdoptStatus(Enum):
+    ADOPTED = "adopted"
+    LEFT = "left"
 
 
 @dataclass(frozen=True)
@@ -243,13 +249,13 @@ def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
         inputs = stamps(dag, job.inputs)
         outputs = stamps(dag, job.outputs)
         if job.command is None:
-            adoption = Adoption(job, "left", "no command")
+            adoption = Adoption(job, AdoptStatus.LEFT, "no command")
         elif any(value is None for value in outputs.values()):
-            adoption = Adoption(job, "left", "output missing")
+            adoption = Adoption(job, AdoptStatus.LEFT, "output missing")
         elif any(value is None for value in inputs.values()):
-            adoption = Adoption(job, "left", "input missing")
+            adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
         else:
             state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=inputs, outputs=outputs))
-            adoption = Adoption(job, "adopted", "outputs exist")
+            adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
         adoptions.append(adoption)
     return tuple(adoptions)

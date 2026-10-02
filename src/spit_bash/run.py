@@ -8,11 +8,12 @@ import shlex
 import signal
 from collections import deque
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import IO
 
 from .dag import Dag, Job
-from .plan import Decision, RunRecord, State, job_key, stamps
+from .plan import Decision, RunRecord, State, Status, job_key, stamps
 
 LOG_TAIL_LINES = 20
 
@@ -36,7 +37,14 @@ def log_tail(path: Path, lines: int = LOG_TAIL_LINES) -> list[str]:
         return []
 
 
-async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes]) -> str | None:
+class Step(Enum):
+    VERIFY = "verify"
+    COMMAND = "command"
+
+
+async def _command(dag: Dag, args: tuple[str, ...], step: Step, index: int, log: IO[bytes]) -> str | None:
+    """Run one of a job's commands; `index` numbers its verify commands from 1."""
+    kind = f"verify {index}" if step is Step.VERIFY else "command"
     log.write(f"$ {shlex.join(args)}\n".encode())
     log.flush()
     try:
@@ -83,12 +91,12 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
             state.forget(job_key(job))
             with path.open("wb") as log:
                 for index, command in enumerate(job.verify, 1):
-                    error = await _command(dag, command, f"verify {index}", log)
+                    error = await _command(dag, command, Step.VERIFY, index, log)
                     if error:
                         return Result(job, error, path)
                 for output in job.outputs:
                     dag.path(output).parent.mkdir(parents=True, exist_ok=True)
-                error = await _command(dag, job.command, "command", log)
+                error = await _command(dag, job.command, Step.COMMAND, 0, log)
             if error:
                 return Result(job, error, path)
             after = stamps(dag, job.inputs)
@@ -107,7 +115,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
     loop.add_signal_handler(signal.SIGTERM, main.cancel)
     try:
         for decision in decisions:
-            if decision.status == "run":
+            if decision.status is Status.RUN:
                 tasks[decision.job.id] = asyncio.create_task(run_one(decision))
         return tuple(await asyncio.gather(*tasks.values()))
     finally:

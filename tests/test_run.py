@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash.dag import load_dag
-from spit_bash.plan import plan
+from spit_bash.plan import Status, plan
 from spit_bash.run import execute
 from support import FIXTURE, command, document, job, read, run, sample, state_at
 
@@ -36,10 +36,10 @@ class RunTests(unittest.TestCase):
             data = sample(root)
             dag = read(data)
             decisions, results = run(dag, state_at(root))
-            self.assertEqual([d.status for d in decisions], ["run", "run"])
+            self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "final.txt").read_text(), "HELLO!")
-            self.assertEqual([d.status for d in plan(dag, state_at(root))], ["skip", "skip"])
+            self.assertEqual([d.status for d in plan(dag, state_at(root))], [Status.SKIP, Status.SKIP])
 
             source.write_text("changed")
             decisions, results = run(dag, state_at(root))
@@ -49,7 +49,7 @@ class RunTests(unittest.TestCase):
 
             data["jobs"][0]["fingerprint"] = "c" * 16
             decisions = plan(read(data), state_at(root))
-            self.assertEqual([d.status for d in decisions], ["run", "run"])
+            self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
             self.assertEqual(decisions[0].reason, "job fingerprint changed")
 
     def test_failed_verify_prevents_command_and_dependent(self):
@@ -126,11 +126,11 @@ class RunTests(unittest.TestCase):
                 file.write_text(content)
             dag = load_dag(source, directory)
             decisions, results = run(dag, state_at(root), workers=3)
-            self.assertEqual([d.status for d in decisions], ["run"] * 5)
+            self.assertEqual([d.status for d in decisions], [Status.RUN] * 5)
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "merged/group=alpha.txt").read_text(), "a\nb\nz\n")
             self.assertEqual((root / "merged/group=beta.txt").read_text(), "p\nq\n")
-            self.assertEqual([d.status for d in plan(dag, state_at(root))], ["skip"] * 5)
+            self.assertEqual([d.status for d in plan(dag, state_at(root))], [Status.SKIP] * 5)
 
 
 class SignalTests(unittest.TestCase):

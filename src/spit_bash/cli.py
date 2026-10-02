@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 
 from .dag import Dag, DagError, load_dag
-from .plan import State, adopt, plan
+from .plan import State, Status, adopt, plan
 from .run import execute, log_tail
 from .selection import Selection, parse_only, parse_stage, select
 
@@ -148,23 +148,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.ADOPT:
             adoptions = adopt(dag, state)
             for adoption in adoptions:
-                print(f"[{adoption.job.id}] {adoption.status:7} {adoption.job.operation}: {adoption.reason}")
+                print(f"[{adoption.job.id}] {adoption.status.value:7} {adoption.job.operation}: {adoption.reason}")
             return 0
 
         decisions = plan(dag, state, args.force)
-        blocked = any(decision.status == "blocked" for decision in decisions)
+        blocked = any(decision.status is Status.BLOCKED for decision in decisions)
         if args.action is Action.PLAN and args.json:
             json.dump({
                 "left_out": list(dag.left_out),
                 "jobs": [
-                    {"id": d.job.id, "operation": d.job.operation, "status": d.status, "reason": d.reason}
+                    {"id": d.job.id, "operation": d.job.operation, "status": d.status.value, "reason": d.reason}
                     for d in decisions
                 ],
             }, sys.stdout, indent=2)
             print()
         else:
             for decision in decisions:
-                print(f"[{decision.job.id}] {decision.status:7} {decision.job.operation}: {decision.reason}")
+                print(f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}")
         if args.action is Action.PLAN:
             return 1 if blocked else 0
 
@@ -180,8 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         failed = [result for result in results if result.error]
         for result in failed:
             _report_failure(result.job.id, result.error or "", result.log)
-        ran = sum(1 for decision in decisions if decision.status == "run")
-        skipped = sum(1 for decision in decisions if decision.status == "skip")
+        ran = sum(1 for decision in decisions if decision.status is Status.RUN)
+        skipped = sum(1 for decision in decisions if decision.status is Status.SKIP)
         print(
             f"{ran - len(failed)} done, {len(failed)} failed, {skipped} current, "
             f"{len(decisions) - ran - skipped} blocked",
