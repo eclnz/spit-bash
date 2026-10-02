@@ -1,6 +1,7 @@
 """Run the examples with a real `spit`, so a change to SPIT's DAG format fails here.
 
-Set SPIT to the binary, or put `spit` on PATH; CI builds it from SPIT's usability branch.
+Set SPIT to the binary, or put `spit` on PATH; CI builds it from SPIT's usability branch,
+or from SPIT's branch of the same name as this one when there is one.
 """
 
 import os
