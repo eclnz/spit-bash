@@ -16,12 +16,22 @@ class DagError(ValueError):
 
 
 @dataclass(frozen=True)
+class Made:
+    """What one output is, for choosing jobs by product and entities."""
+
+    product: str
+    entities: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class Job:
     id: int
     operation: str
+    stage: tuple[str, ...]
     fingerprint: str
     inputs: tuple[str, ...]
     outputs: tuple[str, ...]
+    made: tuple[Made, ...]
     depends_on: tuple[int, ...]
     command: tuple[str, ...] | None
     verify: tuple[tuple[str, ...], ...]
@@ -92,9 +102,14 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         jobs.append(Job(
             id=item.id,
             operation=item.operation,
+            stage=tuple(item.stage),
             fingerprint=item.fingerprint,
             inputs=inputs,
             outputs=outputs,
+            made=tuple(
+                Made(artifact.product, tuple(sorted(artifact.entities.items())))
+                for artifact in item.outputs.values()
+            ),
             depends_on=tuple(item.depends_on),
             command=None if item.command is None else _command(item.command),
             verify=tuple(_command(command) for command in item.verify),

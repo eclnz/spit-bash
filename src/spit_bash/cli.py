@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import json
 import os
 import signal
+import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
@@ -14,6 +16,14 @@ from pathlib import Path
 from .dag import Dag, DagError, load_dag
 from .plan import State, adopt, plan
 from .run import execute, log_tail
+from .selection import Selection, parse_only, parse_stage, select
+
+SPIT_SUFFIXES = (".spitin", ".spit", ".spitout")
+
+FILES_HELP = """\
+what to run: a .spitdag (or - for one on stdin), or what `spit dag` takes,
+which spit-bash then runs for you: a .spitin recipe, a .spit pipeline and
+its .spitout (or - for one on stdin), or a .spit pipeline with --root"""
 
 
 class Action(str, Enum):
@@ -33,10 +43,23 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="spit-bash", description="Plan and run SPIT .spitdag jobs")
     subcommands = parser.add_subparsers(required=True)
     for action in Action:
-        command = subcommands.add_parser(action.value, help=HELP[action], description=HELP[action])
+        command = subcommands.add_parser(action.value, help=HELP[action], description=HELP[action],
+                                         formatter_class=argparse.RawTextHelpFormatter)
         command.set_defaults(action=action)
-        command.add_argument("dag", help=".spitdag JSON file, or - for stdin")
-        command.add_argument("--root", help="dataset root, required when the DAG has no root")
+        command.add_argument("files", nargs="+", metavar="FILE", help=FILES_HELP)
+        command.add_argument("--root", help="dataset root: required when the DAG has no root,\n"
+                                            "and the folder `spit dag` scans for a .spit alone")
+        command.add_argument("--spit", default=os.environ.get("SPIT", "spit"),
+                             help="the spit program, for a recipe or pipeline (default: $SPIT, else spit)")
+        command.add_argument("--partial", action="store_true",
+                             help="pass --partial to `spit dag`: plan complete jobs, leave out the rest")
+        choose = command.add_argument_group("choosing jobs", "Keep the jobs whose outputs match, and every job upstream of them.\n"
+                                            "Repeat an option to match any of its values; different options must all match.")
+        choose.add_argument("--only", action="append", default=[], metavar="DIM=VALUE[,...]",
+                            help="outputs with these entities, such as sub=01 or sub=01,ses=02")
+        choose.add_argument("--product", action="append", default=[], metavar="NAME", help="outputs of this product")
+        choose.add_argument("--stage", action="append", default=[], metavar="NAME[/NAME...]",
+                            help="jobs in this stage, or a stage inside it, such as preprocess/combine")
         command.add_argument("--state", help="state file (default: ROOT/.spit-bash/state.jsonl)")
         if action is not Action.ADOPT:
             command.add_argument("--force", action="store_true", help="rerun command jobs even if current")
@@ -50,10 +73,43 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _load(args: argparse.Namespace) -> Dag:
-    if args.dag == "-":
-        return load_dag(sys.stdin, args.root)
-    with open(args.dag, encoding="utf-8") as source:
-        return load_dag(source, args.root)
+    if not args.files[0].endswith(SPIT_SUFFIXES):
+        if len(args.files) > 1:
+            raise DagError(f"expected one .spitdag, got {len(args.files)} files")
+        if args.partial:
+            raise DagError("--partial is for `spit dag`; give a recipe or pipeline, not a .spitdag")
+        if args.files[0] == "-":
+            return load_dag(sys.stdin, args.root)
+        with open(args.files[0], encoding="utf-8") as source:
+            return load_dag(source, args.root)
+
+    # `spit dag` finds a recipe's root itself; --root names the folder to scan
+    # only for a pipeline given alone.
+    scan = args.root is not None and args.files[0].endswith(".spit") and len(args.files) == 1
+    command = [args.spit, "dag", *args.files, "--json"]
+    if scan:
+        command += ["--root", args.root]
+    if args.partial:
+        command.append("--partial")
+    try:
+        # spit's notes and errors go straight to the terminal.
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+    except OSError as exc:
+        raise DagError(f"cannot run `{args.spit}`: {exc.strerror}; put spit on PATH, or pass --spit or set SPIT") from exc
+    if result.returncode != 0:
+        raise DagError(f"`spit dag` exited with status {result.returncode}")
+    return load_dag(io.StringIO(result.stdout), None if scan else args.root)
+
+
+def _selection(args: argparse.Namespace) -> Selection:
+    try:
+        return Selection(
+            only=tuple(parse_only(text) for text in args.only),
+            products=tuple(args.product),
+            stages=tuple(parse_stage(text) for text in args.stage),
+        )
+    except ValueError as exc:
+        raise DagError(str(exc)) from exc
 
 
 def _report_failure(job_id: int, error: str, log: Path | None) -> None:
@@ -75,7 +131,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--jobs must be at least 1")
     state: State | None = None
     try:
+        selection = _selection(args)
         dag = _load(args)
+        total = len(dag.jobs)
+        selected = select(dag, selection)
+        dag = selected.dag
+        if selection:
+            needed = f", and {selected.needed} they need" if selected.needed else ""
+            print(f"chose {selected.matched} of {total} jobs{needed}", file=sys.stderr)
         state = State(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl")
         if args.action is not Action.PLAN:
             state.lock()

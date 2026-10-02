@@ -86,6 +86,30 @@ class CliTests(unittest.TestCase):
         self.assertEqual(out.count("adopted"), 2)
         self.assertEqual(call("plan", str(self.dag))[1].count("current"), 2)
 
+    def test_only_runs_the_chosen_jobs_and_what_they_need(self):
+        self.data["jobs"][1]["outputs"]["output"]["entities"] = {"id": "final"}
+        code, out, err = call("run", self.write(), "--only", "id=final")
+        self.assertEqual(code, 0, err)
+        self.assertIn("chose 1 of 2 jobs, and 1 they need", err)
+        self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
+        code, _, err = call("plan", str(self.dag), "--only", "id=other")
+        self.assertEqual(code, 2)
+        self.assertIn("no output has id=other; id takes final", err)
+        code, _, err = call("plan", str(self.dag), "--only", "id")
+        self.assertEqual(code, 2)
+        self.assertIn("expected DIMENSION=VALUE", err)
+
+    def test_options_for_spit_need_a_recipe_or_pipeline(self):
+        code, _, err = call("plan", self.write(), "--partial")
+        self.assertEqual(code, 2)
+        self.assertIn("--partial is for `spit dag`", err)
+        code, _, err = call("plan", str(self.dag), str(self.dag))
+        self.assertEqual(code, 2)
+        self.assertIn("expected one .spitdag, got 2 files", err)
+        code, _, err = call("plan", "study.spitin", "--spit", str(self.root / "no-spit"))
+        self.assertEqual(code, 2)
+        self.assertIn("put spit on PATH, or pass --spit or set SPIT", err)
+
     def test_corrupt_state_and_bad_jobs_count(self):
         (self.root / ".spit-bash").mkdir()
         (self.root / ".spit-bash/state.jsonl").write_text("garbage\n")

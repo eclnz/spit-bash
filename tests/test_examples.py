@@ -16,7 +16,7 @@ SPIT = os.environ.get("SPIT") or shutil.which("spit")
 
 
 def spit_bash(*args, stdin=None):
-    env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"))
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"), SPIT=SPIT or "spit")
     return subprocess.run([sys.executable, "-m", "spit_bash", *args], input=stdin, env=env,
                           capture_output=True, text=True)
 
@@ -43,6 +43,30 @@ class ExampleTests(unittest.TestCase):
         result = spit_bash("plan", "-", stdin=self.dag_json("lines/lines.spitin"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count(" skip "), 5, result.stdout)
+
+    def test_runs_a_recipe_or_pipeline_and_chooses_jobs(self):
+        lines = self.examples / "lines"
+        output = lines / "output/merged"
+        result = spit_bash("run", str(lines / "lines.spitin"), "--only", "group=beta")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("chose 2 of 5 jobs\n", result.stderr)
+        self.assertEqual((output / "group=beta.txt").read_text(), "yak\nzebra\n")
+        self.assertFalse((output / "group=alpha.txt").exists())
+
+        result = spit_bash("plan", str(lines / "lines.spit"), "--root", str(lines), "--product", "merged")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[5] skip    merge: current", result.stdout)
+        self.assertIn("[4] run     merge: dependency will run", result.stdout)
+
+        inventory = subprocess.run([SPIT, "inputs", str(lines / "lines.spitin")],
+                                   check=True, capture_output=True, text=True).stdout
+        result = spit_bash("run", str(lines / "lines.spit"), "-", "--root", str(lines), stdin=inventory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((output / "group=alpha.txt").read_text(), "apple\nbanana\npear\n")
+
+        result = spit_bash("plan", str(lines / "missing.spitin"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("`spit dag` exited with status 1", result.stderr)
 
     def test_verify(self):
         dag = self.examples / "verify/checked_copy.spitdag"

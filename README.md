@@ -1,26 +1,58 @@
 # spit-bash
 
-`spit-bash` runs the jobs in a [SPIT](https://github.com/eclnz/spit) `dag --json` result or saved `.spitdag`. It reads the resolved jobs directly; it does not need the original `.spit` pipeline or `.spitout` inventory. This first version supports SPIT DAG format 4.
+`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. This first version supports SPIT DAG format 4.
 
 See the [runnable examples](examples/README.md) for complete recipes, input files, commands, and expected output.
 
 ## Install and use
 
-Requires Python 3.10 or newer. From this repository:
+Requires Python 3.10 or newer, and `spit` on `PATH` to run a recipe or pipeline. From this repository:
 
 ```sh
 python3 -m pip install .
-spit dag dataset.spitin -o jobs.spitdag
-spit-bash plan jobs.spitdag
-spit-bash run jobs.spitdag -j 4
+spit-bash plan dataset.spitin
+spit-bash run dataset.spitin -j 4
 ```
 
-For `dag --json`, pipe directly into the planner or runner:
+`spit-bash` takes what `spit dag` takes, and runs `spit dag --json` on it:
+
+| Files | Runs |
+| --- | --- |
+| `dataset.spitin` | `spit dag dataset.spitin --json` |
+| `analysis.spit dataset.spitout` | `spit dag analysis.spit dataset.spitout --json` (`-` for a `.spitout` on stdin) |
+| `analysis.spit --root data` | `spit dag analysis.spit --root data --json`, scanning `data` |
+
+`--partial` is passed on to `spit dag`. `--spit PATH`, or the `SPIT` variable, names the `spit` program when it is not on `PATH`. SPIT's notes and errors appear as it prints them, and if `spit dag` fails, `spit-bash` stops with status 2 before planning anything.
+
+A saved DAG, or one on stdin, is read directly:
 
 ```sh
-spit dag dataset.spitin --json | spit-bash plan -
+spit dag dataset.spitin -o jobs.spitdag
+spit-bash run jobs.spitdag -j 4
 spit dag dataset.spitin --json | spit-bash run - -j 4
 ```
+
+## Choosing jobs
+
+`--only`, `--product` and `--stage` choose part of the DAG: the jobs whose outputs match, and every job upstream that they need. Nothing downstream is chosen. Try a pipeline on one subject before running every subject:
+
+```sh
+spit-bash run dataset.spitin --only sub=01
+spit-bash run dataset.spitin --only sub=01,ses=02 --product denoised_dwi
+spit-bash plan dataset.spitin --stage preprocess
+```
+
+| Option | Chooses jobs with |
+| --- | --- |
+| `--only DIM=VALUE[,DIM=VALUE...]` | an output with every one of these entities |
+| `--product NAME` | an output of this product |
+| `--stage NAME[/NAME...]` | this stage, or a stage inside it, such as `preprocess/combine` |
+
+Repeat an option to match any of its values, as in `--only sub=01 --only sub=02`. Different options must all hold for the same output, so `--only sub=01 --product clean` chooses the jobs that make `clean` for subject 01. A job with no `sub` dimension, such as one making a group template, is not chosen by `--only sub=01`, but it runs if a chosen job needs it; a group average over every subject is not chosen, so it does not run. `plan` and `run` print how many jobs were chosen and how many more they need. A name that matches no output is an error that lists the names that would, so a misspelt dimension or product does not just choose nothing.
+
+Choosing jobs does not change how a job is planned: a chosen job is still skipped when it is current, and the state records it as any run does.
+
+## Planning and running
 
 SPIT writes the absolute dataset `root` into a DAG when it knows it. If `root` is `null`, pass `--root /path/to/dataset`. Relative paths in artifacts and commands are interpreted from this root.
 
