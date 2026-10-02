@@ -90,4 +90,4 @@ messie -af .
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-The test fixture under `tests/fixtures/` is actual version 4 output from SPIT's `command_demo` example. `tests/test_examples.py` runs the [examples](examples/README.md) with a real `spit`: set `SPIT` to the binary or put it on `PATH`, or the tests are skipped. CI builds `spit` from SPIT's main branch for them, on every push and weekly, so a change to SPIT's DAG format fails here.
+The test fixture under `tests/fixtures/` is actual version 4 output from SPIT's `command_demo` example. `tests/test_examples.py` runs the [examples](examples/README.md) with a real `spit`: set `SPIT` to the binary or put it on `PATH`, or the tests are skipped. CI builds `spit` from SPIT's `usability` branch, where its work merges, for them, on every push and weekly, so a change to SPIT's DAG format fails here.

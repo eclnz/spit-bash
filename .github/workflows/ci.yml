@@ -22,13 +22,15 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   examples:
-    # Builds SPIT from its main branch and runs the examples end to end.
+    # Builds SPIT from `usability`, the branch its work merges into (its `main`
+    # is far behind), and runs the examples end to end.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
           repository: eclnz/spit
+          ref: usability
           path: spit
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --manifest-path spit/Cargo.toml
