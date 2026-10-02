@@ -3,17 +3,44 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly, so a change to SPIT's DAG format shows up even when this repository is quiet.
+    - cron: '17 6 * * 1'
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
       - run: python -m pip install .
       - run: python -m unittest discover -s tests -v
+
+  examples:
+    # Builds SPIT from `usability`, the branch its work merges into (its `main`
+    # is far behind), and runs the examples end to end.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: eclnz/spit
+          ref: usability
+          path: spit
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --manifest-path spit/Cargo.toml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install .
+      - run: python -m unittest tests/test_examples.py -v
+        env:
+          SPIT: ${{ github.workspace }}/spit/target/release/spit
 
   messie:
     runs-on: ubuntu-latest
