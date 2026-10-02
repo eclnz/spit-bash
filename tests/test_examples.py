@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -83,6 +84,24 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("verify 1 exited with status 1", result.stderr)
         self.assertFalse(output.exists())
+
+    def test_folders(self):
+        recipe = str(self.examples / "folders/albums.spitin")
+        result = spit_bash("run", recipe, "-j", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        album = self.examples / "folders/output/album/trip=alpha"
+        self.assertEqual((album / "day1/morning.txt").read_text(), "harbour\n")
+        with tarfile.open(self.examples / "folders/output/archive/trip=alpha.tar") as archive:
+            self.assertEqual(sorted(archive.getnames()), [".", "./day1", "./day1/morning.txt", "./evening.txt"])
+
+        (self.examples / "folders/input/alpha/day1/morning.txt").write_text("harbour at dawn\n")
+        result = spit_bash("plan", recipe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[1] run     copy: input changed", result.stdout)
+        self.assertIn("[2] skip    copy: current", result.stdout)
+        result = spit_bash("run", recipe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((album / "day1/morning.txt").read_text(), "harbour at dawn\n")
 
 
 if __name__ == "__main__":

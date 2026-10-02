@@ -1,0 +1,12 @@
+source trip : Notes / [trip]
+path trip: input/{trip}
+
+path: output/{@product}/{@entities}
+
+operation copy(notes: Notes) -> Album /
+command copy: cp -R {notes} {@output}
+album = copy(trip)
+
+operation pack(album: Album) -> Archive .tar
+command pack: tar -cf {@output} -C {album} .
+archive = pack(album)
