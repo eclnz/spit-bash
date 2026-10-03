@@ -86,6 +86,29 @@ class ExampleTests(unittest.TestCase):
         self.assertIn("verify 1 exited with status 1", result.stderr)
         self.assertFalse(output.exists())
 
+    def test_checks(self):
+        recipe = str(self.examples / "checks/notes.spitin")
+        result = spit_bash("run", recipe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("2 done, 0 checked, 0 failed", result.stderr)
+
+        # A note without the word fails its output check, though `cp` succeeded.
+        (self.examples / "checks/input/tuesday.txt").write_text("Rest.\n")
+        result = spit_bash("run", recipe)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("[2] failed: check contains(today) on output output output/copied/day=tuesday.txt "
+                      "failed: exited with status 1", result.stderr)
+
+        # A changed check is run on the files that exist, without copying again.
+        pipeline = self.examples / "checks/notes.spit"
+        pipeline.write_text(pipeline.read_text().replace("contains(today)", "contains(for)"))
+        result = spit_bash("plan", recipe)
+        self.assertIn("[1] check   copy: checks changed", result.stdout)
+        self.assertIn("[2] run     copy: no successful run recorded", result.stdout)
+        result = spit_bash("run", recipe)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("0 done, 1 checked, 1 failed", result.stderr)
+
     def test_folders(self):
         recipe = str(self.examples / "folders/albums.spitin")
         result = spit_bash("run", recipe, "-j", "2")

@@ -40,6 +40,17 @@ cat examples/verify/output/copied/part=one.txt
 
 The result is `Verified input.`. If you empty `examples/verify/input/one.txt`, the job's `verify` command fails and the copy does not run. `run` prints the end of the job's log, `examples/verify/.spit-bash/logs/1-copy.log`, which shows the failing `test -s input/one.txt`. Restore the input before planning another run.
 
+## Checks before and after
+
+`notes.spit` declares two checks once and attaches them: each note must not be empty before it is read, and each copy must contain `today` after it is written. SPIT writes each job's checks into the DAG, and `spit dag --commands` shows them as `check:` lines around the command:
+
+```sh
+spit dag examples/checks/notes.spitin --commands
+spit-bash run examples/checks/notes.spitin
+```
+
+Both copies pass. Write `Rest.` into `examples/checks/input/tuesday.txt` and run again: `cp` succeeds, but the copy fails `contains(today)`, so the job fails and its log shows the failing `grep`. Then change `contains(today)` to `contains(for)` in `notes.spit` and plan: Monday's job is marked `check`, since only its check changed, and `run` checks its existing copy without copying again; it passes. Tuesday's job, which failed, runs again and fails again, since `Rest.` holds no `for`. Restore the inputs and `notes.spit` before planning another run.
+
 ## Folders in and out
 
 Each trip's notes are a folder, and each job copies a folder whole, then packs the copy into an archive. The source and the copy are declared with a `/` after their types, so SPIT finds `input/alpha` and `input/beta` as folders and the runner treats each copy as one output:

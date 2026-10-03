@@ -1,6 +1,6 @@
 # spit-bash
 
-`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 and 5; format 5 added folder artifacts.
+`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 to 6; format 5 added folder artifacts, and format 6 [checks](#checks).
 
 See the [runnable examples](examples/README.md) for complete recipes, input files, commands, and expected output.
 
@@ -56,9 +56,9 @@ Choosing jobs does not change how a job is planned: a chosen job is still skippe
 
 SPIT writes the absolute dataset `root` into a DAG when it knows it. If `root` is `null`, pass `--root /path/to/dataset`. Relative paths in artifacts and commands are interpreted from this root.
 
-`plan` reports `run`, `skip`, or `blocked` for each job, and exits 1 if any job is blocked. `plan --json` prints the same as JSON. `run` makes the same plan and runs every job that is not current or blocked. It runs each job's `verify` commands in order, then its main command, and only starts a dependent after its producers finish successfully. Independent jobs run together, up to `-j` processes, which defaults to the number of CPUs. Commands are passed as argument arrays directly to the operating system; no shell parses them. Output parent directories are created when a job starts. A command must create every declared output file, or [folder](#folders), to count as successful.
+`plan` reports `run`, `check`, `skip`, or `blocked` for each job, and exits 1 if any job is blocked. `plan --json` prints the same as JSON. `run` makes the same plan and runs every job that is not current or blocked. It runs each job's input checks and `verify` commands in order, then its main command, then its output checks, and only starts a dependent after its producers finish successfully. Independent jobs run together, up to `-j` processes, which defaults to the number of CPUs. Commands are passed as argument arrays directly to the operating system; no shell parses them. Output parent directories are created when a job starts. A command must create every declared output file, or [folder](#folders), to count as successful.
 
-A blocked job blocks the jobs that depend on it, but not the rest of the plan: `run` still runs every other job, then exits 1. A job is blocked when an external input is missing, when the program its command or a `verify` command starts with cannot be found, or when a job it depends on is blocked. Programs are looked up on `PATH`, from SPIT's `executables` list; a program named by a path, such as `bin/check`, is looked up from the root.
+A blocked job blocks the jobs that depend on it, but not the rest of the plan: `run` still runs every other job, then exits 1. A job is blocked when an external input is missing, when the program its command, a `verify` command or a check starts with cannot be found, or when a job it depends on is blocked. Programs are looked up on `PATH`, from SPIT's `executables` list; a program named by a path, such as `bin/check`, is looked up from the root.
 
 ## Folders
 
@@ -69,9 +69,19 @@ A DAG of format 5 marks each artifact as a `file` or a `folder`, for a product S
 - After the command, each output folder must exist. It may be empty.
 - A folder counts as changed when anything under it does. Its record is the total size of the files under it, the latest modification time of any of them or of any folder under it, and how many files it holds. A folder's own modification time is not enough, as it changes only when an entry directly in it is added, removed or renamed.
 
+## Checks
+
+A DAG of format 6 gives each job its `checks`: commands that each test one artifact, which the pipeline declares once with SPIT's `check` and attaches to ports and sources. A `before` check tests an input before the job's `verify` commands; an `after` check tests an output once the command has made it. A failed check fails the job, even when its command exited 0, and the jobs that depend on it do not run:
+
+```text
+[2] failed: check contains(today) on output output output/copied/day=tuesday.txt failed: exited with status 1
+```
+
+A successful run records the checks the job passed. SPIT leaves checks out of a job's fingerprint, so a changed or new check does not rerun the job: `plan` marks it `check`, and `run` runs its checks alone on the files it already has. If they pass, the record takes the new checks; if one fails, the job fails and its record is dropped, so the next run reruns the job. A job with no command whose outputs exist is checked on every run. A dependent that runs or is checked in the same run waits for those checks, and fails if they do; a current dependent stays current. `adopt` records no checks, so the next `run` checks the adopted files.
+
 ## Output and logs
 
-Each job's output, from its `verify` commands and its command, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
+Each job's output, from its checks, its `verify` commands and its command, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
 
 ## Stopping a run
 
@@ -83,13 +93,13 @@ The runner records successful jobs in `ROOT/.spit-bash/state.jsonl`, keyed by th
 
 Existing outputs with no successful record are run again; use `plan` to inspect this before `run`. For a dataset whose outputs were made before spit-bash was used, `spit-bash adopt` records every job whose inputs and outputs all exist as current, without running it. It trusts the files as they are, so adopt only outputs you know were made by the commands in the DAG.
 
-Jobs with no command can only be skipped when all their outputs already exist and are at least as new as their inputs; a missing or stale output blocks them. Failed verification, failed commands, and missing outputs fail the job and its dependents. A partial DAG reports its `left_out` count while still planning and running its complete jobs.
+Jobs with no command can only be skipped, or checked, when all their outputs already exist and are at least as new as their inputs; a missing or stale output blocks them. Failed verification, failed commands, failed checks and missing outputs fail the job and its dependents. A partial DAG reports its `left_out` count while still planning and running its complete jobs.
 
 The file checks use size and modification time, not content hashes, and a folder's check sums these over the files under it. If another tool changes a file while preserving both, the runner will not notice. The state path can be changed with `--state PATH`; keep one state file per dataset root.
 
-The state file is a log of JSON lines: a header, then one line each time a job is recorded or forgotten, and the last line for a job wins. Finishing a job appends a line rather than rewriting the file, and the end of a run compacts it to one line per job. `run` and `adopt` lock the state, so a second run on the same dataset stops with an error instead of overwriting the first one's records. Locking uses `flock`, so spit-bash runs on Linux and macOS, not Windows.
+The state file is a log of JSON lines: a header, version 3 since records hold the checks each job passed, then one line each time a job is recorded or forgotten, and the last line for a job wins. Finishing a job appends a line rather than rewriting the file, and the end of a run compacts it to one line per job. `run` and `adopt` lock the state, so a second run on the same dataset stops with an error instead of overwriting the first one's records. Locking uses `flock`, so spit-bash runs on Linux and macOS, not Windows. A version 2 state, written before checks, is still read; its records hold no checks.
 
-SPIT DAG version 4 is validated with Pydantic before planning. Invalid field types, unknown fields, malformed argument parts and paths outside the dataset root are rejected before any command runs.
+A SPIT DAG is validated with Pydantic before planning. Invalid field types, unknown fields, malformed argument parts and paths outside the dataset root are rejected before any command runs.
 
 ## Development
 

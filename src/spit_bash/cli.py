@@ -33,8 +33,8 @@ class Action(str, Enum):
 
 
 HELP = {
-    Action.PLAN: "report which jobs would run, skip or be blocked",
-    Action.RUN: "run every job that is not current or blocked",
+    Action.PLAN: "report which jobs would run, be checked, skip or be blocked",
+    Action.RUN: "run every job that is not current or blocked, and check current jobs whose checks changed",
     Action.ADOPT: "record jobs whose files already exist as current, without running them",
 }
 
@@ -180,11 +180,15 @@ def main(argv: list[str] | None = None) -> int:
         failed = [result for result in results if result.error]
         for result in failed:
             _report_failure(result.job.id, result.error or "", result.log)
-        ran = sum(1 for decision in decisions if decision.status is Status.RUN)
-        skipped = sum(1 for decision in decisions if decision.status is Status.SKIP)
+        count = {status: 0 for status in Status}
+        for decision in decisions:
+            count[decision.status] += 1
+        failed_ids = {result.job.id for result in failed}
+        failed_checks = sum(1 for d in decisions if d.status is Status.CHECK and d.job.id in failed_ids)
         print(
-            f"{ran - len(failed)} done, {len(failed)} failed, {skipped} current, "
-            f"{len(decisions) - ran - skipped} blocked",
+            f"{count[Status.RUN] - len(failed) + failed_checks} done, "
+            f"{count[Status.CHECK] - failed_checks} checked, {len(failed)} failed, "
+            f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked",
             file=sys.stderr,
         )
         return 1 if failed or blocked else 0

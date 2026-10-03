@@ -78,12 +78,16 @@ class RunRecord(BaseModel):
     fingerprint: str
     inputs: dict[str, FileStamp]
     outputs: dict[str, FileStamp]
+    # The checks the job passed with on these files, as `Job.checks_key`
+    # gives them; None for no checks, and for a job adopted without running any.
+    checks: str | None = None
 
 
 class StateHeader(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    version: Literal[2]
+    # Version 3 records the checks each job passed; a version 2 record has none.
+    version: Literal[2, 3]
 
 
 class StateEntry(BaseModel):
@@ -163,7 +167,7 @@ class State:
             self._log.close()
             self._log = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [StateHeader(version=2).model_dump_json()]
+        lines = [StateHeader(version=3).model_dump_json()]
         lines.extend(StateEntry(key=key, record=record).model_dump_json() for key, record in sorted(self.jobs.items()))
         fd, temporary = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:
@@ -186,6 +190,8 @@ class State:
 
 class Status(Enum):
     RUN = "run"
+    # Current, but its checks have not passed on these files: run them alone.
+    CHECK = "check"
     SKIP = "skip"
     BLOCKED = "blocked"
 
@@ -201,7 +207,7 @@ def _missing_programs(dag: Dag) -> set[str]:
     """Programs that commands start with but that cannot be run."""
     missing = {name for name in dag.executables if shutil.which(name) is None}
     for job in dag.jobs:
-        for command in (job.command, *job.verify):
+        for command in (job.command, *job.verify, *(check.command for check in job.checks)):
             # SPIT leaves a program named by a path out of `executables`. It is
             # run from the root, so check it there.
             if command is not None and "/" in command[0] and command[0] not in missing:
@@ -233,6 +239,8 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
                 decision = Decision(job, Status.BLOCKED, "input is missing")
             elif job.inputs and max(value[1] for value in stamps(dag, job.inputs).values()) > min(value[1] for value in outputs.values()):
                 decision = Decision(job, Status.BLOCKED, "no command and output is older than an input")
+            elif job.checks:
+                decision = Decision(job, Status.CHECK, "no command; outputs exist, checking them")
             else:
                 decision = Decision(job, Status.SKIP, "no command; outputs exist")
         elif any(by_id[dep].status is Status.RUN for dep in job.depends_on):
@@ -253,10 +261,16 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
                 decision = Decision(job, Status.RUN, "input changed")
             elif record.outputs != stamps(dag, job.outputs):
                 decision = Decision(job, Status.RUN, "output changed")
+            elif record.checks != job.checks_key:
+                reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
+                decision = Decision(job, Status.CHECK, reason)
             else:
                 decision = Decision(job, Status.SKIP, "current")
-        if decision.status is Status.RUN:
-            programs = sorted({command[0] for command in (job.command, *job.verify) if command is not None} & missing_programs)
+        if decision.status in (Status.RUN, Status.CHECK):
+            commands = [check.command for check in job.checks]
+            if decision.status is Status.RUN:
+                commands += [job.command, *job.verify]
+            programs = sorted({command[0] for command in commands if command is not None} & missing_programs)
             if programs:
                 decision = Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
         decisions.append(decision)
@@ -277,7 +291,10 @@ class Adoption:
 
 
 def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
-    """Record every command job whose files exist as current, without running it."""
+    """Record every command job whose files exist as current, without running it.
+
+    No checks are recorded, so the next run checks the adopted files.
+    """
     adoptions = []
     for job in dag.jobs:
         inputs = stamps(dag, job.inputs)

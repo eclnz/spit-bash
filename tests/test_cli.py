@@ -38,7 +38,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("[1] run     op1: output missing", out)
         code, out, err = call("run", str(self.dag))
         self.assertEqual(code, 0, err)
-        self.assertIn("2 done, 0 failed, 0 current, 0 blocked", err)
+        self.assertIn("2 done, 0 checked, 0 failed, 0 current, 0 blocked", err)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
         self.assertEqual(call("plan", str(self.dag))[1].count("skip"), 2)
 
@@ -58,7 +58,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("[3] blocked op3: missing external input: missing.txt", out)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
-        self.assertIn("2 done, 0 failed, 0 current, 1 blocked", err)
+        self.assertIn("2 done, 0 checked, 0 failed, 0 current, 1 blocked", err)
 
     def test_failure_prints_the_end_of_the_log(self):
         self.data["jobs"][0]["command"][2] = ["import sys; print('something broke'); sys.exit(4)"]
