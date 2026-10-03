@@ -22,10 +22,10 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   examples:
-    # Builds SPIT from `usability`, the branch its work merges into (its `main`
-    # is far behind), and runs the examples end to end. A change made in both
-    # repositories has one branch name in each, so a branch that SPIT also has
-    # builds SPIT's branch instead, and the two are tested together.
+    # Builds SPIT from `dev`, the branch its work merges into, and runs the
+    # examples end to end. A change made in both repositories has one branch
+    # name in each, so a branch that SPIT also has builds SPIT's branch
+    # instead, and the two are tested together.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +34,8 @@ jobs:
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
-          ref=usability
-          if [ "$BRANCH" != main ] && [ "$BRANCH" != usability ] &&
+          ref=dev
+          if [ "$BRANCH" != main ] && [ "$BRANCH" != dev ] &&
               git ls-remote --exit-code --heads https://github.com/eclnz/spit "refs/heads/$BRANCH" > /dev/null; then
             ref=$BRANCH
           fi
