@@ -1,4 +1,4 @@
-"""The version 4 and 5 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 4 to 6 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
@@ -82,6 +82,16 @@ class LeftOut(SchemaModel):
     reasons: list[str]
 
 
+class Check(SchemaModel):
+    """A check of one artifact, before the command on an input or after it on an output."""
+
+    when: Literal["before", "after"]
+    check: NonEmpty
+    port: NonEmpty
+    path: RelativePath
+    command: Command
+
+
 class SpitJob(SchemaModel):
     id: JobId
     operation: NonEmpty
@@ -93,10 +103,12 @@ class SpitJob(SchemaModel):
     dependents: list[JobId]
     command: Command | None
     verify: list[Command]
+    # Version 6 added `checks`; a version 4 or 5 DAG has none.
+    checks: list[Check] | None = None
 
 
 class SpitDag(SchemaModel):
-    version: Literal[4, 5]
+    version: Literal[4, 5, 6]
     generator: Generator
     root: str | None
     external_inputs: list[Artifact]

@@ -1,0 +1,11 @@
+check nonempty: test -s {@path}
+check contains(word): grep -q {word} {@path}
+
+source note : Text [day] @ check(nonempty)
+
+path: output/{@product}/{@entities}.txt
+path note: input/{day}.txt
+
+operation copy(note: Text) -> Text @ check(contains(today))
+command copy: cp {note} {@output}
+copied = copy(note)

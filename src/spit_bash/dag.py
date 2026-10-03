@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterator, TextIO
@@ -24,6 +26,21 @@ class Made:
 
 
 @dataclass(frozen=True)
+class Check:
+    """A check of one artifact: `before` the command on an input, or `after` it on an output."""
+
+    when: str
+    name: str
+    port: str
+    path: str
+    command: tuple[str, ...]
+
+    def describe(self) -> str:
+        side = "input" if self.when == "before" else "output"
+        return f"check {self.name} on {side} {self.port} {self.path}"
+
+
+@dataclass(frozen=True)
 class Job:
     id: int
     operation: str
@@ -35,6 +52,24 @@ class Job:
     depends_on: tuple[int, ...]
     command: tuple[str, ...] | None
     verify: tuple[tuple[str, ...], ...]
+    checks: tuple[Check, ...] = ()
+
+    @property
+    def before(self) -> tuple[Check, ...]:
+        return tuple(check for check in self.checks if check.when == "before")
+
+    @property
+    def after(self) -> tuple[Check, ...]:
+        return tuple(check for check in self.checks if check.when == "after")
+
+    @property
+    def checks_key(self) -> str | None:
+        """What a successful run records of the checks it passed; None without checks."""
+        if not self.checks:
+            return None
+        text = json.dumps([[c.when, c.name, c.port, c.path, list(c.command)] for c in self.checks],
+                          separators=(",", ":"))
+        return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -111,6 +146,8 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     for item in document.jobs:
         if item.id in seen_ids:
             raise DagError(f"duplicate job id: {item.id}")
+        if (item.checks is not None) != (document.version >= 6):
+            raise DagError(f"job {item.id}: `checks` came with version 6, and every job of one has them")
         inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
         outputs = tuple(artifact.path for artifact in item.outputs.values())
         if len(item.depends_on) != len(set(item.depends_on)) or any(dep not in seen_ids for dep in item.depends_on):
@@ -133,7 +170,16 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             depends_on=tuple(item.depends_on),
             command=None if item.command is None else _command(item.command),
             verify=tuple(_command(command) for command in item.verify),
+            checks=tuple(
+                Check(check.when, check.check, check.port, check.path, _command(check.command))
+                for check in item.checks or ()
+            ),
         ))
+        for check in item.checks or ():
+            ports = item.inputs if check.when == "before" else {k: [v] for k, v in item.outputs.items()}
+            if not any(artifact.path == check.path for artifact in ports.get(check.port, ())):
+                raise DagError(f"job {item.id}: check {check.check} names {check.path}, "
+                               f"which is not on its {'input' if check.when == 'before' else 'output'} {check.port}")
         seen_ids.add(item.id)
 
     for job in jobs:
