@@ -10,7 +10,7 @@ from typing import Iterator, TextIO
 
 from pydantic import ValidationError
 
-from .schema import Artifact, Command, DirPart, PathPart, SpitDag, StemPart
+from .schema import Artifact, Command, DirPart, PathPart, SpitDag, SpitJob, StemPart
 
 
 class DagError(ValueError):
@@ -54,6 +54,9 @@ class Job:
     command: tuple[str, ...] | None
     verify: tuple[tuple[str, ...], ...]
     checks: tuple[Check, ...] = ()
+    # Where a job made by a call to an operation carried out by steps comes
+    # from, innermost first; empty for a step written in the pipeline.
+    origin: tuple[str, ...] = ()
 
     @property
     def before(self) -> tuple[Check, ...]:
@@ -119,6 +122,42 @@ def _artifacts(document: SpitDag) -> Iterator[Artifact]:
         yield from job.outputs.values()
 
 
+def _origin(document: SpitDag, job: SpitJob) -> tuple[str, ...]:
+    """The body step that made `job`, then each call it is nested in, as lines to show."""
+    if job.origin is None:
+        return ()
+    files = document.pipeline_files or []
+    calls = document.calls or []
+
+    def place(file: int | None, line: int) -> str:
+        return f"{files[file].path} line {line}" if file is not None else f"line {line}"
+
+    call = calls[job.origin.call]
+    lines = [f"step at {place(call.file, job.origin.line)}"]
+    while True:
+        lines.append(f"in `{call.instance} = {call.operation}(...)` at {place(call.at.file, call.at.line)}")
+        if call.parent is None:
+            return tuple(lines)
+        call = calls[call.parent]
+
+
+def _check_origins(document: SpitDag) -> None:
+    """Version 7 names its files and calls, and every reference into them is in range."""
+    if (document.pipeline_files is not None, document.calls is not None) != (document.version >= 7,) * 2:
+        raise DagError("`pipeline_files` and `calls` came with version 7, and a DAG of it has both")
+    files = len(document.pipeline_files or [])
+    calls = document.calls or []
+    for position, call in enumerate(calls):
+        if any(file is not None and file >= files for file in (call.file, call.at.file)):
+            raise DagError(f"call {position} names a file that `pipeline_files` does not hold")
+        # A call's parent comes before it, so following parents ends.
+        if call.parent is not None and call.parent >= position:
+            raise DagError(f"call {position} names a parent that is not an earlier call")
+    for job in document.jobs:
+        if job.origin is not None and job.origin.call >= len(calls):
+            raise DagError(f"job {job.id}: `origin` names a call that `calls` does not hold")
+
+
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     try:
         document = SpitDag.model_validate_json(source.read())
@@ -135,6 +174,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         artifact.kind == "folder" for artifact in _artifacts(document)
     ):
         raise DagError("a version 4 DAG has no folders; `kind` came with version 5")
+    _check_origins(document)
     folders = frozenset(artifact.path for artifact in _artifacts(document) if artifact.kind == "folder")
     for artifact in _artifacts(document):
         if (artifact.kind == "folder") != (artifact.path in folders):
@@ -176,6 +216,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
                 Check(check.when, check.check, check.port, check.path, _command(check.command))
                 for check in item.checks or ()
             ),
+            origin=_origin(document, item),
         ))
         for check in item.checks or ():
             ports = item.inputs if check.when == "before" else {k: [v] for k, v in item.outputs.items()}

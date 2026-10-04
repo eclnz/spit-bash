@@ -13,7 +13,7 @@ import sys
 from enum import Enum
 from pathlib import Path
 
-from .dag import Dag, DagError, load_dag
+from .dag import Dag, DagError, Job, load_dag
 from .plan import State, Status, adopt, plan
 from .run import execute, log_tail
 from .selection import Selection, parse_only, parse_stage, select
@@ -112,8 +112,11 @@ def _selection(args: argparse.Namespace) -> Selection:
         raise DagError(str(exc)) from exc
 
 
-def _report_failure(job_id: int, error: str, log: Path | None) -> None:
+def _report_failure(job: Job, error: str, log: Path | None) -> None:
+    job_id = job.id
     print(f"[{job_id}] failed: {error}", file=sys.stderr)
+    for line in job.origin:
+        print(f"[{job_id}] {line}", file=sys.stderr)
     if log is not None:
         tail = log_tail(log)
         if tail:
@@ -179,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             return 128 + signal.SIGINT
         failed = [result for result in results if result.error]
         for result in failed:
-            _report_failure(result.job.id, result.error or "", result.log)
+            _report_failure(result.job, result.error or "", result.log)
         count = {status: 0 for status in Status}
         for decision in decisions:
             count[decision.status] += 1
