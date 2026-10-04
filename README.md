@@ -1,6 +1,6 @@
 # spit-bash
 
-`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 to 6; format 5 added folder artifacts, and format 6 [checks](#checks).
+`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 to 7; format 5 added folder artifacts, format 6 [checks](#checks), and format 7 [where each job comes from](#where-jobs-come-from).
 
 See the [runnable examples](examples/README.md) for complete recipes, input files, commands, and expected output.
 
@@ -78,6 +78,19 @@ A DAG of format 6 gives each job its `checks`: commands that each test one artif
 ```
 
 A successful run records the checks the job passed. SPIT leaves checks out of a job's fingerprint, so a changed or new check does not rerun the job: `plan` marks it `check`, and `run` runs its checks alone on the files it already has. If they pass, the record takes the new checks; if one fails, the job fails and its record is dropped, so the next run reruns the job. A job with no command whose outputs exist is checked on every run. A dependent that runs or is checked in the same run waits for those checks, and fails if they do; a current dependent stays current. `adopt` records no checks, so the next `run` checks the adopted files.
+
+## Where jobs come from
+
+In SPIT, an operation can be carried out by a body of steps, often declared in a library, and a call to it becomes ordinary jobs. A DAG of format 7 says where each such job came from: the files the pipeline was read from, each call, and the line of the body's step. When one of these jobs fails, `run` prints the step and every call it is nested in, innermost first:
+
+```text
+[1] failed: command exited with status 3
+[1] step at libs/lib.spit line 10
+[1] in `m::cleaned = L::tidy(...)` at libs/lib.spit line 13
+[1] in `m = L::summarise(...)` at main.spit line 8
+```
+
+None of this is part of a job's fingerprint, so an edit to a library that leaves a job's command as it was reruns nothing.
 
 ## Output and logs
 

@@ -1,4 +1,4 @@
-"""The version 4 to 6 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 4 to 7 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
@@ -92,6 +92,39 @@ class Check(SchemaModel):
     command: Command
 
 
+class PipelineFile(SchemaModel):
+    """A file the pipeline was read from, by its git blob id."""
+
+    path: NonEmpty
+    blob: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+
+
+Index = Annotated[int, Field(ge=0)]
+Line = Annotated[int, Field(ge=1)]
+
+
+class CallSite(SchemaModel):
+    file: Index | None
+    line: Line
+
+
+class Call(SchemaModel):
+    """A call to an operation carried out by steps, which the DAG holds as its jobs."""
+
+    operation: NonEmpty
+    instance: NonEmpty
+    parent: Index | None
+    file: Index | None
+    at: CallSite
+
+
+class Origin(SchemaModel):
+    """The call whose body made a job, and the line of the body's step."""
+
+    call: Index
+    line: Line
+
+
 class SpitJob(SchemaModel):
     id: JobId
     operation: NonEmpty
@@ -105,10 +138,12 @@ class SpitJob(SchemaModel):
     verify: list[Command]
     # Version 6 added `checks`; a version 4 or 5 DAG has none.
     checks: list[Check] | None = None
+    # Version 7 added `origin`; null for a step written in the pipeline.
+    origin: Origin | None = None
 
 
 class SpitDag(SchemaModel):
-    version: Literal[4, 5, 6]
+    version: Literal[4, 5, 6, 7]
     generator: Generator
     root: str | None
     external_inputs: list[Artifact]
@@ -116,4 +151,7 @@ class SpitDag(SchemaModel):
     executables: list[str]
     removed: list[Removal]
     left_out: list[LeftOut]
+    # Version 7 added `pipeline_files` and `calls`.
+    pipeline_files: list[PipelineFile] | None = None
+    calls: list[Call] | None = None
     jobs: list[SpitJob]
