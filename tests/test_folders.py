@@ -114,7 +114,7 @@ class FolderTests(unittest.TestCase):
             data = folders_dag(root)
             data["jobs"][0]["command"] = command("pass")
             decisions, results = run(read(data), state_at(root))
-            self.assertEqual(results[0].error, "command succeeded but did not create every output")
+            self.assertEqual(results[0].error, "command succeeded but did not create output output work/upper")
 
     def test_a_folder_stamp_follows_the_files_under_it(self):
         with tempfile.TemporaryDirectory() as directory:

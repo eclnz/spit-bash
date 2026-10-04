@@ -48,6 +48,7 @@ class Job:
     fingerprint: str
     inputs: tuple[str, ...]
     outputs: tuple[str, ...]
+    ports: tuple[str, ...]
     made: tuple[Made, ...]
     depends_on: tuple[int, ...]
     command: tuple[str, ...] | None
@@ -203,6 +204,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             fingerprint=item.fingerprint,
             inputs=inputs,
             outputs=outputs,
+            ports=tuple(item.outputs),
             made=tuple(
                 Made(artifact.product, tuple(sorted(artifact.entities.items())))
                 for artifact in item.outputs.values()
