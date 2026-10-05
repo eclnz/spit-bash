@@ -134,6 +134,17 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         artifact.kind == "folder" for artifact in _artifacts(document)
     ):
         raise DagError("a version 4 DAG has no folders; `kind` came with version 5")
+    if document.version >= 7:
+        if document.pipeline_files is None or document.calls is None:
+            raise DagError("a version 7 DAG must have `pipeline_files` and `calls`")
+        for index, call in enumerate(document.calls):
+            if call.parent is not None and call.parent >= index:
+                raise DagError(f"call {index} must name an earlier parent")
+            if any(file is not None and file >= len(document.pipeline_files)
+                   for file in (call.file, call.at.file)):
+                raise DagError(f"call {index} names an unknown pipeline file")
+    elif document.pipeline_files is not None or document.calls is not None:
+        raise DagError("`pipeline_files` and `calls` came with version 7")
     folders = frozenset(artifact.path for artifact in _artifacts(document) if artifact.kind == "folder")
     for artifact in _artifacts(document):
         if (artifact.kind == "folder") != (artifact.path in folders):
@@ -148,6 +159,10 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             raise DagError(f"duplicate job id: {item.id}")
         if (item.checks is not None) != (document.version >= 6):
             raise DagError(f"job {item.id}: `checks` came with version 6, and every job of one has them")
+        if ("origin" in item.model_fields_set) != (document.version >= 7):
+            raise DagError(f"job {item.id}: `origin` came with version 7, and every job of one has it")
+        if item.origin is not None and item.origin.call >= len(document.calls or ()):
+            raise DagError(f"job {item.id} names an unknown call")
         inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
         outputs = tuple(artifact.path for artifact in item.outputs.values())
         if len(item.depends_on) != len(set(item.depends_on)) or any(dep not in seen_ids for dep in item.depends_on):
