@@ -49,6 +49,29 @@ class LoadTests(unittest.TestCase):
             self.assertEqual(dag.jobs[3].command[4], "merged/group=alpha.txt")
             self.assertEqual(dag.executables, ("sort",))
 
+    def test_reads_version_seven_provenance_and_rejects_bad_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = sample(Path(directory))
+            data["version"] = 7
+            data["pipeline_files"] = [{"path": "main.spit", "blob": "a" * 40}]
+            data["calls"] = [{
+                "operation": "prepare", "instance": "ready", "parent": None,
+                "file": 0, "at": {"file": 0, "line": 9},
+            }]
+            for job in data["jobs"]:
+                job["checks"] = []
+            data["jobs"][0]["origin"] = {"call": 0, "line": 4}
+            data["jobs"][1]["origin"] = None
+            self.assertEqual(len(read(data).jobs), 2)
+
+            data["jobs"][0]["origin"]["call"] = 1
+            with self.assertRaisesRegex(DagError, "unknown call"):
+                read(data)
+            data["jobs"][0]["origin"]["call"] = 0
+            del data["pipeline_files"]
+            with self.assertRaisesRegex(DagError, "pipeline_files"):
+                read(data)
+
 
 if __name__ == "__main__":
     unittest.main()
