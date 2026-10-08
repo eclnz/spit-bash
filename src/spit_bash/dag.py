@@ -18,9 +18,11 @@ class DagError(ValueError):
 
 
 @dataclass(frozen=True)
-class Made:
-    """What one output is, for choosing jobs by product and entities."""
+class Output:
+    """One produced artifact and the port that names it."""
 
+    port: str
+    path: str
     product: str
     entities: tuple[tuple[str, str], ...]
 
@@ -47,9 +49,7 @@ class Job:
     stage: tuple[str, ...]
     fingerprint: str
     inputs: tuple[str, ...]
-    outputs: tuple[str, ...]
-    ports: tuple[str, ...]
-    made: tuple[Made, ...]
+    produced: tuple[Output, ...]
     depends_on: tuple[int, ...]
     command: tuple[str, ...] | None
     verify: tuple[tuple[str, ...], ...]
@@ -57,6 +57,11 @@ class Job:
     # Where a job made by a call to an operation carried out by steps comes
     # from, innermost first; empty for a step written in the pipeline.
     origin: tuple[str, ...] = ()
+
+    @property
+    def outputs(self) -> tuple[str, ...]:
+        """Output paths in DAG order, for planning and state records."""
+        return tuple(output.path for output in self.produced)
 
     @property
     def before(self) -> tuple[Check, ...]:
@@ -190,7 +195,11 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         if (item.checks is not None) != (document.version >= 6):
             raise DagError(f"job {item.id}: `checks` came with version 6, and every job of one has them")
         inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
-        outputs = tuple(artifact.path for artifact in item.outputs.values())
+        produced = tuple(
+            Output(port, artifact.path, artifact.product, tuple(sorted(artifact.entities.items())))
+            for port, artifact in item.outputs.items()
+        )
+        outputs = tuple(output.path for output in produced)
         if len(item.depends_on) != len(set(item.depends_on)) or any(dep not in seen_ids for dep in item.depends_on):
             raise DagError(f"job {item.id} dependencies must name earlier jobs once each")
         for path in outputs:
@@ -203,12 +212,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             stage=tuple(item.stage),
             fingerprint=item.fingerprint,
             inputs=inputs,
-            outputs=outputs,
-            ports=tuple(item.outputs),
-            made=tuple(
-                Made(artifact.product, tuple(sorted(artifact.entities.items())))
-                for artifact in item.outputs.values()
-            ),
+            produced=produced,
             depends_on=tuple(item.depends_on),
             command=None if item.command is None else _command(item.command),
             verify=tuple(_command(command) for command in item.verify),
