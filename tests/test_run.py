@@ -81,6 +81,30 @@ class RunTests(unittest.TestCase):
             decisions = plan(read(data), state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
 
+    def test_multiple_outputs_report_each_missing_port_and_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            data["jobs"][0]["outputs"] = {
+                "image": artifact("work/upper.txt"),
+                "meta": artifact("work/upper.json"),
+                "log": artifact("work/conversion.log"),
+            }
+            dag = read(data)
+            self.assertEqual(
+                [(output.port, output.path) for output in dag.jobs[0].produced],
+                [("image", "work/upper.txt"), ("meta", "work/upper.json"),
+                 ("log", "work/conversion.log")],
+            )
+            _, results = run(dag, state_at(root))
+            self.assertEqual(
+                results[0].error,
+                "command succeeded but did not create output meta work/upper.json, "
+                "output log work/conversion.log",
+            )
+            self.assertTrue((root / "work/upper.txt").exists())
+
     def test_job_output_goes_to_its_log(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

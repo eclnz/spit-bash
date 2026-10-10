@@ -52,11 +52,11 @@ def _listing(names: set[str]) -> str:
 
 def _check_names(dag: Dag, selection: Selection) -> None:
     """Name a criterion the DAG cannot match at all, so a typo is not just "no job matches"."""
-    products = {made.product for job in dag.jobs for made in job.made}
+    products = {output.product for job in dag.jobs for output in job.produced}
     values: dict[str, set[str]] = {}
     for job in dag.jobs:
-        for made in job.made:
-            for dimension, value in made.entities:
+        for output in job.produced:
+            for dimension, value in output.entities:
                 values.setdefault(dimension, set()).add(value)
     stages = {job.stage[:depth] for job in dag.jobs for depth in range(1, len(job.stage) + 1)}
     for product in selection.products:
@@ -79,10 +79,10 @@ def _check_names(dag: Dag, selection: Selection) -> None:
 def _matches(job: Job, selection: Selection) -> bool:
     if selection.stages and not any(job.stage[:len(stage)] == stage for stage in selection.stages):
         return False
-    for made in job.made:
-        if selection.products and made.product not in selection.products:
+    for output in job.produced:
+        if selection.products and output.product not in selection.products:
             continue
-        if selection.only and not any(set(group) <= set(made.entities) for group in selection.only):
+        if selection.only and not any(set(group) <= set(output.entities) for group in selection.only):
             continue
         return True
     return False
