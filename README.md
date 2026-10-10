@@ -1,6 +1,6 @@
 # spit-bash
 
-`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 to 6; format 5 added folder artifacts, and format 6 [checks](#checks).
+`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 to 8; format 5 added folder artifacts, format 6 [checks](#checks), format 7 where jobs come from, and format 8 each job's [`props`](#resources).
 
 See the [runnable examples](examples/README.md) for complete recipes, input files, commands, and expected output.
 
@@ -59,6 +59,23 @@ SPIT writes the absolute dataset `root` into a DAG when it knows it. If `root` i
 `plan` reports `run`, `check`, `skip`, or `blocked` for each job, and exits 1 if any job is blocked. `plan --json` prints the same as JSON. `run` makes the same plan and runs every job that is not current or blocked. It runs each job's input checks and `verify` commands in order, then its main command, then its output checks, and only starts a dependent after its producers finish successfully. Independent jobs run together, up to `-j` processes, which defaults to the number of CPUs. Commands are passed as argument arrays directly to the operating system; no shell parses them. Output parent directories are created when a job starts. A command must create every declared output file, or [folder](#folders), to count as successful.
 
 A blocked job blocks the jobs that depend on it, but not the rest of the plan: `run` still runs every other job, then exits 1. A job is blocked when an external input is missing, when the program its command, a `verify` command or a check starts with cannot be found, or when a job it depends on is blocked. Programs are looked up on `PATH`, from SPIT's `executables` list; a program named by a path, such as `bin/check`, is looked up from the root.
+
+## Resources
+
+A DAG of format 8 gives each job `props`: `key=value` pairs from the pipeline's `with` lines, which SPIT carries without reading. `spit-bash` reads two, and ignores the rest:
+
+| Prop | Meaning |
+| --- | --- |
+| `cpus` | A whole number of processors, at least 1. The default is 1. |
+| `mem` | Memory, as a number with an optional `K`, `M`, `G` or `T`, such as `8G`. The default is none. |
+
+`-j` is the number of processors the jobs share (the number of CPUs by default), and a job holds its `cpus` of them while it runs. `--mem SIZE` is the memory they share; without it memory is not limited, and a job's `mem` is not used. A job waits until its share is free, and a job that asks for more than the whole pool runs alone with all of it. Independent jobs that fit together still run together, so a pool of 8 runs an 8-processor job alone, or two 4-processor jobs, or eight with no props. A job that runs only its checks takes one processor. A `cpus` or `mem` that cannot be read makes the DAG invalid, with the job's number in the message.
+
+```sh
+spit-bash run dataset.spitin -j 16 --mem 64G
+```
+
+Props are not part of a job's fingerprint, so changing a job's `cpus` or `mem` does not rerun it.
 
 ## Folders
 

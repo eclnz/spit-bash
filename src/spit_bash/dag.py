@@ -10,6 +10,7 @@ from typing import Iterator, TextIO
 
 from pydantic import ValidationError
 
+from .resources import parse_cpus, parse_size
 from .schema import Artifact, Command, DirPart, PathPart, SpitDag, StemPart
 
 
@@ -53,6 +54,9 @@ class Job:
     command: tuple[str, ...] | None
     verify: tuple[tuple[str, ...], ...]
     checks: tuple[Check, ...] = ()
+    # The processors and memory (bytes) the job asks for; None for no memory.
+    cpus: int = 1
+    memory: int | None = None
 
     @property
     def before(self) -> tuple[Check, ...]:
@@ -143,9 +147,18 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     jobs = []
     seen_ids: set[int] = set()
     producers: dict[str, int] = {}
+    if (document.pipeline_files is not None) != (document.version >= 7) or (document.calls is not None) != (document.version >= 7):
+        raise DagError("`pipeline_files` and `calls` came with version 7, and every DAG of one has them")
     for item in document.jobs:
         if item.id in seen_ids:
             raise DagError(f"duplicate job id: {item.id}")
+        if (item.props is not None) != (document.version >= 8):
+            raise DagError(f"job {item.id}: `props` came with version 8, and every job of one has them")
+        try:
+            cpus = parse_cpus(item.props["cpus"]) if item.props and "cpus" in item.props else 1
+            memory = parse_size(item.props["mem"]) if item.props and "mem" in item.props else None
+        except ValueError as exc:
+            raise DagError(f"job {item.id}: {exc}") from exc
         if (item.checks is not None) != (document.version >= 6):
             raise DagError(f"job {item.id}: `checks` came with version 6, and every job of one has them")
         inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
@@ -170,6 +183,8 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             depends_on=tuple(item.depends_on),
             command=None if item.command is None else _command(item.command),
             verify=tuple(_command(command) for command in item.verify),
+            cpus=cpus,
+            memory=memory,
             checks=tuple(
                 Check(check.when, check.check, check.port, check.path, _command(check.command))
                 for check in item.checks or ()

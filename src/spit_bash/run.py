@@ -14,6 +14,7 @@ from typing import IO
 
 from .dag import Check, Dag, Job
 from .plan import Decision, RunRecord, State, Status, job_key, stamps
+from .resources import Pool
 
 LOG_TAIL_LINES = 20
 
@@ -85,9 +86,8 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
-async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path) -> tuple[Result, ...]:
+async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, pool: Pool, logs: Path) -> tuple[Result, ...]:
     """Run every job planned to run; stop them all if the process gets SIGTERM."""
-    semaphore = asyncio.Semaphore(workers)
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
 
@@ -98,7 +98,9 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                 result = await tasks[dependency]
                 if result.error:
                     return Result(job, f"dependency {dependency} failed")
-        async with semaphore:
+        # A check alone runs on the files a job already has, so it takes one processor.
+        share = (1, None) if decision.status is Status.CHECK else (job.cpus, job.memory)
+        async with pool.hold(*share):
             if decision.status is Status.CHECK:
                 return await check_one(job)
             before = stamps(dag, job.inputs)

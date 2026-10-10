@@ -12,6 +12,7 @@ from pathlib import Path
 
 from spit_bash.dag import load_dag
 from spit_bash.plan import Status, plan
+from spit_bash.resources import Pool
 from spit_bash.run import execute
 from support import FIXTURE, command, document, job, read, run, sample, state_at
 
@@ -99,7 +100,7 @@ class RunTests(unittest.TestCase):
             pid_file = root / "out.txt.pid"
 
             async def cancel_once_started():
-                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, 1, root / "logs"))
+                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Pool(1), root / "logs"))
                 while not pid_file.exists() or not pid_file.read_text():
                     await asyncio.sleep(0.01)
                 task.cancel()

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .dag import Dag, DagError, load_dag
 from .plan import State, Status, adopt, plan
+from .resources import Pool, parse_size
 from .run import execute, log_tail
 from .selection import Selection, parse_only, parse_stage, select
 
@@ -67,7 +68,11 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
             command.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1,
-                                 help="maximum concurrent jobs (default: the number of CPUs)")
+                                 help="processors to share between jobs: a job takes its `cpus` prop of them, one if it has none\n"
+                                      "(default: the number of CPUs)")
+            command.add_argument("--mem", metavar="SIZE",
+                                 help="memory to share between jobs, such as 64G: a job takes its `mem` prop of it\n"
+                                      "(default: no limit)")
             command.add_argument("--logs", help="folder for job logs (default: ROOT/.spit-bash/logs)")
     return parser
 
@@ -129,6 +134,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.action is Action.RUN and args.jobs < 1:
         parser.error("--jobs must be at least 1")
+    try:
+        memory = parse_size(args.mem, "--mem") if args.action is Action.RUN and args.mem else None
+    except ValueError as exc:
+        parser.error(str(exc))
     state: State | None = None
     try:
         selection = _selection(args)
@@ -170,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
 
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs))
+            results = asyncio.run(execute(dag, decisions, state, Pool(args.jobs, memory), logs))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM

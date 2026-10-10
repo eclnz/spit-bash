@@ -8,6 +8,7 @@ from pathlib import Path
 
 from spit_bash.dag import load_dag
 from spit_bash.plan import State, plan
+from spit_bash.resources import Pool
 from spit_bash.run import execute
 
 FIXTURE = Path(__file__).parent / "fixtures" / "command_demo.spitdag"
@@ -67,7 +68,7 @@ def read(data, root=None):
 
 def run(dag, state, workers=2, force=False):
     decisions = plan(dag, state, force)
-    results = asyncio.run(execute(dag, decisions, state, workers, dag.root / ".spit-bash" / "logs"))
+    results = asyncio.run(execute(dag, decisions, state, Pool(workers), dag.root / ".spit-bash" / "logs"))
     state.close()
     return decisions, results
 
