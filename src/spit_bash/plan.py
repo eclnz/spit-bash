@@ -14,6 +14,7 @@ from typing import IO, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .content import content_hash
 from .dag import Dag, DagError, Job
 
 
@@ -81,13 +82,18 @@ class RunRecord(BaseModel):
     # The checks the job passed with on these files, as `Job.checks_key`
     # gives them; None for no checks, and for a job adopted without running any.
     checks: str | None = None
+    # What each file or folder held, as `content.content_hash` gives it, so a
+    # file that was only touched is not a change; None when the run did not hash.
+    input_hashes: dict[str, str] | None = None
+    output_hashes: dict[str, str] | None = None
 
 
 class StateHeader(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     # Version 3 records the checks each job passed; a version 2 record has none.
-    version: Literal[2, 3]
+    # Version 4 records the hash of each file; an older record has none.
+    version: Literal[2, 3, 4]
 
 
 class StateEntry(BaseModel):
@@ -167,7 +173,7 @@ class State:
             self._log.close()
             self._log = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [StateHeader(version=3).model_dump_json()]
+        lines = [StateHeader(version=4).model_dump_json()]
         lines.extend(StateEntry(key=key, record=record).model_dump_json() for key, record in sorted(self.jobs.items()))
         fd, temporary = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:
@@ -201,6 +207,25 @@ class Decision:
     job: Job
     status: Status
     reason: str
+    # A current job whose files were touched but not changed: its record with the
+    # files' new stamps, which `run` stores so the next plan need not hash them.
+    refresh: RunRecord | None = None
+
+
+def hashes(dag: Dag, paths: tuple[str, ...]) -> dict[str, str]:
+    return {path: h for path in paths if (h := content_hash(str(dag.path(path)), path in dag.folders)) is not None}
+
+
+def _unchanged(dag: Dag, paths: tuple[str, ...], now: dict[str, list[int] | None],
+               recorded: dict[str, list[int]], recorded_hashes: dict[str, str] | None, hashing: bool) -> bool:
+    """Whether these files are as the record has them: by stamp, else, where they differ, by content."""
+    differing = [path for path in paths if now[path] != recorded.get(path)]
+    if not differing:
+        return True
+    if not hashing or not recorded_hashes:
+        return False
+    return all(path in recorded_hashes and recorded_hashes[path] == content_hash(str(dag.path(path)), path in dag.folders)
+               for path in differing)
 
 
 def _missing_programs(dag: Dag) -> set[str]:
@@ -217,7 +242,7 @@ def _missing_programs(dag: Dag) -> set[str]:
     return missing
 
 
-def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
+def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
     missing_external = {path for path in dag.external_inputs if stamp(dag.path(path), path in dag.folders) is None}
@@ -253,19 +278,24 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
             decision = Decision(job, Status.RUN, "forced")
         else:
             record = state.jobs.get(job_key(job))
+            now_in, now_out = stamps(dag, job.inputs), stamps(dag, job.outputs)
             if record is None:
                 decision = Decision(job, Status.RUN, "no successful run recorded")
             elif record.fingerprint != job.fingerprint:
                 decision = Decision(job, Status.RUN, "job fingerprint changed")
-            elif record.inputs != stamps(dag, job.inputs):
+            elif not _unchanged(dag, job.inputs, now_in, record.inputs, record.input_hashes, hashing):
                 decision = Decision(job, Status.RUN, "input changed")
-            elif record.outputs != stamps(dag, job.outputs):
+            elif not _unchanged(dag, job.outputs, now_out, record.outputs, record.output_hashes, hashing):
                 decision = Decision(job, Status.RUN, "output changed")
-            elif record.checks != job.checks_key:
-                reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
-                decision = Decision(job, Status.CHECK, reason)
             else:
-                decision = Decision(job, Status.SKIP, "current")
+                # Touched files hold what they held: keep the new stamps.
+                refresh = None if (now_in, now_out) == (record.inputs, record.outputs) else record.model_copy(
+                    update={"inputs": now_in, "outputs": now_out})
+                if record.checks != job.checks_key:
+                    reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
+                    decision = Decision(job, Status.CHECK, reason, refresh)
+                else:
+                    decision = Decision(job, Status.SKIP, "current", refresh)
         if decision.status in (Status.RUN, Status.CHECK):
             commands = [check.command for check in job.checks]
             if decision.status is Status.RUN:
@@ -276,6 +306,13 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
         decisions.append(decision)
         by_id[job.id] = decision
     return tuple(decisions)
+
+
+def apply_refreshes(decisions: tuple[Decision, ...], state: State) -> None:
+    """Store the new stamps of jobs whose files were touched but not changed."""
+    for decision in decisions:
+        if decision.refresh is not None and decision.status in (Status.SKIP, Status.CHECK):
+            state.record(job_key(decision.job), decision.refresh)
 
 
 class AdoptStatus(Enum):
