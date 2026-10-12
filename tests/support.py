@@ -14,7 +14,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "command_demo.spitdag"
 
 
 def artifact(path):
-    return {"product": path, "entities": {}, "type": None, "path": path}
+    return {"product": path, "entities": {}, "type": None, "path": path, "kind": "file"}
 
 
 def command(script, *paths):
@@ -27,31 +27,25 @@ def job(id, inputs, output, script, depends_on=(), dependents=(), fingerprint=No
         "stage": [], "dependents": list(dependents),
         "inputs": {"input": [artifact(path) for path in inputs]},
         "outputs": {"output": artifact(output)},
-        "depends_on": list(depends_on), "verify": [],
+        "depends_on": list(depends_on), "verify": [], "checks": [], "origin": None,
         "command": command(script, *inputs, output),
     }
 
 
 def document(root, jobs, external_inputs):
     return {
-        "version": 4,
-        "generator": {"name": "spit", "version": "0.2.1"},
+        "version": 7,
+        "generator": {"name": "spit", "version": "0.2.2"},
         "root": None if root is None else str(root),
         "external_inputs": [artifact(path) for path in external_inputs],
         "targets": [],
         "executables": [],
         "removed": [],
         "left_out": [],
+        "pipeline_files": [],
+        "calls": [],
         "jobs": jobs,
     }
-
-
-def as_version_seven(data, calls=()):
-    """Give a document the fields version 7 added: the pipeline's files, its calls, and each job's origin."""
-    data = dict(data, version=7, calls=list(calls),
-                pipeline_files=[{"path": "act.spit", "blob": "9f2c0e5d1c4b7a3e8f6d2b1a0c9e8d7f6a5b4c3d"}])
-    data["jobs"] = [dict(item, origin=None, checks=[]) for item in data["jobs"]]
-    return data
 
 
 UPPER = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().upper())"

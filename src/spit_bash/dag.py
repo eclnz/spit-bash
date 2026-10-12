@@ -119,15 +119,7 @@ def _artifacts(document: SpitDag) -> Iterator[Artifact]:
 
 
 def _check_origins(document: SpitDag) -> None:
-    """Version 7 says where jobs came from; hold it to its own references, and keep older DAGs without it."""
-    if document.version < 7:
-        if document.pipeline_files is not None or document.calls is not None:
-            raise DagError("`pipeline_files` and `calls` came with version 7")
-        if any("origin" in item.model_fields_set for item in document.jobs):
-            raise DagError("`origin` came with version 7")
-        return
-    if document.pipeline_files is None or document.calls is None:
-        raise DagError("a version 7 DAG has `pipeline_files` and `calls`")
+    """Hold the calls and origins to their own references."""
     files, calls = len(document.pipeline_files), document.calls
     for index, call in enumerate(calls):
         if call.file >= files or call.at.file >= files:
@@ -135,8 +127,6 @@ def _check_origins(document: SpitDag) -> None:
         if call.parent is not None and call.parent >= index:
             raise DagError(f"call {index} must name an earlier call as its parent")
     for item in document.jobs:
-        if "origin" not in item.model_fields_set:
-            raise DagError(f"job {item.id}: `origin` came with version 7, and every job of one has it")
         if item.origin is not None and item.origin.call >= len(calls):
             raise DagError(f"job {item.id}: origin names a call that is not in `calls`")
 
@@ -153,10 +143,6 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     if not root.is_dir():
         raise DagError(f"dataset root is not a directory: {root}")
 
-    if document.version == 4 and any(
-        artifact.kind == "folder" for artifact in _artifacts(document)
-    ):
-        raise DagError("a version 4 DAG has no folders; `kind` came with version 5")
     folders = frozenset(artifact.path for artifact in _artifacts(document) if artifact.kind == "folder")
     for artifact in _artifacts(document):
         if (artifact.kind == "folder") != (artifact.path in folders):
@@ -170,8 +156,6 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     for item in document.jobs:
         if item.id in seen_ids:
             raise DagError(f"duplicate job id: {item.id}")
-        if (item.checks is not None) != (document.version >= 6):
-            raise DagError(f"job {item.id}: `checks` came with version 6, and every job of one has them")
         inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
         outputs = tuple(artifact.path for artifact in item.outputs.values())
         if len(item.depends_on) != len(set(item.depends_on)) or any(dep not in seen_ids for dep in item.depends_on):
@@ -196,10 +180,10 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             verify=tuple(_command(command) for command in item.verify),
             checks=tuple(
                 Check(check.when, check.check, check.port, check.path, _command(check.command))
-                for check in item.checks or ()
+                for check in item.checks
             ),
         ))
-        for check in item.checks or ():
+        for check in item.checks:
             ports = item.inputs if check.when == "before" else {k: [v] for k, v in item.outputs.items()}
             if not any(artifact.path == check.path for artifact in ports.get(check.port, ())):
                 raise DagError(f"job {item.id}: check {check.check} names {check.path}, "
