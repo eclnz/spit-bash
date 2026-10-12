@@ -86,6 +86,9 @@ class RunRecord(BaseModel):
     # file that was only touched is not a change; None when the run did not hash.
     input_hashes: dict[str, str] | None = None
     output_hashes: dict[str, str] | None = None
+    # The content of each program the job's commands start with, as `program_hashes`
+    # gives it; None when the run did not look, which is unknown, not changed.
+    programs: dict[str, str] | None = None
 
 
 class StateHeader(BaseModel):
@@ -231,25 +234,50 @@ def _unchanged(dag: Dag, paths: tuple[str, ...], now: dict[str, list[int] | None
                for path in differing)
 
 
+def resolve_program(dag: Dag, name: str) -> Path | None:
+    """The file a command that starts with `name` runs, or None when it cannot be run.
+
+    SPIT leaves a program named by a path out of `executables`. It is run from
+    the root, so it is looked for there.
+    """
+    if "/" in name:
+        program = dag.root / name
+        return program if program.is_file() and os.access(program, os.X_OK) else None
+    found = shutil.which(name)
+    return None if found is None else Path(found)
+
+
+def job_programs(job: Job) -> tuple[str, ...]:
+    """The programs a job's commands, verify commands and checks start with, once each."""
+    commands = (job.command, *job.verify, *(check.command for check in job.checks))
+    return tuple(dict.fromkeys(command[0] for command in commands if command is not None))
+
+
+def program_hashes(dag: Dag) -> dict[str, str]:
+    """The content hash of each program the DAG's jobs start commands with, once each.
+
+    A program that cannot be found is left out: `plan` blocks the jobs that need it.
+    """
+    result: dict[str, str] = {}
+    for name in dict.fromkeys(name for job in dag.jobs for name in job_programs(job)):
+        program = resolve_program(dag, name)
+        if program is not None and (value := content_hash(str(program))) is not None:
+            result[name] = value
+    return result
+
+
 def _missing_programs(dag: Dag) -> set[str]:
     """Programs that commands start with but that cannot be run."""
-    missing = {name for name in dag.executables if shutil.which(name) is None}
-    for job in dag.jobs:
-        for command in (job.command, *job.verify, *(check.command for check in job.checks)):
-            # SPIT leaves a program named by a path out of `executables`. It is
-            # run from the root, so check it there.
-            if command is not None and "/" in command[0] and command[0] not in missing:
-                program = dag.root / command[0]
-                if not (program.is_file() and os.access(program, os.X_OK)):
-                    missing.add(command[0])
-    return missing
+    names = dict.fromkeys((*dag.executables, *(name for job in dag.jobs for name in job_programs(job))))
+    return {name for name in names if resolve_program(dag, name) is None}
 
 
 # A job planned with one of these will have its inputs rewritten, or may.
 UPSTREAM = (Status.RUN, Status.MAYBE)
 
 
-def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool) -> Decision:
+def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool,
+          programs: dict[str, str] | None = None) -> Decision:
     """Whether a command job is current on the files it has now, ignoring the jobs upstream.
 
     `plan` asks it for every job, and `run` asks it again for a job planned
@@ -267,6 +295,12 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool) -> Decis
         return Decision(job, Status.RUN, "no successful run recorded")
     if record.fingerprint != job.fingerprint:
         return Decision(job, Status.RUN, "job fingerprint changed")
+    if programs is not None and record.programs is not None:
+        changed = [name for name in job_programs(job) if name in programs and name in record.programs
+                   and programs[name] != record.programs[name]]
+        # A program that was not recorded, or is not found now, is no change: `plan` blocks the latter.
+        if changed:
+            return Decision(job, Status.RUN, "program changed: " + ", ".join(changed))
     if not _unchanged(dag, job.inputs, now_in, record.inputs, record.input_hashes, hashing):
         return Decision(job, Status.RUN, "input changed")
     if not _unchanged(dag, job.outputs, now_out, record.outputs, record.output_hashes, hashing):
@@ -280,7 +314,8 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool) -> Decis
     return Decision(job, Status.SKIP, "current", refresh)
 
 
-def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> tuple[Decision, ...]:
+def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True,
+         programs: dict[str, str] | None = None) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
     missing_external = {path for path in dag.external_inputs if stamp(dag.path(path), path in dag.folders) is None}
@@ -310,11 +345,11 @@ def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> t
             if not hashing or any(value is None for value in stamps(dag, job.inputs).values()):
                 decision = Decision(job, Status.RUN, "dependency will run")
             else:
-                decision = judge(dag, job, state, force, hashing)
+                decision = judge(dag, job, state, force, hashing, programs)
                 if decision.status in (Status.SKIP, Status.CHECK):
                     decision = Decision(job, Status.MAYBE, "runs if an upstream output changes")
         else:
-            decision = judge(dag, job, state, force, hashing)
+            decision = judge(dag, job, state, force, hashing, programs)
         if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE):
             commands = [check.command for check in job.checks]
             if decision.status in (Status.RUN, Status.MAYBE):
@@ -325,6 +360,11 @@ def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> t
         decisions.append(decision)
         by_id[job.id] = decision
     return tuple(decisions)
+
+
+def _used(job: Job, programs: dict[str, str] | None) -> dict[str, str] | None:
+    """The part of `programs` this job's commands start with, or None when programs were not looked at."""
+    return None if programs is None else {name: programs[name] for name in job_programs(job) if name in programs}
 
 
 def apply_refreshes(decisions: tuple[Decision, ...], state: State) -> None:
@@ -346,10 +386,11 @@ class Adoption:
     reason: str
 
 
-def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
+def adopt(dag: Dag, state: State, programs: dict[str, str] | None = None) -> tuple[Adoption, ...]:
     """Record every command job whose files exist as current, without running it.
 
-    No checks are recorded, so the next run checks the adopted files.
+    No checks are recorded, so the next run checks the adopted files. The
+    programs found now are recorded as the ones that made them.
     """
     adoptions = []
     for job in dag.jobs:
@@ -362,7 +403,8 @@ def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
         elif any(value is None for value in inputs.values()):
             adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
         else:
-            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=inputs, outputs=outputs))
+            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=inputs, outputs=outputs,
+                                                 programs=_used(job, programs)))
             adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
         adoptions.append(adoption)
     return tuple(adoptions)

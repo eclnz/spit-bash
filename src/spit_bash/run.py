@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import IO
 
 from .dag import Check, Dag, Job
-from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
+from .plan import Decision, RunRecord, State, Status, _used, hashes, job_key, judge, stamps
 
 LOG_TAIL_LINES = 20
 
@@ -88,7 +88,7 @@ def _clear(path: Path) -> None:
 
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path,
-                  hashing: bool = True) -> tuple[Result, ...]:
+                  hashing: bool = True, programs: dict[str, str] | None = None) -> tuple[Result, ...]:
     """Run every job planned to run; stop them all if the process gets SIGTERM."""
     semaphore = asyncio.Semaphore(workers)
     tasks: dict[int, asyncio.Task[Result]] = {}
@@ -103,7 +103,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                     return Result(job, f"dependency {dependency} failed")
         if decision.status is Status.MAYBE:
             # Off the event loop: it may hash files the upstream jobs rewrote.
-            settled = await asyncio.to_thread(judge, dag, job, state, False, hashing)
+            settled = await asyncio.to_thread(judge, dag, job, state, False, hashing, programs)
             if settled.status is Status.BLOCKED:
                 return Result(job, settled.reason)
             if settled.status is Status.SKIP:
@@ -157,7 +157,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
             input_hashes = await asyncio.to_thread(hashes, dag, job.inputs) if hashing else None
             output_hashes = await asyncio.to_thread(hashes, dag, job.outputs) if hashing else None
             record = RunRecord(fingerprint=job.fingerprint, inputs=after, outputs=outputs, checks=job.checks_key,
-                               input_hashes=input_hashes, output_hashes=output_hashes)
+                               input_hashes=input_hashes, output_hashes=output_hashes, programs=_used(job, programs))
             state.record(job_key(job), record)
             print(f"[{job.id}] done", flush=True)
             return Result(job, None, path)

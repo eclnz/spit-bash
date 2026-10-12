@@ -83,6 +83,12 @@ A successful run records the checks the job passed. SPIT leaves checks out of a 
 
 Each job's output, from its checks, its `verify` commands and its command, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
 
+## Programs
+
+SPIT's fingerprint covers a command's text, not the program it starts, so upgrading `sort`, or editing a script a command runs, would leave a job looking current. Each run hashes the file every command, `verify` command and check starts with: found on `PATH`, or for a name with a `/` under the dataset root. A job records the hashes of its programs when it succeeds, and `plan` marks it `run`, with the reason `program changed: sort`, when one of them differs. Each program is hashed once per command, however many jobs use it. A job recorded before programs were tracked has none, which counts as unknown, not changed, so upgrading spit-bash reruns nothing. `adopt` records the programs it finds now.
+
+Only the file a command starts with is hashed. An interpreter is the same file while the packages it loads change, and a script passed as an argument, as in `python3 tool.py`, is not seen; start the script itself, or list what it reads as an input. A program that cannot be found blocks the jobs that must run, as before, and does not rerun one that is current. `--ignore-programs` on `plan`, `run` and `adopt` neither compares nor records programs, for a machine where programs are updated often and outputs are not meant to change.
+
 ## Stopping at an unchanged output
 
 A job that reads the output of a job that will run used to run too. Now it is `maybe` when its own record is current: the same fingerprint, files and checks as the last successful run. `plan` says how many jobs will run and how many more may. `run` waits for the jobs a `maybe` job reads from, then compares the files it now reads with its record, by size and time and, where those differ, by content. If the producer wrote the same bytes, the job is skipped, its new stamps are stored, and its own dependents are settled the same way. If they differ, it runs.
@@ -95,7 +101,7 @@ Ctrl-C (SIGINT) or SIGTERM, as a cluster scheduler sends at a time limit, stops 
 
 ## Existing paths and reruns
 
-The runner records successful jobs in `ROOT/.spit-bash/state.jsonl`, keyed by their output paths relative to the root, so a dataset keeps its state when it moves. A job runs if an output is missing, its SPIT fingerprint changed, an input or output file changed, or a producer will run. It skips only when its recorded fingerprint still matches and its files are as recorded: the same size and modification time, or, where those differ, the same content. A `touch`, a `git checkout` or a copy that leaves the bytes alone does not rerun a job. `--force` reruns all jobs that have commands.
+The runner records successful jobs in `ROOT/.spit-bash/state.jsonl`, keyed by their output paths relative to the root, so a dataset keeps its state when it moves. A job runs if an output is missing, its SPIT fingerprint changed, a program its commands start with changed, an input or output file changed, or a producer will run. It skips only when its recorded fingerprint still matches and its files are as recorded: the same size and modification time, or, where those differ, the same content. A `touch`, a `git checkout` or a copy that leaves the bytes alone does not rerun a job. `--force` reruns all jobs that have commands.
 
 Existing outputs with no successful record are run again; use `plan` to inspect this before `run`. For a dataset whose outputs were made before spit-bash was used, `spit-bash adopt` records every job whose inputs and outputs all exist as current, without running it. It trusts the files as they are, so adopt only outputs you know were made by the commands in the DAG.
 
