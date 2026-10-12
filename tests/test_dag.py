@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash.dag import DagError, load_dag
-from support import FIXTURE, as_version_seven, read, sample
+from support import FIXTURE, read, sample
 
 
 class LoadTests(unittest.TestCase):
@@ -41,7 +41,7 @@ class LoadTests(unittest.TestCase):
                 read(data)
             self.assertEqual(read(data, directory).root, Path(directory).resolve())
 
-    def test_reads_real_spit_version_four_fixture(self):
+    def test_reads_real_spit_version_seven_fixture(self):
         with tempfile.TemporaryDirectory() as directory, FIXTURE.open(encoding="utf-8") as source:
             dag = load_dag(source, directory)
             self.assertEqual(len(dag.jobs), 5)
@@ -50,39 +50,43 @@ class LoadTests(unittest.TestCase):
             self.assertEqual(dag.executables, ("sort",))
 
 
-    def test_reads_version_seven_origins_and_checks_their_references(self):
+    def test_checks_the_references_of_calls_and_origins(self):
         call = {"operation": "tidy", "instance": "tidied", "parent": None, "file": 0, "at": {"file": 0, "line": 13}}
+        files = [{"path": "act.spit", "blob": "9f2c0e5d1c4b7a3e8f6d2b1a0c9e8d7f6a5b4c3d"}]
         with tempfile.TemporaryDirectory() as directory:
-            data = as_version_seven(sample(Path(directory)), [call])
-            data["jobs"][0]["origin"] = {"call": 0, "line": 10}
-            self.assertEqual(len(read(data).jobs), 2)
+            def made(calls, origin=None):
+                data = sample(Path(directory))
+                data["pipeline_files"], data["calls"] = files, calls
+                data["jobs"][0]["origin"] = origin
+                return data
 
-            bad = as_version_seven(sample(Path(directory)), [call])
-            bad["jobs"][0]["origin"] = {"call": 1, "line": 10}
+            self.assertEqual(len(read(made([call], {"call": 0, "line": 10})).jobs), 2)
             with self.assertRaisesRegex(DagError, "origin names a call"):
-                read(bad)
-            bad = as_version_seven(sample(Path(directory)), [dict(call, file=1)])
+                read(made([call], {"call": 1, "line": 10}))
             with self.assertRaisesRegex(DagError, "not in `pipeline_files`"):
-                read(bad)
-            bad = as_version_seven(sample(Path(directory)), [dict(call, parent=0)])
+                read(made([dict(call, file=1)]))
             with self.assertRaisesRegex(DagError, "earlier call"):
-                read(bad)
+                read(made([dict(call, parent=0)]))
 
-    def test_version_seven_fields_are_required_there_and_only_there(self):
+    def test_only_version_seven_is_read_and_its_fields_are_required(self):
         with tempfile.TemporaryDirectory() as directory:
-            data = as_version_seven(sample(Path(directory)))
-            del data["calls"]
-            with self.assertRaisesRegex(DagError, "has `pipeline_files` and `calls`"):
-                read(data)
-            data = as_version_seven(sample(Path(directory)))
+            for field in ("pipeline_files", "calls"):
+                data = sample(Path(directory))
+                del data[field]
+                with self.assertRaisesRegex(DagError, field):
+                    read(data)
+            data = sample(Path(directory))
             del data["jobs"][1]["origin"]
-            with self.assertRaisesRegex(DagError, "every job of one has it"):
+            with self.assertRaisesRegex(DagError, "origin"):
                 read(data)
-            data = as_version_seven(sample(Path(directory)))
+            data = sample(Path(directory))
+            del data["jobs"][1]["checks"]
+            with self.assertRaisesRegex(DagError, "checks"):
+                read(data)
+            data = sample(Path(directory))
             data["version"] = 6
-            with self.assertRaisesRegex(DagError, "came with version 7"):
+            with self.assertRaisesRegex(DagError, "version"):
                 read(data)
-
 
 if __name__ == "__main__":
     unittest.main()

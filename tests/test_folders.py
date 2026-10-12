@@ -1,4 +1,4 @@
-"""Folder artifacts: a version 5 DAG may mark an artifact `"kind": "folder"`."""
+"""Folder artifacts: an artifact may be marked `"kind": "folder"`."""
 
 import os
 import tempfile
@@ -35,15 +35,14 @@ def folders_dag(root):
         {
             "id": 1, "operation": "upper", "fingerprint": "a" * 16, "stage": [], "dependents": [2],
             "inputs": {"input": [folder("pages")]}, "outputs": {"output": folder("work/upper")},
-            "depends_on": [], "verify": [], "command": command(COPY_UPPER, "pages", "work/upper"),
+            "depends_on": [], "verify": [], "checks": [], "origin": None, "command": command(COPY_UPPER, "pages", "work/upper"),
         },
         {
             "id": 2, "operation": "join", "fingerprint": "b" * 16, "stage": [], "dependents": [],
             "inputs": {"input": [folder("work/upper")]}, "outputs": {"output": artifact("book.txt")},
-            "depends_on": [1], "verify": [], "command": command(JOIN, "work/upper", "book.txt"),
+            "depends_on": [1], "verify": [], "checks": [], "origin": None, "command": command(JOIN, "work/upper", "book.txt"),
         },
     ], [])
-    data["version"] = 5
     data["external_inputs"] = [folder("pages")]
     return data
 
@@ -59,11 +58,6 @@ class FolderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             dag = read(folders_dag(Path(directory)))
             self.assertEqual(dag.folders, frozenset({"pages", "work/upper"}))
-
-            data = folders_dag(Path(directory))
-            data["version"] = 4
-            with self.assertRaisesRegex(DagError, "version 4 DAG has no folders"):
-                read(data)
 
             data = folders_dag(Path(directory))
             data["jobs"][1]["inputs"]["input"] = [artifact("work/upper")]
