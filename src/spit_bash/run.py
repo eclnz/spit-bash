@@ -16,6 +16,8 @@ from .dag import Check, Dag, Job
 from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
 
 LOG_TAIL_LINES = 20
+# Files this small, all of a job's together, are hashed on the event loop.
+INLINE_HASH_BYTES = 1 << 20
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,10 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
+    return hashes(dag, job.inputs), hashes(dag, job.outputs)
+
+
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path,
                   hashing: bool = True) -> tuple[Result, ...]:
     """Run every job planned to run; stop them all if the process gets SIGTERM."""
@@ -153,14 +159,20 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                 error = await _checks(dag, job.after, log)
                 if error:
                     return Result(job, error, path)
-            # Off the event loop, so hashing big files does not hold up other jobs.
-            input_hashes = await asyncio.to_thread(hashes, dag, job.inputs) if hashing else None
-            output_hashes = await asyncio.to_thread(hashes, dag, job.outputs) if hashing else None
-            record = RunRecord(fingerprint=job.fingerprint, inputs=after, outputs=outputs, checks=job.checks_key,
-                               input_hashes=input_hashes, output_hashes=output_hashes)
-            state.record(job_key(job), record)
-            print(f"[{job.id}] done", flush=True)
-            return Result(job, None, path)
+        # With the worker slot freed. Big files are hashed off the event loop, so they
+        # hold up neither another job's start nor the loop; small ones where they are,
+        # since a thread hop costs more than hashing a small file.
+        if not hashing:
+            input_hashes = output_hashes = None
+        elif sum(value[0] for value in (*after.values(), *outputs.values())) < INLINE_HASH_BYTES:
+            input_hashes, output_hashes = _hash_both(dag, job)
+        else:
+            input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
+        record = RunRecord(fingerprint=job.fingerprint, inputs=after, outputs=outputs, checks=job.checks_key,
+                           input_hashes=input_hashes, output_hashes=output_hashes)
+        state.record(job_key(job), record)
+        print(f"[{job.id}] done", flush=True)
+        return Result(job, None, path)
 
     async def check_one(job: Job) -> Result:
         """Run a current job's checks alone, on the files it already has."""
