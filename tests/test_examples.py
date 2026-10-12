@@ -47,7 +47,7 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual(result.stdout.count(" skip "), 5, result.stdout)
 
     def test_steps(self):
-        result = spit_bash("run", str(self.examples / "steps/steps.spitin"))
+        result = spit_bash("run", str(self.examples / "steps/steps.spit"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.examples / "steps/output/tidied/name=fruit.txt").read_text(), "apple\npear\n")
 
