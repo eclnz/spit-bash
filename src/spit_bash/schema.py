@@ -1,4 +1,4 @@
-"""The version 4 to 7 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 7 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
@@ -40,8 +40,7 @@ class Artifact(SchemaModel):
     entities: dict[NonEmpty, str]
     artifact_type: NamedType | VariableType | None = Field(alias="type")
     path: RelativePath
-    # Version 5 added `kind`; every artifact of a version 4 DAG is a file.
-    kind: Literal["file", "folder"] = "file"
+    kind: Literal["file", "folder"]
 
 
 class PathPart(SchemaModel):
@@ -128,15 +127,13 @@ class SpitJob(SchemaModel):
     dependents: list[JobId]
     command: Command | None
     verify: list[Command]
-    # Version 6 added `checks`; a version 4 or 5 DAG has none.
-    checks: list[Check] | None = None
-    # Version 7 added `origin`, null for a step written in the pipeline; a
-    # version 4 to 6 DAG has no such field.
-    origin: Origin | None = None
+    checks: list[Check]
+    # The call and line the job's step came from; null for a step written in the pipeline.
+    origin: Origin | None
 
 
 class SpitDag(SchemaModel):
-    version: Literal[4, 5, 6, 7]
+    version: Literal[7]
     generator: Generator
     root: str | None
     external_inputs: list[Artifact]
@@ -145,6 +142,5 @@ class SpitDag(SchemaModel):
     removed: list[Removal]
     left_out: list[LeftOut]
     jobs: list[SpitJob]
-    # Version 7 added these two; a version 4 to 6 DAG has neither.
-    pipeline_files: list[PipelineFile] | None = None
-    calls: list[Call] | None = None
+    pipeline_files: list[PipelineFile]
+    calls: list[Call]

@@ -1,6 +1,6 @@
 # spit-bash
 
-`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 to 7; format 5 added folder artifacts, format 6 [checks](#checks), and format 7 says which call each job came from, which `spit-bash` checks but does not use.
+`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG format 7 only, and rejects any other version. Format 7 includes [folder artifacts](#folders) and [checks](#checks), and says which call each job came from, which `spit-bash` checks but does not use.
 
 See the [runnable examples](examples/README.md) for complete recipes, input files, commands, and expected output.
 
@@ -62,7 +62,7 @@ A blocked job blocks the jobs that depend on it, but not the rest of the plan: `
 
 ## Folders
 
-A DAG of format 5 marks each artifact as a `file` or a `folder`, for a product SPIT declares with a `/` after its type, such as `source dicom : Dicom / [sub]`. The runner treats a folder as one artifact:
+A DAG marks each artifact as a `file` or a `folder`, for a product SPIT declares with a `/` after its type, such as `source dicom : Dicom / [sub]`. The runner treats a folder as one artifact:
 
 - A source folder must exist as a folder, or the jobs that read it are blocked.
 - Before a job's command runs, and after its `verify` commands pass, the runner removes whatever an earlier run left at each of its output folders. The job owns the folder, since SPIT puts no other artifact inside one, and old files would otherwise mix with the new run's. Then it makes the folder's parent, but not the folder: the tool makes it, as `cp -R` does, and some tools refuse to write into a folder that exists. A tool that needs the folder to exist first, such as `dcm2niix -o`, is wrapped in a script that makes it.
@@ -71,7 +71,7 @@ A DAG of format 5 marks each artifact as a `file` or a `folder`, for a product S
 
 ## Checks
 
-A DAG of format 6 gives each job its `checks`: commands that each test one artifact, which the pipeline declares once with SPIT's `check` and attaches to ports and sources. A `before` check tests an input before the job's `verify` commands; an `after` check tests an output once the command has made it. A failed check fails the job, even when its command exited 0, and the jobs that depend on it do not run:
+A DAG gives each job its `checks`: commands that each test one artifact, which the pipeline declares once with SPIT's `check` and attaches to ports and sources. A `before` check tests an input before the job's `verify` commands; an `after` check tests an output once the command has made it. A failed check fails the job, even when its command exited 0, and the jobs that depend on it do not run:
 
 ```text
 [2] failed: check contains(today) on output output output/copied/day=tuesday.txt failed: exited with status 1
@@ -109,4 +109,4 @@ messie -af .
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-The test fixture under `tests/fixtures/` is actual version 4 output from SPIT's `command_demo` example. `tests/test_examples.py` runs the [examples](examples/README.md) with a real `spit`: set `SPIT` to the binary or put it on `PATH`, or the tests are skipped. CI builds `spit` from SPIT's `dev` branch, where its work merges, for them, on every push and weekly, so a change to SPIT's DAG format fails here. A branch whose name SPIT also has, other than `main` and `dev`, builds SPIT's branch of that name instead, so a change made in both repositories is tested together before SPIT's half merges.
+The test fixture under `tests/fixtures/` is actual version 7 output from SPIT's `command_demo` example. `tests/test_examples.py` runs the [examples](examples/README.md) with a real `spit`: set `SPIT` to the binary or put it on `PATH`, or the tests are skipped. CI builds `spit` from SPIT's `dev` branch, where its work merges, for them, on every push and weekly, so a change to SPIT's DAG format fails here. A branch whose name SPIT also has, other than `main` and `dev`, builds SPIT's branch of that name instead, so a change made in both repositories is tested together before SPIT's half merges.
