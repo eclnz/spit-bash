@@ -40,13 +40,13 @@ class ContentTests(unittest.TestCase):
             # The stored stamp now matches, so it holds even without hashing.
             self.assertEqual(self.statuses(dag, root, hashing=False), [Status.SKIP, Status.SKIP])
 
-    def test_changed_input_runs_its_job_and_the_one_after_it(self):
+    def test_changed_input_runs_its_job_and_may_run_the_one_after_it(self):
         with tempfile.TemporaryDirectory() as directory:
             root, dag = self.ran(directory)
             (root / "source.txt").write_text("HELLO")
             touch(root / "source.txt")
             decisions = plan(dag, state_at(root))
-            self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
+            self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE])
             self.assertEqual(decisions[0].reason, "input changed")
 
     def test_touched_output_is_current_but_an_edited_one_is_not(self):
@@ -73,7 +73,7 @@ class ContentTests(unittest.TestCase):
             state.close()
             self.assertTrue(all(r.input_hashes is None for r in state_at(root).jobs.values()))
             touch(root / "source.txt")
-            self.assertEqual(self.statuses(dag, root), [Status.RUN, Status.RUN])
+            self.assertEqual(self.statuses(dag, root), [Status.RUN, Status.MAYBE])
 
     def test_a_record_made_with_another_hash_is_not_equal(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -83,7 +83,7 @@ class ContentTests(unittest.TestCase):
                 other = {path: "other:" + value.split(":", 1)[1] for path, value in record.input_hashes.items()}
                 state.jobs[key] = record.model_copy(update={"input_hashes": other})
             touch(root / "source.txt")
-            self.assertEqual([d.status for d in plan(dag, state)], [Status.RUN, Status.RUN])
+            self.assertEqual([d.status for d in plan(dag, state)], [Status.RUN, Status.MAYBE])
 
     def test_folder_hash_follows_names_and_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

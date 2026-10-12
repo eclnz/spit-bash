@@ -8,12 +8,12 @@ import shlex
 import shutil
 import signal
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO
 
 from .dag import Check, Dag, Job
-from .plan import Decision, RunRecord, State, Status, hashes, job_key, stamps
+from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
 
 LOG_TAIL_LINES = 20
 
@@ -23,6 +23,8 @@ class Result:
     job: Job
     error: str | None = None
     log: Path | None = None
+    # What a job planned `maybe` turned out to be, once its upstream jobs had finished.
+    settled: Status | None = None
 
 
 def log_path(logs: Path, job: Job) -> Path:
@@ -99,6 +101,22 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                 result = await tasks[dependency]
                 if result.error:
                     return Result(job, f"dependency {dependency} failed")
+        if decision.status is Status.MAYBE:
+            # Off the event loop: it may hash files the upstream jobs rewrote.
+            settled = await asyncio.to_thread(judge, dag, job, state, False, hashing)
+            if settled.status is Status.BLOCKED:
+                return Result(job, settled.reason)
+            if settled.status is Status.SKIP:
+                if settled.refresh is not None:
+                    state.record(job_key(job), settled.refresh)
+                print(f"[{job.id}] skip {job.operation}: upstream output unchanged", flush=True)
+                return Result(job, None, None, Status.SKIP)
+            result = await perform(settled)
+            return replace(result, settled=settled.status)
+        return await perform(decision)
+
+    async def perform(decision: Decision) -> Result:
+        job = decision.job
         async with semaphore:
             if decision.status is Status.CHECK:
                 return await check_one(job)
@@ -170,7 +188,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
     loop.add_signal_handler(signal.SIGTERM, main.cancel)
     try:
         for decision in decisions:
-            if decision.status in (Status.RUN, Status.CHECK):
+            if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE):
                 tasks[decision.job.id] = asyncio.create_task(run_one(decision))
         return tuple(await asyncio.gather(*tasks.values()))
     finally:

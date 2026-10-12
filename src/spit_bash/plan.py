@@ -200,6 +200,9 @@ class Status(Enum):
     CHECK = "check"
     SKIP = "skip"
     BLOCKED = "blocked"
+    # Current as it stands, but a job upstream will run: `run` decides once it
+    # has, and skips this job if what it reads came out the same.
+    MAYBE = "maybe"
 
 
 @dataclass(frozen=True)
@@ -242,6 +245,41 @@ def _missing_programs(dag: Dag) -> set[str]:
     return missing
 
 
+# A job planned with one of these will have its inputs rewritten, or may.
+UPSTREAM = (Status.RUN, Status.MAYBE)
+
+
+def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool) -> Decision:
+    """Whether a command job is current on the files it has now, ignoring the jobs upstream.
+
+    `plan` asks it for every job, and `run` asks it again for a job planned
+    `maybe`, once the jobs it waits for have finished.
+    """
+    if any(value is None for value in stamps(dag, job.outputs).values()):
+        return Decision(job, Status.RUN, "output missing")
+    if any(value is None for value in stamps(dag, job.inputs).values()):
+        return Decision(job, Status.BLOCKED, "input is missing")
+    if force:
+        return Decision(job, Status.RUN, "forced")
+    record = state.jobs.get(job_key(job))
+    now_in, now_out = stamps(dag, job.inputs), stamps(dag, job.outputs)
+    if record is None:
+        return Decision(job, Status.RUN, "no successful run recorded")
+    if record.fingerprint != job.fingerprint:
+        return Decision(job, Status.RUN, "job fingerprint changed")
+    if not _unchanged(dag, job.inputs, now_in, record.inputs, record.input_hashes, hashing):
+        return Decision(job, Status.RUN, "input changed")
+    if not _unchanged(dag, job.outputs, now_out, record.outputs, record.output_hashes, hashing):
+        return Decision(job, Status.RUN, "output changed")
+    # Touched files hold what they held: keep the new stamps.
+    refresh = None if (now_in, now_out) == (record.inputs, record.outputs) else record.model_copy(
+        update={"inputs": now_in, "outputs": now_out})
+    if record.checks != job.checks_key:
+        reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
+        return Decision(job, Status.CHECK, reason, refresh)
+    return Decision(job, Status.SKIP, "current", refresh)
+
+
 def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
@@ -268,37 +306,18 @@ def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> t
                 decision = Decision(job, Status.CHECK, "no command; outputs exist, checking them")
             else:
                 decision = Decision(job, Status.SKIP, "no command; outputs exist")
-        elif any(by_id[dep].status is Status.RUN for dep in job.depends_on):
-            decision = Decision(job, Status.RUN, "dependency will run")
-        elif any(value is None for value in stamps(dag, job.outputs).values()):
-            decision = Decision(job, Status.RUN, "output missing")
-        elif any(value is None for value in stamps(dag, job.inputs).values()):
-            decision = Decision(job, Status.BLOCKED, "input is missing")
-        elif force:
-            decision = Decision(job, Status.RUN, "forced")
-        else:
-            record = state.jobs.get(job_key(job))
-            now_in, now_out = stamps(dag, job.inputs), stamps(dag, job.outputs)
-            if record is None:
-                decision = Decision(job, Status.RUN, "no successful run recorded")
-            elif record.fingerprint != job.fingerprint:
-                decision = Decision(job, Status.RUN, "job fingerprint changed")
-            elif not _unchanged(dag, job.inputs, now_in, record.inputs, record.input_hashes, hashing):
-                decision = Decision(job, Status.RUN, "input changed")
-            elif not _unchanged(dag, job.outputs, now_out, record.outputs, record.output_hashes, hashing):
-                decision = Decision(job, Status.RUN, "output changed")
+        elif any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
+            if not hashing or any(value is None for value in stamps(dag, job.inputs).values()):
+                decision = Decision(job, Status.RUN, "dependency will run")
             else:
-                # Touched files hold what they held: keep the new stamps.
-                refresh = None if (now_in, now_out) == (record.inputs, record.outputs) else record.model_copy(
-                    update={"inputs": now_in, "outputs": now_out})
-                if record.checks != job.checks_key:
-                    reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
-                    decision = Decision(job, Status.CHECK, reason, refresh)
-                else:
-                    decision = Decision(job, Status.SKIP, "current", refresh)
-        if decision.status in (Status.RUN, Status.CHECK):
+                decision = judge(dag, job, state, force, hashing)
+                if decision.status in (Status.SKIP, Status.CHECK):
+                    decision = Decision(job, Status.MAYBE, "runs if an upstream output changes")
+        else:
+            decision = judge(dag, job, state, force, hashing)
+        if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE):
             commands = [check.command for check in job.checks]
-            if decision.status is Status.RUN:
+            if decision.status in (Status.RUN, Status.MAYBE):
                 commands += [job.command, *job.verify]
             programs = sorted({command[0] for command in commands if command is not None} & missing_programs)
             if programs:

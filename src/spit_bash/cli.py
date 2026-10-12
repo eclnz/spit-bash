@@ -170,6 +170,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             for decision in decisions:
                 print(f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}")
+        maybe = sum(decision.status is Status.MAYBE for decision in decisions)
+        if maybe:
+            certain = sum(decision.status is Status.RUN for decision in decisions)
+            print(f"{certain} will run, {maybe} more may, if an upstream output changes", file=sys.stderr)
         if args.action is Action.PLAN:
             return 1 if blocked else 0
 
@@ -183,19 +187,26 @@ def main(argv: list[str] | None = None) -> int:
             print("interrupted; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGINT
         failed = [result for result in results if result.error]
+        failed_ids = {result.job.id for result in failed}
         for result in failed:
             _report_failure(result.job.id, result.error or "", result.log)
+        # What each job came to: a `maybe` job is whatever `run` settled it as.
+        outcome = {result.job.id: result.settled for result in results}
         count = {status: 0 for status in Status}
+        cutoff = 0
         for decision in decisions:
-            count[decision.status] += 1
-        failed_ids = {result.job.id for result in failed}
-        failed_checks = sum(1 for d in decisions if d.status is Status.CHECK and d.job.id in failed_ids)
-        print(
-            f"{count[Status.RUN] - len(failed) + failed_checks} done, "
-            f"{count[Status.CHECK] - failed_checks} checked, {len(failed)} failed, "
-            f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked",
-            file=sys.stderr,
+            status = outcome.get(decision.job.id) or decision.status
+            if decision.job.id in failed_ids:
+                continue
+            count[status] += 1
+            cutoff += decision.status is Status.MAYBE and status is not Status.RUN
+        summary = (
+            f"{count[Status.RUN]} done, {count[Status.CHECK]} checked, {len(failed)} failed, "
+            f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked"
         )
+        if cutoff:
+            summary += f", {cutoff} of the current ones not rerun because upstream output was unchanged"
+        print(summary, file=sys.stderr)
         return 1 if failed or blocked else 0
     except (DagError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

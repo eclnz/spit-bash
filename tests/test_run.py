@@ -49,7 +49,7 @@ class RunTests(unittest.TestCase):
 
             data["jobs"][0]["fingerprint"] = "c" * 16
             decisions = plan(read(data), state_at(root))
-            self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
+            self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE])
             self.assertEqual(decisions[0].reason, "job fingerprint changed")
 
     def test_failed_verify_prevents_command_and_dependent(self):
