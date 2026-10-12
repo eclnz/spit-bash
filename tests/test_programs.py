@@ -105,23 +105,23 @@ class ProgramTests(unittest.TestCase):
 
     def interpreter_job(self, *extra):
         """python3 script.py source out, with the script as an argument and python as the program."""
-        item = tool_job(sys.executable)
-        item["command"] = [[sys.executable], ["lib/script.py"], *extra, [{"path": "source.txt"}], [{"path": "out.txt"}]]
+        item = tool_job(sys.executable, output="py.txt")
+        item["command"] = [[sys.executable], ["lib/script.py"], *extra, [{"path": "source.txt"}], [{"path": "py.txt"}]]
         return read(document(self.root, [item], ["source.txt"]))
 
     def test_a_script_passed_to_an_interpreter_is_part_of_the_job(self):
         script = self.root / "lib/script.py"
         script.parent.mkdir()
-        script.write_text("import sys; open(sys.argv[3], 'w').write(open(sys.argv[2]).read() + '1')")
+        script.write_text("import sys; open(sys.argv[2], 'w').write(open(sys.argv[1]).read() + '1')")
         dag = self.interpreter_job()
         self.assertEqual(job_programs(dag, dag.jobs[0]), (sys.executable, "lib/script.py"))
         run(dag, state_at(self.root), programs=program_hashes(dag))
-        self.assertEqual((self.root / "out.txt").read_text(), "hello1")
-        script.write_text("import sys; open(sys.argv[3], 'w').write(open(sys.argv[2]).read() + '2')")
+        self.assertEqual((self.root / "py.txt").read_text(), "hello1")
+        script.write_text("import sys; open(sys.argv[2], 'w').write(open(sys.argv[1]).read() + '2')")
         decisions = plan(dag, state_at(self.root), programs=program_hashes(dag))
         self.assertEqual([(d.status, d.reason) for d in decisions], [(Status.RUN, "program changed: lib/script.py")])
         run(dag, state_at(self.root), programs=program_hashes(dag))
-        self.assertEqual((self.root / "out.txt").read_text(), "hello2")
+        self.assertEqual((self.root / "py.txt").read_text(), "hello2")
 
     def test_a_file_after_an_equals_sign_counts_but_declared_files_and_other_text_do_not(self):
         (self.root / "conf.yaml").write_text("a: 1")
