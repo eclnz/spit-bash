@@ -95,7 +95,7 @@ class ContentTests(unittest.TestCase):
                       "Path(sys.argv[1]).write_text(t); Path(sys.argv[2]).write_text(t.upper())")
             data = sample(root)
             data["jobs"] = [{
-                "id": 1, "operation": "both", "fingerprint": "1" * 16, "stage": [], "dependents": [], "depends_on": [],
+                "id": 1, "operation": "both", "fingerprint": "1" * 16, "stage": [], "dependents": [], "depends_on": [], "checks": [], "origin": None,
                 "inputs": {"items": [artifact(f"{n}.txt") for n in "abc"]}, "verify": [],
                 "outputs": {"first": artifact("one.txt"), "second": artifact("two.txt")},
                 "command": command(script, "one.txt", "two.txt", "a.txt", "b.txt", "c.txt"),
