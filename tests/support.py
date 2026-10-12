@@ -46,6 +46,14 @@ def document(root, jobs, external_inputs):
     }
 
 
+def as_version_seven(data, calls=()):
+    """Give a document the fields version 7 added: the pipeline's files, its calls, and each job's origin."""
+    data = dict(data, version=7, calls=list(calls),
+                pipeline_files=[{"path": "act.spit", "blob": "9f2c0e5d1c4b7a3e8f6d2b1a0c9e8d7f6a5b4c3d"}])
+    data["jobs"] = [dict(item, origin=None, checks=[]) for item in data["jobs"]]
+    return data
+
+
 UPPER = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().upper())"
 EXCLAIM = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text() + '!')"
 

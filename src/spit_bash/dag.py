@@ -118,6 +118,29 @@ def _artifacts(document: SpitDag) -> Iterator[Artifact]:
         yield from job.outputs.values()
 
 
+def _check_origins(document: SpitDag) -> None:
+    """Version 7 says where jobs came from; hold it to its own references, and keep older DAGs without it."""
+    if document.version < 7:
+        if document.pipeline_files is not None or document.calls is not None:
+            raise DagError("`pipeline_files` and `calls` came with version 7")
+        if any("origin" in item.model_fields_set for item in document.jobs):
+            raise DagError("`origin` came with version 7")
+        return
+    if document.pipeline_files is None or document.calls is None:
+        raise DagError("a version 7 DAG has `pipeline_files` and `calls`")
+    files, calls = len(document.pipeline_files), document.calls
+    for index, call in enumerate(calls):
+        if call.file >= files or call.at.file >= files:
+            raise DagError(f"call {index} names a file that is not in `pipeline_files`")
+        if call.parent is not None and call.parent >= index:
+            raise DagError(f"call {index} must name an earlier call as its parent")
+    for item in document.jobs:
+        if "origin" not in item.model_fields_set:
+            raise DagError(f"job {item.id}: `origin` came with version 7, and every job of one has it")
+        if item.origin is not None and item.origin.call >= len(calls):
+            raise DagError(f"job {item.id}: origin names a call that is not in `calls`")
+
+
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     try:
         document = SpitDag.model_validate_json(source.read())
@@ -138,6 +161,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     for artifact in _artifacts(document):
         if (artifact.kind == "folder") != (artifact.path in folders):
             raise DagError(f"path is both a file and a folder: {artifact.path}")
+    _check_origins(document)
     external_paths = tuple(artifact.path for artifact in document.external_inputs)
     external_set = set(external_paths)
     jobs = []

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash.dag import DagError, load_dag
-from support import FIXTURE, read, sample
+from support import FIXTURE, as_version_seven, read, sample
 
 
 class LoadTests(unittest.TestCase):
@@ -48,6 +48,40 @@ class LoadTests(unittest.TestCase):
             self.assertEqual(dag.jobs[3].depends_on, (1, 2))
             self.assertEqual(dag.jobs[3].command[4], "merged/group=alpha.txt")
             self.assertEqual(dag.executables, ("sort",))
+
+
+    def test_reads_version_seven_origins_and_checks_their_references(self):
+        call = {"operation": "tidy", "instance": "tidied", "parent": None, "file": 0, "at": {"file": 0, "line": 13}}
+        with tempfile.TemporaryDirectory() as directory:
+            data = as_version_seven(sample(Path(directory)), [call])
+            data["jobs"][0]["origin"] = {"call": 0, "line": 10}
+            self.assertEqual(len(read(data).jobs), 2)
+
+            bad = as_version_seven(sample(Path(directory)), [call])
+            bad["jobs"][0]["origin"] = {"call": 1, "line": 10}
+            with self.assertRaisesRegex(DagError, "origin names a call"):
+                read(bad)
+            bad = as_version_seven(sample(Path(directory)), [dict(call, file=1)])
+            with self.assertRaisesRegex(DagError, "not in `pipeline_files`"):
+                read(bad)
+            bad = as_version_seven(sample(Path(directory)), [dict(call, parent=0)])
+            with self.assertRaisesRegex(DagError, "earlier call"):
+                read(bad)
+
+    def test_version_seven_fields_are_required_there_and_only_there(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = as_version_seven(sample(Path(directory)))
+            del data["calls"]
+            with self.assertRaisesRegex(DagError, "has `pipeline_files` and `calls`"):
+                read(data)
+            data = as_version_seven(sample(Path(directory)))
+            del data["jobs"][1]["origin"]
+            with self.assertRaisesRegex(DagError, "every job of one has it"):
+                read(data)
+            data = as_version_seven(sample(Path(directory)))
+            data["version"] = 6
+            with self.assertRaisesRegex(DagError, "came with version 7"):
+                read(data)
 
 
 if __name__ == "__main__":
