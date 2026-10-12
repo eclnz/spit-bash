@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 
 from .dag import Dag, DagError, load_dag
-from .plan import State, Status, adopt, plan
+from .plan import State, Status, adopt, apply_refreshes, plan
 from .run import execute, log_tail
 from .selection import Selection, parse_only, parse_stage, select
 
@@ -63,6 +63,9 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--state", help="state file (default: ROOT/.spit-bash/state.jsonl)")
         if action is not Action.ADOPT:
             command.add_argument("--force", action="store_true", help="rerun command jobs even if current")
+        if action is not Action.ADOPT:
+            command.add_argument("--stat-only", action="store_true",
+                                 help="judge files by size and modification time alone, never by content")
         if action is Action.PLAN:
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
@@ -151,7 +154,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{adoption.job.id}] {adoption.status.value:7} {adoption.job.operation}: {adoption.reason}")
             return 0
 
-        decisions = plan(dag, state, args.force)
+        decisions = plan(dag, state, args.force, not args.stat_only)
+        if args.action is Action.RUN:
+            apply_refreshes(decisions, state)
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
         if args.action is Action.PLAN and args.json:
             json.dump({
@@ -170,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
 
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs))
+            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM
