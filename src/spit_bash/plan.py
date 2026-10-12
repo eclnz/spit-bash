@@ -14,7 +14,7 @@ from typing import IO, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .content import content_hash
+from .content import content_hash, text_hash
 from .dag import Dag, DagError, Job
 
 
@@ -247,28 +247,88 @@ def resolve_program(dag: Dag, name: str) -> Path | None:
     return None if found is None else Path(found)
 
 
-def job_programs(job: Job) -> tuple[str, ...]:
-    """The programs a job's commands, verify commands and checks start with, once each."""
-    commands = (job.command, *job.verify, *(check.command for check in job.checks))
-    return tuple(dict.fromkeys(command[0] for command in commands if command is not None))
+def _commands(job: Job) -> tuple[tuple[str, ...], ...]:
+    return tuple(command for command in (job.command, *job.verify, *(check.command for check in job.checks))
+                 if command is not None)
 
 
-def program_hashes(dag: Dag) -> dict[str, str]:
-    """The content hash of each program the DAG's jobs start commands with, once each.
+def _argument_files(dag: Dag, job: Job) -> tuple[str, ...]:
+    """Files under the root that a job's commands name but the job does not declare.
 
-    A program that cannot be found is left out: `plan` blocks the jobs that need it.
+    An argument, or the text after an `=` in one as in `--config=run.yaml`, that
+    names such a file is taken to be read by the command, as a script is in
+    `python3 tool.py`. Its input and output files are judged already.
     """
+    declared = {*job.inputs, *job.outputs}
+    found: dict[str, None] = {}
+    for command in _commands(job):
+        for argument in command[1:]:
+            for text in (argument, argument.partition("=")[2]):
+                if text and text not in declared and text not in found:
+                    try:
+                        if dag.path(text).is_file():
+                            found[text] = None
+                    except (DagError, OSError, ValueError):
+                        pass  # outside the root, or not a path at all
+    return tuple(found)
+
+
+def job_programs(dag: Dag, job: Job) -> tuple[str, ...]:
+    """What a job runs besides its declared files, once each: the programs its commands,
+    `verify` commands and checks start with, and the files its commands name."""
+    return tuple(dict.fromkeys((*(command[0] for command in _commands(job)), *_argument_files(dag, job))))
+
+
+def _interpreter(program: Path) -> Path | None:
+    """The interpreter a script's `#!` line names, as `#!/usr/bin/env python3` does."""
+    try:
+        with open(program, "rb") as stream:
+            first = stream.readline(256)
+    except OSError:
+        return None
+    if not first.startswith(b"#!"):
+        return None
+    words = first[2:].decode(errors="replace").split()
+    if words and os.path.basename(words[0]) == "env":
+        words = [word for word in words[1:] if not word.startswith("-")]
+    if not words:
+        return None
+    found = shutil.which(words[0])
+    return None if found is None else Path(found)
+
+
+def program_hashes(dag: Dag, tracked: dict[str, tuple[str, ...]] | None = None) -> dict[str, str]:
+    """A hash for each name in `job_programs`, over all the DAG's jobs, once each.
+
+    A program's covers its file, the interpreter its `#!` line names, and each
+    path given for it in `tracked` (a file or a folder, such as a virtualenv's
+    packages). A named file's is its content. A program that cannot be found is
+    left out: `plan` blocks the jobs that need it.
+    """
+    starts = {command[0] for job in dag.jobs for command in _commands(job)}
     result: dict[str, str] = {}
-    for name in dict.fromkeys(name for job in dag.jobs for name in job_programs(job)):
-        program = resolve_program(dag, name)
-        if program is not None and (value := content_hash(str(program))) is not None:
-            result[name] = value
+    for name in dict.fromkeys(name for job in dag.jobs for name in job_programs(dag, job)):
+        parts: list[str | None] = []
+        if name in starts:
+            program = resolve_program(dag, name)
+            if program is None:
+                continue
+            interpreter = _interpreter(program)
+            parts = [content_hash(str(program)), None if interpreter is None else content_hash(str(interpreter))]
+            for path in (tracked or {}).get(name, ()):
+                full = os.path.join(dag.root, path)
+                parts.append(content_hash(full, os.path.isdir(full)))
+        else:
+            parts = [content_hash(str(dag.path(name)))]
+        present = [part for part in parts if part is not None]
+        if present:
+            result[name] = present[0] if len(present) == 1 else text_hash(*present)
     return result
 
 
 def _missing_programs(dag: Dag) -> set[str]:
     """Programs that commands start with but that cannot be run."""
-    names = dict.fromkeys((*dag.executables, *(name for job in dag.jobs for name in job_programs(job))))
+    names = dict.fromkeys((*dag.executables, *(command[0] for job in dag.jobs for command in _commands(job))))
     return {name for name in names if resolve_program(dag, name) is None}
 
 
@@ -296,7 +356,7 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool,
     if record.fingerprint != job.fingerprint:
         return Decision(job, Status.RUN, "job fingerprint changed")
     if programs is not None and record.programs is not None:
-        changed = [name for name in job_programs(job) if name in programs and name in record.programs
+        changed = [name for name in job_programs(dag, job) if name in programs and name in record.programs
                    and programs[name] != record.programs[name]]
         # A program that was not recorded, or is not found now, is no change: `plan` blocks the latter.
         if changed:
@@ -362,9 +422,9 @@ def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True,
     return tuple(decisions)
 
 
-def _used(job: Job, programs: dict[str, str] | None) -> dict[str, str] | None:
+def _used(dag: Dag, job: Job, programs: dict[str, str] | None) -> dict[str, str] | None:
     """The part of `programs` this job's commands start with, or None when programs were not looked at."""
-    return None if programs is None else {name: programs[name] for name in job_programs(job) if name in programs}
+    return None if programs is None else {name: programs[name] for name in job_programs(dag, job) if name in programs}
 
 
 def apply_refreshes(decisions: tuple[Decision, ...], state: State) -> None:
@@ -404,7 +464,7 @@ def adopt(dag: Dag, state: State, programs: dict[str, str] | None = None) -> tup
             adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
         else:
             state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=inputs, outputs=outputs,
-                                                 programs=_used(job, programs)))
+                                                 programs=_used(dag, job, programs)))
             adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
         adoptions.append(adoption)
     return tuple(adoptions)

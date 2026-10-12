@@ -42,7 +42,7 @@ class ProgramTests(unittest.TestCase):
         return plan(self.dag, state_at(self.root), programs=program_hashes(self.dag), **options)
 
     def test_names_the_programs_a_job_starts_with_once_each(self):
-        self.assertEqual(job_programs(self.dag.jobs[0]), ("bin/tool",))
+        self.assertEqual(job_programs(self.dag, self.dag.jobs[0]), ("bin/tool",))
         self.assertEqual(list(program_hashes(self.dag)), ["bin/tool"])
 
     def test_an_unchanged_program_leaves_the_job_current(self):
@@ -102,6 +102,70 @@ class ProgramTests(unittest.TestCase):
         adopt(self.dag, state, program_hashes(self.dag))
         write_tool(self.root / "bin/tool", COPY.format("?"))
         self.assertEqual([d.status for d in plan(self.dag, state, programs=program_hashes(self.dag))], [Status.RUN])
+
+    def interpreter_job(self, *extra):
+        """python3 script.py source out, with the script as an argument and python as the program."""
+        item = tool_job(sys.executable)
+        item["command"] = [[sys.executable], ["lib/script.py"], *extra, [{"path": "source.txt"}], [{"path": "out.txt"}]]
+        return read(document(self.root, [item], ["source.txt"]))
+
+    def test_a_script_passed_to_an_interpreter_is_part_of_the_job(self):
+        script = self.root / "lib/script.py"
+        script.parent.mkdir()
+        script.write_text("import sys; open(sys.argv[3], 'w').write(open(sys.argv[2]).read() + '1')")
+        dag = self.interpreter_job()
+        self.assertEqual(job_programs(dag, dag.jobs[0]), (sys.executable, "lib/script.py"))
+        run(dag, state_at(self.root), programs=program_hashes(dag))
+        self.assertEqual((self.root / "out.txt").read_text(), "hello1")
+        script.write_text("import sys; open(sys.argv[3], 'w').write(open(sys.argv[2]).read() + '2')")
+        decisions = plan(dag, state_at(self.root), programs=program_hashes(dag))
+        self.assertEqual([(d.status, d.reason) for d in decisions], [(Status.RUN, "program changed: lib/script.py")])
+        run(dag, state_at(self.root), programs=program_hashes(dag))
+        self.assertEqual((self.root / "out.txt").read_text(), "hello2")
+
+    def test_a_file_after_an_equals_sign_counts_but_declared_files_and_other_text_do_not(self):
+        (self.root / "conf.yaml").write_text("a: 1")
+        dag = self.interpreter_job(["--config=conf.yaml"], ["--name=source.txt"], ["--flag"], ["--missing=nope.yaml"])
+        names = job_programs(dag, dag.jobs[0])
+        self.assertIn("conf.yaml", names)
+        self.assertNotIn("source.txt", names)
+        self.assertNotIn("nope.yaml", names)
+        self.assertNotIn("--flag", names)
+
+    def test_a_script_started_by_name_also_covers_the_interpreter_it_names(self):
+        first = program_hashes(self.dag)["bin/tool"]
+        other = self.root / "other-python"
+        other.write_bytes(Path(sys.executable).read_bytes() + b"\n")
+        other.chmod(0o755)
+        (self.root / "bin/tool").write_text(f"#!{other}\nimport sys\nfrom pathlib import Path\n{COPY.format('!')}\n")
+        same_text = program_hashes(self.dag)["bin/tool"]
+        self.assertNotEqual(first, same_text)  # the file changed too; now change only the interpreter
+        other.write_bytes(Path(sys.executable).read_bytes() + b"\n\n")
+        self.assertNotEqual(program_hashes(self.dag)["bin/tool"], same_text)
+
+    def test_a_tracked_folder_reruns_the_programs_it_is_tracked_for_only(self):
+        packages = self.root / "env/site-packages"
+        packages.mkdir(parents=True)
+        (packages / "lib.py").write_text("v = 1")
+        tracked = {"bin/tool": ("env/site-packages",)}
+        run(self.dag, state_at(self.root), force=True, programs=program_hashes(self.dag, tracked))
+        plain = lambda: [d.status for d in plan(self.dag, state_at(self.root), programs=program_hashes(self.dag, tracked))]
+        self.assertEqual(plain(), [Status.SKIP])
+        (packages / "lib.py").write_text("v = 2")
+        decisions = plan(self.dag, state_at(self.root), programs=program_hashes(self.dag, tracked))
+        self.assertEqual([(d.status, d.reason) for d in decisions], [(Status.RUN, "program changed: bin/tool")])
+        other = {"somebody-else": ("env/site-packages",)}
+        self.assertEqual([d.status for d in plan(self.dag, state_at(self.root), programs=program_hashes(self.dag, other))],
+                         [Status.RUN])  # untracked now, so its recorded hash differs
+
+    def test_track_is_checked_by_the_command_line(self):
+        from test_cli import call
+        path = self.root / "jobs.spitdag"
+        import json
+        path.write_text(json.dumps(document(self.root, [tool_job("bin/tool")], ["source.txt"])))
+        self.assertEqual(call("plan", str(path), "--track", "bin/tool")[0], 2)
+        self.assertEqual(call("plan", str(path), "--track", "bin/tool=missing")[0], 2)
+        self.assertEqual(call("plan", str(path), "--track", "bin/tool=bin")[0], 0)
 
 
 if __name__ == "__main__":

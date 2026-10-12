@@ -53,3 +53,11 @@ def content_hash(path: str, folder: bool = False) -> str | None:
         return f"{NAME}:{digest.hexdigest()}"
     except FileNotFoundError:
         return None
+
+
+def text_hash(*parts: str) -> str:
+    """One hash of several, such as a program's and the interpreter's it names."""
+    digest = _new()
+    for part in parts:
+        digest.update(part.encode() + b"\0")
+    return f"{NAME}:{digest.hexdigest()}"

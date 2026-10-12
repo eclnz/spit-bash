@@ -8,7 +8,7 @@ from spit_bash import content
 from spit_bash.dag import DagError
 from spit_bash.plan import RunRecord, State, Status, apply_refreshes, plan
 from spit_bash.run import execute
-from support import read, run, sample, state_at
+from support import artifact, command, read, run, sample, state_at
 
 
 def touch(path, seconds=10):
@@ -84,6 +84,37 @@ class ContentTests(unittest.TestCase):
                 state.jobs[key] = record.model_copy(update={"input_hashes": other})
             touch(root / "source.txt")
             self.assertEqual([d.status for d in plan(dag, state)], [Status.RUN, Status.MAYBE])
+
+    def test_every_input_and_output_of_a_job_is_judged_by_content(self):
+        """A many port and two output ports: each file is compared on its own."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("a", "b", "c"):
+                (root / f"{name}.txt").write_text(name)
+            script = ("from pathlib import Path; import sys; t = ''.join(Path(p).read_text() for p in sys.argv[3:]); "
+                      "Path(sys.argv[1]).write_text(t); Path(sys.argv[2]).write_text(t.upper())")
+            data = sample(root)
+            data["jobs"] = [{
+                "id": 1, "operation": "both", "fingerprint": "1" * 16, "stage": [], "dependents": [], "depends_on": [],
+                "inputs": {"items": [artifact(f"{n}.txt") for n in "abc"]}, "verify": [],
+                "outputs": {"first": artifact("one.txt"), "second": artifact("two.txt")},
+                "command": command(script, "one.txt", "two.txt", "a.txt", "b.txt", "c.txt"),
+            }]
+            data["external_inputs"] = [artifact(f"{n}.txt") for n in "abc"]
+            dag = read(data)
+            run(dag, state_at(root))
+            self.assertEqual((root / "two.txt").read_text(), "ABC")
+            states = lambda: [d.status for d in plan(dag, state_at(root))]
+            for name in ("a.txt", "c.txt", "one.txt", "two.txt"):
+                touch(root / name)
+            self.assertEqual(states(), [Status.SKIP])
+            (root / "c.txt").write_text("C")
+            self.assertEqual(states(), [Status.RUN])
+            (root / "c.txt").write_text("c")
+            touch(root / "c.txt", 20)
+            self.assertEqual(states(), [Status.SKIP])
+            (root / "two.txt").write_text("edited")
+            self.assertEqual(states(), [Status.RUN])
 
     def test_folder_hash_follows_names_and_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

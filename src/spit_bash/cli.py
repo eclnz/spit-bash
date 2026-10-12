@@ -65,6 +65,9 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--force", action="store_true", help="rerun command jobs even if current")
         command.add_argument("--ignore-programs", action="store_true",
                              help="do not rerun a job because the program its command runs has changed")
+        command.add_argument("--track", action="append", default=[], metavar="PROGRAM=PATH",
+                             help="also rerun the jobs that start with PROGRAM when PATH changes: a file or\n"
+                                  "folder, such as a virtualenv's packages (repeat for more)")
         if action is not Action.ADOPT:
             command.add_argument("--stat-only", action="store_true",
                                  help="judge files by size and modification time alone, never by content")
@@ -117,6 +120,18 @@ def _selection(args: argparse.Namespace) -> Selection:
         raise DagError(str(exc)) from exc
 
 
+def _tracked(options: list[str], dag: Dag) -> dict[str, tuple[str, ...]]:
+    tracked: dict[str, list[str]] = {}
+    for option in options:
+        program, separator, path = option.partition("=")
+        if not (separator and program and path):
+            raise DagError(f"--track takes PROGRAM=PATH, not {option!r}")
+        if not os.path.exists(os.path.join(dag.root, path)):
+            raise DagError(f"--track: {path} does not exist under {dag.root}")
+        tracked.setdefault(program, []).append(path)
+    return {program: tuple(paths) for program, paths in tracked.items()}
+
+
 def _report_failure(job_id: int, error: str, log: Path | None) -> None:
     print(f"[{job_id}] failed: {error}", file=sys.stderr)
     if log is not None:
@@ -150,13 +165,14 @@ def main(argv: list[str] | None = None) -> int:
         if dag.left_out:
             print(f"partial DAG: {len(dag.left_out)} output(s) left out", file=sys.stderr)
 
+        tracked = _tracked(args.track, dag)
         if args.action is Action.ADOPT:
-            adoptions = adopt(dag, state, None if args.ignore_programs else program_hashes(dag))
+            adoptions = adopt(dag, state, None if args.ignore_programs else program_hashes(dag, tracked))
             for adoption in adoptions:
                 print(f"[{adoption.job.id}] {adoption.status.value:7} {adoption.job.operation}: {adoption.reason}")
             return 0
 
-        programs = None if args.ignore_programs else program_hashes(dag)
+        programs = None if args.ignore_programs else program_hashes(dag, tracked)
         decisions = plan(dag, state, args.force, not args.stat_only, programs)
         if args.action is Action.RUN:
             apply_refreshes(decisions, state)

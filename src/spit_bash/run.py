@@ -157,7 +157,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
             input_hashes = await asyncio.to_thread(hashes, dag, job.inputs) if hashing else None
             output_hashes = await asyncio.to_thread(hashes, dag, job.outputs) if hashing else None
             record = RunRecord(fingerprint=job.fingerprint, inputs=after, outputs=outputs, checks=job.checks_key,
-                               input_hashes=input_hashes, output_hashes=output_hashes, programs=_used(job, programs))
+                               input_hashes=input_hashes, output_hashes=output_hashes, programs=_used(dag, job, programs))
             state.record(job_key(job), record)
             print(f"[{job.id}] done", flush=True)
             return Result(job, None, path)
