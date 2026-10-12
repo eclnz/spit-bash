@@ -29,10 +29,10 @@ After a run, SPIT may report generated files that match no source path rule. Tho
 
 ## Operations carried out by steps
 
-`steps.spit` declares `tidy` with a body of two `sort_lines` steps, then calls it once. The call becomes two ordinary jobs, so the runner plans and runs them like any others; the DAG's `calls` and each job's `origin` (format 7) say they came from `tidy`.
+`steps.spit` names its dataset root with a `root .` line, so this pipeline needs no `.spitin` recipe, and it declares `tidy` with a body of two `sort_lines` steps, then calls it once. The call becomes two ordinary jobs, so the runner plans and runs them like any others; the DAG's `calls` and each job's `origin` (format 7) say they came from `tidy`.
 
 ```sh
-spit-bash run examples/steps/steps.spitin
+spit-bash run examples/steps/steps.spit
 cat examples/steps/output/tidied/name=fruit.txt
 ```
 

@@ -19,6 +19,7 @@ spit-bash run dataset.spitin -j 4
 | Files | Runs |
 | --- | --- |
 | `dataset.spitin` | `spit dag dataset.spitin --json` |
+| `analysis.spit` with a `root` line | `spit dag analysis.spit --json`: a small pipeline names its dataset root itself, so it needs no `.spitin` |
 | `analysis.spit dataset.spitout` | `spit dag analysis.spit dataset.spitout --json` (`-` for a `.spitout` on stdin) |
 | `analysis.spit --root data` | `spit dag analysis.spit --root data --json`, scanning `data` |
 
