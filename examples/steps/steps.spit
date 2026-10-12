@@ -1,3 +1,5 @@
+root .
+
 source note : Lines [name]
 
 path: output/{@product}/{@entities}.txt
