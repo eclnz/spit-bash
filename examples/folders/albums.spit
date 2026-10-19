@@ -1,7 +1,7 @@
 source trip : Notes / [trip]
 path trip: input/{trip}
 
-path: output/{@product}/{@entities}
+default path: output/{@product}/{@entities}
 
 operation copy(notes: Notes) -> Album /
 command copy: cp -R {notes} {@output}

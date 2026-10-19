@@ -1,6 +1,6 @@
 source text : Lines [part]
 
-path: output/{@product}/{@entities}.txt
+default path: output/{@product}/{@entities}.txt
 path text: input/{part}.txt
 
 operation copy(input: Lines) -> Lines
