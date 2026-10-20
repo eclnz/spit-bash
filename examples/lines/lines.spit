@@ -1,6 +1,7 @@
 source shard : Lines [group, part]
 
-path: output/{@product}/{@entities}.txt
+default entities: {@key}={@value} separated "__"
+default path: output/{@product}/{@entities}.txt
 path shard: input/{group}/{part}.txt
 
 operation sort_lines(input: Lines) -> Lines

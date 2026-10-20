@@ -1,6 +1,7 @@
 source note : Lines [name]
 
-path: output/{@product}/{@entities}.txt
+default entities: {@key}={@value} separated "__"
+default path: output/{@product}/{@entities}.txt
 path note: input/{name}.txt
 
 operation sort_lines(input: Lines) -> Lines
