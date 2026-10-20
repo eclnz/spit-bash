@@ -3,7 +3,7 @@ check contains(word): grep -q {word} {@path}
 
 source note : Text [day] @ check(nonempty)
 
-entities: {key}={value} separated "__" empty "global"
+default entities: {@key}={@value} separated "__"
 default path: output/{@product}/{@entities}.txt
 path note: input/{day}.txt
 

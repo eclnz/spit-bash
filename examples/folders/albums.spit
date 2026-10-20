@@ -1,7 +1,7 @@
 source trip : Notes / [trip]
 path trip: input/{trip}
 
-entities: {key}={value} separated "__" empty "global"
+default entities: {@key}={@value} separated "__"
 default path: output/{@product}/{@entities}
 
 operation copy(notes: Notes) -> Album /
