@@ -1,5 +1,6 @@
 source shard : Lines [group, part]
 
+entities: {key}={value} separated "__" empty "global"
 default path: output/{@product}/{@entities}.txt
 path shard: input/{group}/{part}.txt
 

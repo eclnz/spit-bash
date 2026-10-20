@@ -1,5 +1,6 @@
 source note : Lines [name]
 
+entities: {key}={value} separated "__" empty "global"
 default path: output/{@product}/{@entities}.txt
 path note: input/{name}.txt
 
