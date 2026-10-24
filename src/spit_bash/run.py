@@ -118,7 +118,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                     if error:
                         return Result(job, error, path)
                 for output in job.outputs:
-                    written = dag.path(output)
+                    written = dag.checked(output)
                     if output in dag.folders:
                         _clear(written)
                     written.parent.mkdir(parents=True, exist_ok=True)

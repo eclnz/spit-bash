@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Iterator, TextIO
 
@@ -90,8 +90,15 @@ class Dag:
     left_out: tuple[str, ...]
     # The paths of artifacts that are folders rather than files.
     folders: frozenset[str] = frozenset()
+    # Each artifact's path under the root, joined and checked once by `load_dag`.
+    absolute: dict[str, Path] = field(default_factory=dict, compare=False)
 
     def path(self, relative: str) -> Path:
+        path = self.absolute.get(relative)
+        return self.checked(relative) if path is None else path
+
+    def checked(self, relative: str) -> Path:
+        """The path under the root, resolved now, so a link made since loading cannot lead outside it."""
         path = self.root.joinpath(*PurePosixPath(relative).parts)
         if not path.resolve().is_relative_to(self.root):
             raise DagError(f"path escapes dataset root: {relative}")
@@ -245,5 +252,6 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         folders,
     )
     for path in (*external_paths, *(path for job in jobs for path in (*job.inputs, *job.outputs))):
-        dag.path(path)
+        if path not in dag.absolute:
+            dag.absolute[path] = dag.checked(path)
     return dag

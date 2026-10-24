@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
@@ -38,7 +39,7 @@ def stamp(path: Path, folder: bool = False) -> list[int] | None:
         info = path.stat()
     except FileNotFoundError:
         return None
-    return [info.st_size, info.st_mtime_ns] if path.is_file() else None
+    return [info.st_size, info.st_mtime_ns] if stat.S_ISREG(info.st_mode) else None
 
 
 def _folder_stamp(path: Path) -> list[int] | None:
@@ -63,8 +64,24 @@ def _folder_stamp(path: Path) -> list[int] | None:
     return [size, latest, count]
 
 
-def stamps(dag: Dag, paths: tuple[str, ...]) -> dict[str, list[int] | None]:
-    return {path: stamp(dag.path(path), path in dag.folders) for path in paths}
+Stamps = dict[str, list[int] | None]
+
+
+def stamps(dag: Dag, paths: tuple[str, ...], seen: Stamps | None = None) -> Stamps:
+    """Each path's stamp; with `seen`, each path is read once and kept there.
+
+    Planning reads a file as one job's output and again as each consumer's
+    input, and nothing changes the files meanwhile, so it keeps every stamp it
+    reads for the whole plan. A run reads them afresh: its jobs change them.
+    """
+    if seen is None:
+        return {path: stamp(dag.path(path), path in dag.folders) for path in paths}
+    found = {}
+    for path in paths:
+        if path not in seen:
+            seen[path] = stamp(dag.path(path), path in dag.folders)
+        found[path] = seen[path]
+    return found
 
 
 # A file's size and time, or a folder's, with how many files it holds. Both
@@ -220,7 +237,8 @@ def _missing_programs(dag: Dag) -> set[str]:
 def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
-    missing_external = {path for path in dag.external_inputs if stamp(dag.path(path), path in dag.folders) is None}
+    seen: Stamps = {}
+    missing_external = {path for path, value in stamps(dag, dag.external_inputs, seen).items() if value is None}
     missing_programs = _missing_programs(dag)
     for job in dag.jobs:
         missing = [path for path in job.inputs if path in missing_external]
@@ -230,14 +248,14 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
         elif blocked:
             decision = Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
         elif job.command is None:
-            outputs = stamps(dag, job.outputs)
+            outputs = stamps(dag, job.outputs, seen)
             if any(value is None for value in outputs.values()):
                 decision = Decision(job, Status.BLOCKED, "no command and output is missing")
             elif any(by_id[dep].status is Status.RUN for dep in job.depends_on):
                 decision = Decision(job, Status.BLOCKED, "no command and dependency will run")
-            elif any(value is None for value in stamps(dag, job.inputs).values()):
+            elif any(value is None for value in stamps(dag, job.inputs, seen).values()):
                 decision = Decision(job, Status.BLOCKED, "input is missing")
-            elif job.inputs and max(value[1] for value in stamps(dag, job.inputs).values()) > min(value[1] for value in outputs.values()):
+            elif job.inputs and max(value[1] for value in stamps(dag, job.inputs, seen).values()) > min(value[1] for value in outputs.values()):
                 decision = Decision(job, Status.BLOCKED, "no command and output is older than an input")
             elif job.checks:
                 decision = Decision(job, Status.CHECK, "no command; outputs exist, checking them")
@@ -245,9 +263,9 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
                 decision = Decision(job, Status.SKIP, "no command; outputs exist")
         elif any(by_id[dep].status is Status.RUN for dep in job.depends_on):
             decision = Decision(job, Status.RUN, "dependency will run")
-        elif any(value is None for value in stamps(dag, job.outputs).values()):
+        elif any(value is None for value in stamps(dag, job.outputs, seen).values()):
             decision = Decision(job, Status.RUN, "output missing")
-        elif any(value is None for value in stamps(dag, job.inputs).values()):
+        elif any(value is None for value in stamps(dag, job.inputs, seen).values()):
             decision = Decision(job, Status.BLOCKED, "input is missing")
         elif force:
             decision = Decision(job, Status.RUN, "forced")
@@ -257,9 +275,9 @@ def plan(dag: Dag, state: State, force: bool = False) -> tuple[Decision, ...]:
                 decision = Decision(job, Status.RUN, "no successful run recorded")
             elif record.fingerprint != job.fingerprint:
                 decision = Decision(job, Status.RUN, "job fingerprint changed")
-            elif record.inputs != stamps(dag, job.inputs):
+            elif record.inputs != stamps(dag, job.inputs, seen):
                 decision = Decision(job, Status.RUN, "input changed")
-            elif record.outputs != stamps(dag, job.outputs):
+            elif record.outputs != stamps(dag, job.outputs, seen):
                 decision = Decision(job, Status.RUN, "output changed")
             elif record.checks != job.checks_key:
                 reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
