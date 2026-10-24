@@ -307,8 +307,11 @@ def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamp
     outputs = stamps(dag, job.outputs, seen)
     if any(value is None for value in outputs.values()):
         return Decision(job, Status.BLOCKED, "no command and output is missing")
+    # It cannot be rerun, so any change upstream would leave its outputs stale.
     if any(by_id[dep].status is Status.RUN for dep in job.depends_on):
         return Decision(job, Status.BLOCKED, "no command and dependency will run")
+    if any(by_id[dep].status is Status.MAYBE for dep in job.depends_on):
+        return Decision(job, Status.BLOCKED, "no command and dependency may run")
     inputs = stamps(dag, job.inputs, seen)
     if any(value is None for value in inputs.values()):
         return Decision(job, Status.BLOCKED, "input is missing")

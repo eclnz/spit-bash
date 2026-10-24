@@ -78,6 +78,13 @@ class CutoffTests(unittest.TestCase):
         self.assertEqual([d.status for d in decisions], [Status.RUN] * 3)
         self.assertEqual(decisions[1].reason, "dependency will run")
 
+    def test_a_job_with_no_command_below_a_maybe_is_blocked(self):
+        self.data["jobs"][2]["command"] = None
+        self.edit_source("Hello")
+        decisions = plan(read(self.data), state_at(self.root))
+        self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.BLOCKED])
+        self.assertEqual(decisions[2].reason, "no command and dependency may run")
+
     def test_a_job_whose_input_is_missing_is_not_a_maybe(self):
         self.edit_source("Hello")
         (self.root / "final.txt").unlink()
