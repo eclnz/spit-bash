@@ -55,6 +55,7 @@ jobs:
       - run: python -m unittest tests/test_examples.py -v
         env:
           SPIT: ${{ github.workspace }}/spit/target/release/spit
+          SPIT_REPOSITORY: ${{ github.workspace }}/spit
 
   messie:
     runs-on: ubuntu-latest
