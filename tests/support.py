@@ -14,7 +14,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "command_demo.spitdag"
 
 
 def artifact(path):
-    return {"product": path, "entities": {}, "type": None, "path": path, "kind": "file"}
+    return {"product": path, "entities": {}, "type": None, "path": path}
 
 
 def command(script, *paths):
@@ -27,23 +27,21 @@ def job(id, inputs, output, script, depends_on=(), dependents=(), fingerprint=No
         "stage": [], "dependents": list(dependents),
         "inputs": {"input": [artifact(path) for path in inputs]},
         "outputs": {"output": artifact(output)},
-        "depends_on": list(depends_on), "verify": [], "checks": [], "origin": None,
+        "depends_on": list(depends_on), "verify": [],
         "command": command(script, *inputs, output),
     }
 
 
 def document(root, jobs, external_inputs):
     return {
-        "version": 7,
-        "generator": {"name": "spit", "version": "0.2.2"},
+        "version": 4,
+        "generator": {"name": "spit", "version": "0.2.1"},
         "root": None if root is None else str(root),
         "external_inputs": [artifact(path) for path in external_inputs],
         "targets": [],
         "executables": [],
         "removed": [],
         "left_out": [],
-        "pipeline_files": [],
-        "calls": [],
         "jobs": jobs,
     }
 

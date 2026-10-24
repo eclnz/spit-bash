@@ -1,8 +1,8 @@
 # spit-bash
 
-`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG format 7 only, and rejects any other version. Format 7 includes [folder artifacts](#folders) and [checks](#checks), and says which call each job came from, which `spit-bash` checks but does not use.
+`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 to 7; format 5 added folder artifacts, format 6 [checks](#checks), and format 7 [where each job comes from](#where-jobs-come-from).
 
-See the [runnable examples](examples/README.md) for complete recipes, input files, commands, and expected output.
+See the [runnable examples](examples/README.md) for the recipes in SPIT's repository, their commands, and expected output.
 
 ## Install and use
 
@@ -57,13 +57,13 @@ Choosing jobs does not change how a job is planned: a chosen job is still skippe
 
 SPIT writes the absolute dataset `root` into a DAG when it knows it. If `root` is `null`, pass `--root /path/to/dataset`. Relative paths in artifacts and commands are interpreted from this root.
 
-`plan` reports `run`, `check`, `skip`, `maybe` or `blocked` for each job, and exits 1 if any job is blocked. A `maybe` job is current as it stands, but a job it reads from will run, so whether it must is not known until that job has finished: see [Stopping at an unchanged output](#stopping-at-an-unchanged-output). `plan --json` prints the same as JSON. `run` makes the same plan and runs every job that is not current or blocked. It runs each job's input checks and `verify` commands in order, then its main command, then its output checks, and only starts a dependent after its producers finish successfully. Independent jobs run together, up to `-j` processes, which defaults to the number of CPUs. Commands are passed as argument arrays directly to the operating system; no shell parses them. Output parent directories are created when a job starts. A command must create every declared output file, or [folder](#folders), to count as successful.
+`plan` reports `run`, `check`, `skip`, `maybe` or `blocked` for each job, and exits 1 if any job is blocked. A `maybe` job is current as it stands, but a job it reads from will run, so whether it must is not known until that job has finished: see [Stopping at an unchanged output](#stopping-at-an-unchanged-output). `plan --json` prints the same as JSON. `run` makes the same plan and runs every job that is not current or blocked. It runs each job's input checks and `verify` commands in order, then its main command, then its output checks, and only starts a dependent after its producers finish successfully. Independent jobs run together, up to `-j` processes, which defaults to the number of CPUs. Commands are passed as argument arrays directly to the operating system; no shell parses them. Output parent directories are created when a job starts. A command must create every declared output file, or [folder](#folders), to count as successful. A declared output is never optional: a job whose command exits 0 but leaves one missing fails, records no success, runs no output checks and holds back its dependents, and the failure names each missing output's port and path, as `command succeeded but did not create output meta derivatives/image/sub=01.json`. A tool run with a flag that turns a file off, such as `dcm2niix -b n` and its `.json`, needs an operation that does not declare that file.
 
 A blocked job blocks the jobs that depend on it, but not the rest of the plan: `run` still runs every other job, then exits 1. A job is blocked when an external input is missing, when the program its command, a `verify` command or a check starts with cannot be found, or when a job it depends on is blocked. Programs are looked up on `PATH`, from SPIT's `executables` list; a program named by a path, such as `bin/check`, is looked up from the root.
 
 ## Folders
 
-A DAG marks each artifact as a `file` or a `folder`, for a product SPIT declares with a `/` after its type, such as `source dicom : Dicom / [sub]`. The runner treats a folder as one artifact:
+A DAG of format 5 marks each artifact as a `file` or a `folder`, for a product SPIT declares with a `/` after its type, such as `source dicom : Dicom / [sub]`. The runner treats a folder as one artifact:
 
 - A source folder must exist as a folder, or the jobs that read it are blocked.
 - Before a job's command runs, and after its `verify` commands pass, the runner removes whatever an earlier run left at each of its output folders. The job owns the folder, since SPIT puts no other artifact inside one, and old files would otherwise mix with the new run's. Then it makes the folder's parent, but not the folder: the tool makes it, as `cp -R` does, and some tools refuse to write into a folder that exists. A tool that needs the folder to exist first, such as `dcm2niix -o`, is wrapped in a script that makes it.
@@ -72,13 +72,26 @@ A DAG marks each artifact as a `file` or a `folder`, for a product SPIT declares
 
 ## Checks
 
-A DAG gives each job its `checks`: commands that each test one artifact, which the pipeline declares once with SPIT's `check` and attaches to ports and sources. A `before` check tests an input before the job's `verify` commands; an `after` check tests an output once the command has made it. A failed check fails the job, even when its command exited 0, and the jobs that depend on it do not run:
+A DAG of format 6 gives each job its `checks`: commands that each test one artifact, which the pipeline declares once with SPIT's `check` and attaches to ports and sources. A `before` check tests an input before the job's `verify` commands; an `after` check tests an output once the command has made it. A failed check fails the job, even when its command exited 0, and the jobs that depend on it do not run:
 
 ```text
 [2] failed: check contains(today) on output output output/copied/day=tuesday.txt failed: exited with status 1
 ```
 
 A successful run records the checks the job passed. SPIT leaves checks out of a job's fingerprint, so a changed or new check does not rerun the job: `plan` marks it `check`, and `run` runs its checks alone on the files it already has. If they pass, the record takes the new checks; if one fails, the job fails and its record is dropped, so the next run reruns the job. A job with no command whose outputs exist is checked on every run. A dependent that runs or is checked in the same run waits for those checks, and fails if they do; a current dependent stays current. `adopt` records no checks, so the next `run` checks the adopted files.
+
+## Where jobs come from
+
+In SPIT, an operation can be carried out by a body of steps, often declared in a library, and a call to it becomes ordinary jobs. A DAG of format 7 says where each such job came from: the files the pipeline was read from, each call, and the line of the body's step. When one of these jobs fails, `run` prints the step and every call it is nested in, innermost first:
+
+```text
+[1] failed: command exited with status 3
+[1] step at libs/lib.spit line 10
+[1] in `m::cleaned = L::tidy(...)` at libs/lib.spit line 13
+[1] in `m = L::summarise(...)` at main.spit line 8
+```
+
+None of this is part of a job's fingerprint, so an edit to a library that leaves a job's command as it was reruns nothing.
 
 ## Output and logs
 
@@ -116,4 +129,4 @@ messie -af .
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-The test fixture under `tests/fixtures/` is actual version 7 output from SPIT's `command_demo` example. `tests/test_examples.py` runs the [examples](examples/README.md) with a real `spit`: set `SPIT` to the binary or put it on `PATH`, or the tests are skipped. CI builds `spit` from SPIT's `dev` branch, where its work merges, for them, on every push and weekly, so a change to SPIT's DAG format fails here. A branch whose name SPIT also has, other than `main` and `dev`, builds SPIT's branch of that name instead, so a change made in both repositories is tested together before SPIT's half merges.
+The test fixture under `tests/fixtures/` is actual version 4 output from SPIT's `command_demo` example. `tests/test_examples.py` runs the [examples](examples/README.md), which live in SPIT's repository under `examples/runnable` so that SPIT's own tests keep them in step with its syntax, with a real `spit`: set `SPIT` to the binary or put it on `PATH`, and `SPIT_REPOSITORY` to the checkout it was built from (a sibling `../spit` by default), or the tests are skipped. CI builds `spit` from SPIT's `dev` branch, where its work merges, for them, on every push and weekly, so a change to SPIT's DAG format fails here. A branch whose name SPIT also has, other than `main` and `dev`, builds SPIT's branch of that name instead, so a change made in both repositories is tested together before SPIT's half merges.

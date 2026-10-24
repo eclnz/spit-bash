@@ -10,7 +10,7 @@ from typing import Iterator, TextIO
 
 from pydantic import ValidationError
 
-from .schema import Artifact, Command, DirPart, PathPart, SpitDag, StemPart
+from .schema import Artifact, Command, DirPart, PathPart, SpitDag, SpitJob, StemPart
 
 
 class DagError(ValueError):
@@ -18,9 +18,11 @@ class DagError(ValueError):
 
 
 @dataclass(frozen=True)
-class Made:
-    """What one output is, for choosing jobs by product and entities."""
+class Output:
+    """One produced artifact and the port that names it."""
 
+    port: str
+    path: str
     product: str
     entities: tuple[tuple[str, str], ...]
 
@@ -47,12 +49,19 @@ class Job:
     stage: tuple[str, ...]
     fingerprint: str
     inputs: tuple[str, ...]
-    outputs: tuple[str, ...]
-    made: tuple[Made, ...]
+    produced: tuple[Output, ...]
     depends_on: tuple[int, ...]
     command: tuple[str, ...] | None
     verify: tuple[tuple[str, ...], ...]
     checks: tuple[Check, ...] = ()
+    # Where a job made by a call to an operation carried out by steps comes
+    # from, innermost first; empty for a step written in the pipeline.
+    origin: tuple[str, ...] = ()
+
+    @property
+    def outputs(self) -> tuple[str, ...]:
+        """Output paths in DAG order, for planning and state records."""
+        return tuple(output.path for output in self.produced)
 
     @property
     def before(self) -> tuple[Check, ...]:
@@ -118,17 +127,40 @@ def _artifacts(document: SpitDag) -> Iterator[Artifact]:
         yield from job.outputs.values()
 
 
+def _origin(document: SpitDag, job: SpitJob) -> tuple[str, ...]:
+    """The body step that made `job`, then each call it is nested in, as lines to show."""
+    if job.origin is None:
+        return ()
+    files = document.pipeline_files or []
+    calls = document.calls or []
+
+    def place(file: int | None, line: int) -> str:
+        return f"{files[file].path} line {line}" if file is not None else f"line {line}"
+
+    call = calls[job.origin.call]
+    lines = [f"step at {place(call.file, job.origin.line)}"]
+    while True:
+        lines.append(f"in `{call.instance} = {call.operation}(...)` at {place(call.at.file, call.at.line)}")
+        if call.parent is None:
+            return tuple(lines)
+        call = calls[call.parent]
+
+
 def _check_origins(document: SpitDag) -> None:
-    """Hold the calls and origins to their own references."""
-    files, calls = len(document.pipeline_files), document.calls
-    for index, call in enumerate(calls):
-        if call.file >= files or call.at.file >= files:
-            raise DagError(f"call {index} names a file that is not in `pipeline_files`")
-        if call.parent is not None and call.parent >= index:
-            raise DagError(f"call {index} must name an earlier call as its parent")
-    for item in document.jobs:
-        if item.origin is not None and item.origin.call >= len(calls):
-            raise DagError(f"job {item.id}: origin names a call that is not in `calls`")
+    """Version 7 names its files and calls, and every reference into them is in range."""
+    if (document.pipeline_files is not None, document.calls is not None) != (document.version >= 7,) * 2:
+        raise DagError("`pipeline_files` and `calls` came with version 7, and a DAG of it has both")
+    files = len(document.pipeline_files or [])
+    calls = document.calls or []
+    for position, call in enumerate(calls):
+        if any(file is not None and file >= files for file in (call.file, call.at.file)):
+            raise DagError(f"call {position} names a file that `pipeline_files` does not hold")
+        # A call's parent comes before it, so following parents ends.
+        if call.parent is not None and call.parent >= position:
+            raise DagError(f"call {position} names a parent that is not an earlier call")
+    for job in document.jobs:
+        if job.origin is not None and job.origin.call >= len(calls):
+            raise DagError(f"job {job.id}: `origin` names a call that `calls` does not hold")
 
 
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
@@ -143,11 +175,15 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     if not root.is_dir():
         raise DagError(f"dataset root is not a directory: {root}")
 
+    if document.version == 4 and any(
+        artifact.kind == "folder" for artifact in _artifacts(document)
+    ):
+        raise DagError("a version 4 DAG has no folders; `kind` came with version 5")
+    _check_origins(document)
     folders = frozenset(artifact.path for artifact in _artifacts(document) if artifact.kind == "folder")
     for artifact in _artifacts(document):
         if (artifact.kind == "folder") != (artifact.path in folders):
             raise DagError(f"path is both a file and a folder: {artifact.path}")
-    _check_origins(document)
     external_paths = tuple(artifact.path for artifact in document.external_inputs)
     external_set = set(external_paths)
     jobs = []
@@ -156,8 +192,14 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     for item in document.jobs:
         if item.id in seen_ids:
             raise DagError(f"duplicate job id: {item.id}")
+        if (item.checks is not None) != (document.version >= 6):
+            raise DagError(f"job {item.id}: `checks` came with version 6, and every job of one has them")
         inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
-        outputs = tuple(artifact.path for artifact in item.outputs.values())
+        produced = tuple(
+            Output(port, artifact.path, artifact.product, tuple(sorted(artifact.entities.items())))
+            for port, artifact in item.outputs.items()
+        )
+        outputs = tuple(output.path for output in produced)
         if len(item.depends_on) != len(set(item.depends_on)) or any(dep not in seen_ids for dep in item.depends_on):
             raise DagError(f"job {item.id} dependencies must name earlier jobs once each")
         for path in outputs:
@@ -170,20 +212,17 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             stage=tuple(item.stage),
             fingerprint=item.fingerprint,
             inputs=inputs,
-            outputs=outputs,
-            made=tuple(
-                Made(artifact.product, tuple(sorted(artifact.entities.items())))
-                for artifact in item.outputs.values()
-            ),
+            produced=produced,
             depends_on=tuple(item.depends_on),
             command=None if item.command is None else _command(item.command),
             verify=tuple(_command(command) for command in item.verify),
             checks=tuple(
                 Check(check.when, check.check, check.port, check.path, _command(check.command))
-                for check in item.checks
+                for check in item.checks or ()
             ),
+            origin=_origin(document, item),
         ))
-        for check in item.checks:
+        for check in item.checks or ():
             ports = item.inputs if check.when == "before" else {k: [v] for k, v in item.outputs.items()}
             if not any(artifact.path == check.path for artifact in ports.get(check.port, ())):
                 raise DagError(f"job {item.id}: check {check.check} names {check.path}, "

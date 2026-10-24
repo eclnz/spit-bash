@@ -13,7 +13,7 @@ from pathlib import Path
 from spit_bash.dag import load_dag
 from spit_bash.plan import Status, plan
 from spit_bash.run import execute
-from support import FIXTURE, command, document, job, read, run, sample, state_at
+from support import FIXTURE, artifact, command, document, job, read, run, sample, state_at
 
 # Each job writes its own marker, then waits for the other's: they finish only
 # if both run at once.
@@ -64,6 +64,47 @@ class RunTests(unittest.TestCase):
             self.assertFalse((root / "work/upper.txt").exists())
             self.assertIn("input is bad", results[0].log.read_text())
 
+    def test_a_missing_declared_output_fails_the_job_and_names_it(self):
+        # As `dcm2niix -b n` does: the command exits 0 but writes no `.json`.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            convert = data["jobs"][0]
+            convert["outputs"] = {"image": artifact("work/upper.txt"), "meta": artifact("work/upper.json")}
+            data["jobs"][1]["inputs"]["input"] = [artifact("work/upper.txt")]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(results[0].error, "command succeeded but did not create output meta work/upper.json")
+            self.assertIn("dependency 1 failed", results[1].error)
+            self.assertFalse((root / "final.txt").exists())
+            # No success was recorded, so the next plan runs the job again.
+            decisions = plan(read(data), state_at(root))
+            self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
+
+    def test_multiple_outputs_report_each_missing_port_and_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            data["jobs"][0]["outputs"] = {
+                "image": artifact("work/upper.txt"),
+                "meta": artifact("work/upper.json"),
+                "log": artifact("work/conversion.log"),
+            }
+            dag = read(data)
+            self.assertEqual(
+                [(output.port, output.path) for output in dag.jobs[0].produced],
+                [("image", "work/upper.txt"), ("meta", "work/upper.json"),
+                 ("log", "work/conversion.log")],
+            )
+            _, results = run(dag, state_at(root))
+            self.assertEqual(
+                results[0].error,
+                "command succeeded but did not create output meta work/upper.json, "
+                "output log work/conversion.log",
+            )
+            self.assertTrue((root / "work/upper.txt").exists())
+
     def test_job_output_goes_to_its_log(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -113,7 +154,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(state_at(root).jobs, {})
 
     @unittest.skipUnless(shutil.which("sort"), "requires sort")
-    def test_runs_real_spit_version_seven_fixture(self):
+    def test_runs_real_spit_version_four_fixture(self):
         with tempfile.TemporaryDirectory() as directory, FIXTURE.open(encoding="utf-8") as source:
             root = Path(directory)
             for path, content in {

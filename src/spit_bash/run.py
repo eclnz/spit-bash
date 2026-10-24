@@ -154,8 +154,10 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                 if after != before:
                     return Result(job, "input changed during execution", path)
                 outputs = stamps(dag, job.outputs)
-                if any(value is None for value in outputs.values()):
-                    return Result(job, "command succeeded but did not create every output", path)
+                missing = [f"output {output.port} {output.path}" for output in job.produced
+                           if outputs[output.path] is None]
+                if missing:
+                    return Result(job, "command succeeded but did not create " + ", ".join(missing), path)
                 error = await _checks(dag, job.after, log)
                 if error:
                     return Result(job, error, path)

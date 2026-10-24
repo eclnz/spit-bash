@@ -1,7 +1,9 @@
-"""Run the examples with a real `spit`, so a change to SPIT's DAG format fails here.
+"""Run SPIT's runnable examples with a real `spit`, so a change to SPIT's DAG format fails here.
 
-Set SPIT to the binary, or put `spit` on PATH; CI builds it from SPIT's dev branch,
-or from SPIT's branch of the same name as this one when there is one.
+The examples live in SPIT's repository, `examples/runnable`, where SPIT's own tests keep them
+in step with its syntax. Set SPIT to the binary, or put `spit` on PATH, and SPIT_REPOSITORY to
+the checkout it was built from (a sibling `../spit` by default). CI builds SPIT's dev branch,
+or SPIT's branch of the same name as this one when there is one.
 """
 
 import os
@@ -13,8 +15,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-EXAMPLES = Path(__file__).parents[1] / "examples"
 SPIT = os.environ.get("SPIT") or shutil.which("spit")
+SPIT_REPOSITORY = Path(os.environ.get("SPIT_REPOSITORY") or Path(__file__).parents[2] / "spit")
+EXAMPLES = SPIT_REPOSITORY / "examples" / "runnable"
 
 
 def spit_bash(*args, stdin=None):
@@ -23,7 +26,7 @@ def spit_bash(*args, stdin=None):
                           capture_output=True, text=True)
 
 
-@unittest.skipUnless(SPIT, "set SPIT or put spit on PATH")
+@unittest.skipUnless(SPIT and EXAMPLES.is_dir(), "set SPIT, and SPIT_REPOSITORY to the checkout with examples/runnable")
 class ExampleTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -47,7 +50,7 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual(result.stdout.count(" skip "), 5, result.stdout)
 
     def test_steps(self):
-        result = spit_bash("run", str(self.examples / "steps/steps.spit"))
+        result = spit_bash("run", str(self.examples / "steps/steps.spitin"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.examples / "steps/output/tidied/name=fruit.txt").read_text(), "apple\npear\n")
 
