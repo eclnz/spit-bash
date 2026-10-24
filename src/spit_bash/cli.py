@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
-from .plan import State, Status, adopt, plan
+from .plan import State, Status, adopt, apply_refreshes, plan
 from .run import execute, log_tail
 from .selection import Selection, parse_only, parse_stage, select
 
@@ -63,6 +63,9 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--state", help="state file (default: ROOT/.spit-bash/state.jsonl)")
         if action is not Action.ADOPT:
             command.add_argument("--force", action="store_true", help="rerun command jobs even if current")
+        if action is not Action.ADOPT:
+            command.add_argument("--stat-only", action="store_true",
+                                 help="judge files by size and modification time alone, never by content")
         if action is Action.PLAN:
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
@@ -154,7 +157,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{adoption.job.id}] {adoption.status.value:7} {adoption.job.operation}: {adoption.reason}")
             return 0
 
-        decisions = plan(dag, state, args.force)
+        decisions = plan(dag, state, args.force, not args.stat_only)
+        if args.action is Action.RUN:
+            apply_refreshes(decisions, state)
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
         if args.action is Action.PLAN and args.json:
             json.dump({
@@ -168,12 +173,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             for decision in decisions:
                 print(f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}")
+        maybe = sum(decision.status is Status.MAYBE for decision in decisions)
+        if maybe:
+            certain = sum(decision.status is Status.RUN for decision in decisions)
+            print(f"{certain} will run, {maybe} more may, if an upstream output changes", file=sys.stderr)
         if args.action is Action.PLAN:
             return 1 if blocked else 0
 
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs))
+            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM
@@ -181,19 +190,26 @@ def main(argv: list[str] | None = None) -> int:
             print("interrupted; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGINT
         failed = [result for result in results if result.error]
+        failed_ids = {result.job.id for result in failed}
         for result in failed:
             _report_failure(result.job, result.error or "", result.log)
+        # What each job came to: a `maybe` job is whatever `run` settled it as.
+        outcome = {result.job.id: result.settled for result in results}
         count = {status: 0 for status in Status}
+        cutoff = 0
         for decision in decisions:
-            count[decision.status] += 1
-        failed_ids = {result.job.id for result in failed}
-        failed_checks = sum(1 for d in decisions if d.status is Status.CHECK and d.job.id in failed_ids)
-        print(
-            f"{count[Status.RUN] - len(failed) + failed_checks} done, "
-            f"{count[Status.CHECK] - failed_checks} checked, {len(failed)} failed, "
-            f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked",
-            file=sys.stderr,
+            status = outcome.get(decision.job.id) or decision.status
+            if decision.job.id in failed_ids:
+                continue
+            count[status] += 1
+            cutoff += decision.status is Status.MAYBE and status is not Status.RUN
+        summary = (
+            f"{count[Status.RUN]} done, {count[Status.CHECK]} checked, {len(failed)} failed, "
+            f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked"
         )
+        if cutoff:
+            summary += f", {cutoff} of the current ones not rerun because upstream output was unchanged"
+        print(summary, file=sys.stderr)
         return 1 if failed or blocked else 0
     except (DagError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
