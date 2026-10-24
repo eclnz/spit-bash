@@ -9,15 +9,17 @@ import shutil
 import signal
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO
 
 from .dag import Check, Dag, Job
-from .plan import Decision, RunRecord, State, Status, job_key, stamps
-from .progress import Progress, duration
+from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
+from .progress import Progress, about, duration
 
 LOG_TAIL_LINES = 20
+# Files this small, all of a job's together, are hashed on the event loop.
+INLINE_HASH_BYTES = 1 << 20
 
 
 @dataclass(frozen=True)
@@ -25,8 +27,19 @@ class Result:
     job: Job
     error: str | None = None
     log: Path | None = None
-    # How long a successful run took, from its first check to its last.
-    seconds: float | None = None
+    # What a job planned `maybe` turned out to be, once its upstream jobs had finished.
+    settled: Status | None = None
+
+
+@dataclass(frozen=True)
+class _Ran:
+    """A job whose command and checks passed, before its files are hashed and recorded."""
+
+    after: dict[str, list[int] | None]
+    outputs: dict[str, list[int] | None]
+    log: Path
+    # How long it took, from its first check to its last.
+    seconds: float
 
 
 def log_path(logs: Path, job: Job) -> Path:
@@ -89,7 +102,12 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
-async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path) -> tuple[Result, ...]:
+def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
+    return hashes(dag, job.inputs), hashes(dag, job.outputs)
+
+
+async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path,
+                  hashing: bool = True) -> tuple[Result, ...]:
     """Run every job planned to run; stop them all if the process gets SIGTERM."""
     semaphore = asyncio.Semaphore(workers)
     tasks: dict[int, asyncio.Task[Result]] = {}
@@ -101,20 +119,52 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
             if dependency in tasks:
                 result = await tasks[dependency]
                 if result.error:
-                    if decision.status is Status.RUN:
+                    if decision.status in (Status.RUN, Status.MAYBE):
                         progress.dropped(job)
                     return Result(job, f"dependency {dependency} failed")
+        if decision.status is Status.MAYBE:
+            # Off the event loop: it may hash files the upstream jobs rewrote.
+            settled = await asyncio.to_thread(judge, dag, job, state, False, hashing)
+            if settled.status is not Status.RUN:
+                progress.dropped(job)
+            if settled.status is Status.BLOCKED:
+                return Result(job, settled.reason)
+            if settled.status is Status.SKIP:
+                if settled.refresh is not None:
+                    state.record(job_key(job), settled.refresh)
+                print(f"[{job.id}] skip {job.operation}: upstream output unchanged", flush=True)
+                return Result(job, None, None, Status.SKIP)
+            result = await perform(settled)
+            return replace(result, settled=settled.status)
+        return await perform(decision)
+
+    async def perform(decision: Decision) -> Result:
+        job = decision.job
         async with semaphore:
             if decision.status is Status.CHECK:
                 return await check_one(job)
             progress.started(job)
-            result = await attempt(job)
-            progress.finished(job, result.seconds)
-            if result.error is None:
-                print(f"[{job.id}] done in {duration(result.seconds or 0)}; {progress.report()}", flush=True)
-            return result
+            ran = await attempt(job)
+            if isinstance(ran, Result):
+                progress.finished(job, None)
+                return ran
+        # With the worker slot freed. Big files are hashed off the event loop, so they
+        # hold up neither another job's start nor the loop; small ones where they are,
+        # since a thread hop costs more than hashing a small file.
+        if not hashing:
+            input_hashes = output_hashes = None
+        elif sum(value[0] for value in (*ran.after.values(), *ran.outputs.values())) < INLINE_HASH_BYTES:
+            input_hashes, output_hashes = _hash_both(dag, job)
+        else:
+            input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
+        record = RunRecord(fingerprint=job.fingerprint, inputs=ran.after, outputs=ran.outputs, checks=job.checks_key,
+                           input_hashes=input_hashes, output_hashes=output_hashes, seconds=round(ran.seconds, 3))
+        state.record(job_key(job), record)
+        progress.finished(job, ran.seconds)
+        print(f"[{job.id}] done in {duration(ran.seconds)}; {progress.report()}", flush=True)
+        return Result(job, None, ran.log)
 
-    async def attempt(job: Job) -> Result:
+    async def attempt(job: Job) -> Result | _Ran:
         """Run one job: its input checks and `verify` commands, its command, then its output checks."""
         before = stamps(dag, job.inputs)
         if any(value is None for value in before.values()):
@@ -152,11 +202,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
             error = await _checks(dag, job.after, log)
             if error:
                 return Result(job, error, path)
-        seconds = time.monotonic() - started
-        record = RunRecord(fingerprint=job.fingerprint, inputs=after, outputs=outputs, checks=job.checks_key,
-                           seconds=round(seconds, 3))
-        state.record(job_key(job), record)
-        return Result(job, None, path, seconds)
+        return _Ran(after, outputs, path, time.monotonic() - started)
 
     async def check_one(job: Job) -> Result:
         """Run a current job's checks alone, on the files it already has."""
@@ -178,7 +224,9 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
         print(f"[{job.id}] checked", flush=True)
         return Result(job, None, path)
 
-    to_run = [decision.job for decision in decisions if decision.status is Status.RUN]
+    # A job planned `maybe` counts as one that runs until it is skipped, so the
+    # estimate is the longest the run can take.
+    to_run = [decision.job for decision in decisions if decision.status in (Status.RUN, Status.MAYBE)]
     previous = {}
     for job in dag.jobs:
         record = state.jobs.get(job_key(job))
@@ -187,8 +235,11 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
     progress = Progress.of(to_run, dag.jobs, previous, workers)
     if to_run:
         remaining = progress.remaining()
-        estimate = "" if remaining is None else f", about {duration(remaining)}"
-        print(f"{len(to_run)} jobs to run{estimate}", flush=True)
+        estimate = "" if remaining is None else f", {about(remaining)}"
+        maybe = sum(1 for decision in decisions if decision.status is Status.MAYBE)
+        more = f", and {maybe} more that may" if maybe else ""
+        runs = len(to_run) - maybe
+        print(f"{runs} job{'' if runs == 1 else 's'} to run{more}{estimate}", flush=True)
 
     loop = asyncio.get_running_loop()
     main = asyncio.current_task()
@@ -196,7 +247,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
     loop.add_signal_handler(signal.SIGTERM, main.cancel)
     try:
         for decision in decisions:
-            if decision.status in (Status.RUN, Status.CHECK):
+            if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE):
                 tasks[decision.job.id] = asyncio.create_task(run_one(decision))
         return tuple(await asyncio.gather(*tasks.values()))
     finally:

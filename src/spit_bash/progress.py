@@ -21,6 +21,11 @@ def duration(seconds: float) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
+def about(seconds: float) -> str:
+    """An estimate, as `about 12m`, or `under 1s`."""
+    return "under 1s" if seconds < 1 else f"about {duration(seconds)}"
+
+
 @dataclass
 class _Operation:
     """What is known of one operation's jobs: how long they took, and how many are left."""
@@ -125,4 +130,4 @@ class Progress:
         """`5 left, about 12m`, or `5 left` without an estimate."""
         jobs = self.left + len(self._started)
         remaining = self.remaining() if jobs else None
-        return f"{jobs} left" if remaining is None else f"{jobs} left, about {duration(remaining)}"
+        return f"{jobs} left" if remaining is None else f"{jobs} left, {about(remaining)}"

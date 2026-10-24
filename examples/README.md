@@ -27,6 +27,17 @@ Run the plan command again to see every job marked `skip`. Edit one of the files
 
 After a run, SPIT may report generated files that match no source path rule. Those files are not used as inputs.
 
+## Operations carried out by steps
+
+`steps.spit` declares `tidy` with a body of two `sort_lines` steps, then calls it once. The call becomes two ordinary jobs, so the runner plans and runs them like any others; the DAG's `calls` and each job's `origin` (format 7) say they came from `tidy`.
+
+```sh
+spit-bash run $EXAMPLES/steps/steps.spitin
+cat $EXAMPLES/steps/output/tidied/name=fruit.txt
+```
+
+The result is `apple`, `pear`.
+
 ## Verify before copying
 
 This job checks that its input is nonempty before copying it. Here the DAG is saved first, so you can inspect the JSON or reuse it:

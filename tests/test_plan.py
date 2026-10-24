@@ -101,7 +101,7 @@ class PlanTests(unittest.TestCase):
             (root / "work/upper.txt").write_text("made elsewhere")
             dag = read(sample(root))
             state = state_at(root)
-            self.assertEqual([d.reason for d in plan(dag, state)], ["no successful run recorded", "dependency will run"])
+            self.assertEqual([d.reason for d in plan(dag, state)], ["no successful run recorded", "output missing"])
             adoptions = adopt(dag, state)
             state.close()
             self.assertEqual([a.status for a in adoptions], [AdoptStatus.ADOPTED, AdoptStatus.LEFT])

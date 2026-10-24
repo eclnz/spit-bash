@@ -33,11 +33,12 @@ class StateTests(unittest.TestCase):
             self.assertEqual(set(State(path).jobs), {"key"})
             self.assertTrue(path.read_text().endswith("\n"))
 
-    def test_reads_a_version_3_record_without_a_time(self):
+    def test_reads_an_older_record_without_a_time(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.jsonl"
-            path.write_text('{"version": 3}\n{"key": "k", "record": {"fingerprint": "' + "a" * 16
-                            + '", "inputs": {}, "outputs": {"o": [1, 2]}, "checks": null}}\n')
+            path.write_text('{"version": 4}\n{"key": "k", "record": {"fingerprint": "' + "a" * 16
+                            + '", "inputs": {}, "outputs": {"o": [1, 2]}, "checks": null, '
+                            + '"input_hashes": {}, "output_hashes": {"o": "xxh3_128:0"}}}\n')
             self.assertIsNone(State(path).jobs["k"].seconds)
 
     def test_rejects_a_corrupt_line(self):

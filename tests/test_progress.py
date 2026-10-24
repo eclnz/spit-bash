@@ -54,6 +54,11 @@ class ProgressTests(unittest.TestCase):
         progress.dropped(a2)
         self.assertEqual((progress.left, progress.remaining()), (1, 5.0))
 
+    def test_an_estimate_under_a_second_says_so(self):
+        a1, = jobs("a")
+        progress = Progress.of([a1], (a1,), {1: 0.2}, workers=1)
+        self.assertEqual(progress.report(), "1 left, under 1s")
+
     def test_duration(self):
         self.assertEqual([duration(s) for s in (0.4, 45, 720, 3 * 3600 + 5 * 60)], ["under 1s", "45s", "12m", "3h05m"])
 
