@@ -98,13 +98,17 @@ class RunRecord(BaseModel):
     # The checks the job passed with on these files, as `Job.checks_key`
     # gives them; None for no checks, and for a job adopted without running any.
     checks: str | None = None
+    # How long the job took, from its first check to its last, for estimating
+    # how long a run will take; None for an adopted job, and before version 4.
+    seconds: float | None = None
 
 
 class StateHeader(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    # Version 3 records the checks each job passed; a version 2 record has none.
-    version: Literal[2, 3]
+    # Version 4 records how long each job took, version 3 the checks it
+    # passed; an older record has neither.
+    version: Literal[2, 3, 4]
 
 
 class StateEntry(BaseModel):
@@ -184,7 +188,7 @@ class State:
             self._log.close()
             self._log = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [StateHeader(version=3).model_dump_json()]
+        lines = [StateHeader(version=4).model_dump_json()]
         lines.extend(StateEntry(key=key, record=record).model_dump_json() for key, record in sorted(self.jobs.items()))
         fd, temporary = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:

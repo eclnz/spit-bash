@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import signal
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import IO
 
 from .dag import Check, Dag, Job
 from .plan import Decision, RunRecord, State, Status, job_key, stamps
+from .progress import Progress, duration
 
 LOG_TAIL_LINES = 20
 
@@ -23,6 +25,8 @@ class Result:
     job: Job
     error: str | None = None
     log: Path | None = None
+    # How long a successful run took, from its first check to its last.
+    seconds: float | None = None
 
 
 def log_path(logs: Path, job: Job) -> Path:
@@ -97,49 +101,62 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
             if dependency in tasks:
                 result = await tasks[dependency]
                 if result.error:
+                    if decision.status is Status.RUN:
+                        progress.dropped(job)
                     return Result(job, f"dependency {dependency} failed")
         async with semaphore:
             if decision.status is Status.CHECK:
                 return await check_one(job)
-            before = stamps(dag, job.inputs)
-            if any(value is None for value in before.values()):
-                return Result(job, "input disappeared before execution")
-            if job.command is None:
-                return Result(job, "job has no command")
-            path = log_path(logs, job)
-            print(f"[{job.id}] start {job.operation}", flush=True)
-            state.forget(job_key(job))
-            with path.open("wb") as log:
-                error = await _checks(dag, job.before, log)
+            progress.started(job)
+            result = await attempt(job)
+            progress.finished(job, result.seconds)
+            if result.error is None:
+                print(f"[{job.id}] done in {duration(result.seconds or 0)}; {progress.report()}", flush=True)
+            return result
+
+    async def attempt(job: Job) -> Result:
+        """Run one job: its input checks and `verify` commands, its command, then its output checks."""
+        before = stamps(dag, job.inputs)
+        if any(value is None for value in before.values()):
+            return Result(job, "input disappeared before execution")
+        if job.command is None:
+            return Result(job, "job has no command")
+        path = log_path(logs, job)
+        print(f"[{job.id}] start {job.operation}", flush=True)
+        started = time.monotonic()
+        state.forget(job_key(job))
+        with path.open("wb") as log:
+            error = await _checks(dag, job.before, log)
+            if error:
+                return Result(job, error, path)
+            for index, command in enumerate(job.verify, 1):
+                error = await _command(dag, command, f"verify {index}", log)
                 if error:
                     return Result(job, error, path)
-                for index, command in enumerate(job.verify, 1):
-                    error = await _command(dag, command, f"verify {index}", log)
-                    if error:
-                        return Result(job, error, path)
-                for output in job.outputs:
-                    written = dag.checked(output)
-                    if output in dag.folders:
-                        _clear(written)
-                    written.parent.mkdir(parents=True, exist_ok=True)
-                error = await _command(dag, job.command, "command", log)
-                if error:
-                    return Result(job, error, path)
-                after = stamps(dag, job.inputs)
-                if after != before:
-                    return Result(job, "input changed during execution", path)
-                outputs = stamps(dag, job.outputs)
-                missing = [f"output {output.port} {output.path}" for output in job.produced
-                           if outputs[output.path] is None]
-                if missing:
-                    return Result(job, "command succeeded but did not create " + ", ".join(missing), path)
-                error = await _checks(dag, job.after, log)
-                if error:
-                    return Result(job, error, path)
-            record = RunRecord(fingerprint=job.fingerprint, inputs=after, outputs=outputs, checks=job.checks_key)
-            state.record(job_key(job), record)
-            print(f"[{job.id}] done", flush=True)
-            return Result(job, None, path)
+            for output in job.outputs:
+                written = dag.checked(output)
+                if output in dag.folders:
+                    _clear(written)
+                written.parent.mkdir(parents=True, exist_ok=True)
+            error = await _command(dag, job.command, "command", log)
+            if error:
+                return Result(job, error, path)
+            after = stamps(dag, job.inputs)
+            if after != before:
+                return Result(job, "input changed during execution", path)
+            outputs = stamps(dag, job.outputs)
+            missing = [f"output {output.port} {output.path}" for output in job.produced
+                       if outputs[output.path] is None]
+            if missing:
+                return Result(job, "command succeeded but did not create " + ", ".join(missing), path)
+            error = await _checks(dag, job.after, log)
+            if error:
+                return Result(job, error, path)
+        seconds = time.monotonic() - started
+        record = RunRecord(fingerprint=job.fingerprint, inputs=after, outputs=outputs, checks=job.checks_key,
+                           seconds=round(seconds, 3))
+        state.record(job_key(job), record)
+        return Result(job, None, path, seconds)
 
     async def check_one(job: Job) -> Result:
         """Run a current job's checks alone, on the files it already has."""
@@ -160,6 +177,18 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                 state.record(key, record.model_copy(update={"checks": job.checks_key}))
         print(f"[{job.id}] checked", flush=True)
         return Result(job, None, path)
+
+    to_run = [decision.job for decision in decisions if decision.status is Status.RUN]
+    previous = {}
+    for job in dag.jobs:
+        record = state.jobs.get(job_key(job))
+        if record is not None and record.seconds is not None:
+            previous[job.id] = record.seconds
+    progress = Progress.of(to_run, dag.jobs, previous, workers)
+    if to_run:
+        remaining = progress.remaining()
+        estimate = "" if remaining is None else f", about {duration(remaining)}"
+        print(f"{len(to_run)} jobs to run{estimate}", flush=True)
 
     loop = asyncio.get_running_loop()
     main = asyncio.current_task()

@@ -96,6 +96,17 @@ None of this is part of a job's fingerprint, so an edit to a library that leaves
 
 Each job's output, from its checks, its `verify` commands and its command, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
 
+`run` also says how long it expects to take, and as each job finishes, how long it took and how many jobs are left:
+
+```text
+6 jobs to run, about 4s
+[1] start slow
+[2] start slow
+[1] done in 2s; 5 left, about 2s
+```
+
+A job is expected to take as long as its last successful run did, which the state records. A job that has not run before is expected to take the mean time of its operation's other jobs, from earlier runs and from this one. Until every job left has an estimate, `run` gives the count alone. The estimate divides the work left among `-j` processes, and does not allow for jobs that must wait for one another, so a long chain of dependent jobs at the end of a run takes longer than it says.
+
 ## Stopping a run
 
 Ctrl-C (SIGINT) or SIGTERM, as a cluster scheduler sends at a time limit, stops every running job's process group and exits with 130 or 143. Each job runs in a session of its own, so a tool's own child processes are stopped with it. A stopped job has no successful record, so the next run starts it again.
@@ -110,7 +121,7 @@ Jobs with no command can only be skipped, or checked, when all their outputs alr
 
 The file checks use size and modification time, not content hashes, and a folder's check sums these over the files under it. If another tool changes a file while preserving both, the runner will not notice. The state path can be changed with `--state PATH`; keep one state file per dataset root.
 
-The state file is a log of JSON lines: a header, version 3 since records hold the checks each job passed, then one line each time a job is recorded or forgotten, and the last line for a job wins. Finishing a job appends a line rather than rewriting the file, and the end of a run compacts it to one line per job. `run` and `adopt` lock the state, so a second run on the same dataset stops with an error instead of overwriting the first one's records. Locking uses `flock`, so spit-bash runs on Linux and macOS, not Windows. A version 2 state, written before checks, is still read; its records hold no checks.
+The state file is a log of JSON lines: a header, version 4 since records hold how long each job took, then one line each time a job is recorded or forgotten, and the last line for a job wins. Finishing a job appends a line rather than rewriting the file, and the end of a run compacts it to one line per job. `run` and `adopt` lock the state, so a second run on the same dataset stops with an error instead of overwriting the first one's records. Locking uses `flock`, so spit-bash runs on Linux and macOS, not Windows. A version 3 state is still read, and its records hold no times; a version 2 state, written before checks, holds no checks either.
 
 A SPIT DAG is validated with Pydantic before planning. Invalid field types, unknown fields, malformed argument parts and paths outside the dataset root are rejected before any command runs.
 
