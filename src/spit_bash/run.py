@@ -113,30 +113,39 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
 
+    async def failed_dependency(job: Job) -> int | None:
+        """Wait for the jobs this one needs, and name the first that failed."""
+        for dependency in job.depends_on:
+            if dependency in tasks and (await tasks[dependency]).error:
+                return dependency
+        return None
+
     async def run_one(decision: Decision) -> Result:
         job = decision.job
-        for dependency in job.depends_on:
-            if dependency in tasks:
-                result = await tasks[dependency]
-                if result.error:
-                    if decision.status in (Status.RUN, Status.MAYBE):
-                        progress.dropped(job)
-                    return Result(job, f"dependency {dependency} failed")
-        if decision.status is Status.MAYBE:
-            # Off the event loop: it may hash files the upstream jobs rewrote.
-            settled = await asyncio.to_thread(judge, dag, job, state, False, hashing)
-            if settled.status is not Status.RUN:
+        failed = await failed_dependency(job)
+        if failed is not None:
+            if decision.status in (Status.RUN, Status.MAYBE):
                 progress.dropped(job)
-            if settled.status is Status.BLOCKED:
-                return Result(job, settled.reason)
-            if settled.status is Status.SKIP:
-                if settled.refresh is not None:
-                    state.record(job_key(job), settled.refresh)
-                print(f"[{job.id}] skip {job.operation}: upstream output unchanged", flush=True)
-                return Result(job, None, None, Status.SKIP)
-            result = await perform(settled)
-            return replace(result, settled=settled.status)
+            return Result(job, f"dependency {failed} failed")
+        if decision.status is Status.MAYBE:
+            return await settle(job)
         return await perform(decision)
+
+    async def settle(job: Job) -> Result:
+        """Judge a job planned `maybe` again, now that its upstream jobs have finished."""
+        # Off the event loop: it may hash files the upstream jobs rewrote.
+        settled = await asyncio.to_thread(judge, dag, job, state, False, hashing)
+        if settled.status is not Status.RUN:
+            progress.dropped(job)
+        if settled.status is Status.BLOCKED:
+            return Result(job, settled.reason)
+        if settled.status is Status.SKIP:
+            if settled.refresh is not None:
+                state.record(job_key(job), settled.refresh)
+            print(f"[{job.id}] skip {job.operation}: upstream output unchanged", flush=True)
+            return Result(job, None, None, Status.SKIP)
+        result = await perform(settled)
+        return replace(result, settled=settled.status)
 
     async def perform(decision: Decision) -> Result:
         job = decision.job

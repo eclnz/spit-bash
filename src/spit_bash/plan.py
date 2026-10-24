@@ -302,49 +302,69 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: St
     return Decision(job, Status.SKIP, "current", refresh)
 
 
+def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamps) -> Decision:
+    """A job with no command is current only when its outputs exist and are newer than its inputs."""
+    outputs = stamps(dag, job.outputs, seen)
+    if any(value is None for value in outputs.values()):
+        return Decision(job, Status.BLOCKED, "no command and output is missing")
+    if any(by_id[dep].status is Status.RUN for dep in job.depends_on):
+        return Decision(job, Status.BLOCKED, "no command and dependency will run")
+    inputs = stamps(dag, job.inputs, seen)
+    if any(value is None for value in inputs.values()):
+        return Decision(job, Status.BLOCKED, "input is missing")
+    if job.inputs and max(value[1] for value in inputs.values()) > min(value[1] for value in outputs.values()):
+        return Decision(job, Status.BLOCKED, "no command and output is older than an input")
+    if job.checks:
+        return Decision(job, Status.CHECK, "no command; outputs exist, checking them")
+    return Decision(job, Status.SKIP, "no command; outputs exist")
+
+
+def _below_rerun(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: Stamps) -> Decision:
+    """A job that reads from one that will or may run: `maybe` when it is current as it stands."""
+    if not hashing or any(value is None for value in stamps(dag, job.inputs, seen).values()):
+        return Decision(job, Status.RUN, "dependency will run")
+    decision = judge(dag, job, state, force, hashing, seen)
+    if decision.status in (Status.SKIP, Status.CHECK):
+        return Decision(job, Status.MAYBE, "runs if an upstream output changes")
+    return decision
+
+
+def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
+    """Block a job that will start a program that cannot be found."""
+    if decision.status not in (Status.RUN, Status.CHECK, Status.MAYBE):
+        return decision
+    job = decision.job
+    commands = [check.command for check in job.checks]
+    if decision.status is not Status.CHECK:
+        commands += [job.command, *job.verify]
+    programs = sorted({command[0] for command in commands if command is not None} & missing_programs)
+    if not programs:
+        return decision
+    return Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
+
+
 def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
     seen: Stamps = {}
     missing_external = {path for path, value in stamps(dag, dag.external_inputs, seen).items() if value is None}
     missing_programs = _missing_programs(dag)
-    for job in dag.jobs:
+
+    def decide(job: Job) -> Decision:
         missing = [path for path in job.inputs if path in missing_external]
-        blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
         if missing:
-            decision = Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
-        elif blocked:
-            decision = Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
-        elif job.command is None:
-            outputs = stamps(dag, job.outputs, seen)
-            if any(value is None for value in outputs.values()):
-                decision = Decision(job, Status.BLOCKED, "no command and output is missing")
-            elif any(by_id[dep].status is Status.RUN for dep in job.depends_on):
-                decision = Decision(job, Status.BLOCKED, "no command and dependency will run")
-            elif any(value is None for value in stamps(dag, job.inputs, seen).values()):
-                decision = Decision(job, Status.BLOCKED, "input is missing")
-            elif job.inputs and max(value[1] for value in stamps(dag, job.inputs, seen).values()) > min(value[1] for value in outputs.values()):
-                decision = Decision(job, Status.BLOCKED, "no command and output is older than an input")
-            elif job.checks:
-                decision = Decision(job, Status.CHECK, "no command; outputs exist, checking them")
-            else:
-                decision = Decision(job, Status.SKIP, "no command; outputs exist")
-        elif any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
-            if not hashing or any(value is None for value in stamps(dag, job.inputs, seen).values()):
-                decision = Decision(job, Status.RUN, "dependency will run")
-            else:
-                decision = judge(dag, job, state, force, hashing, seen)
-                if decision.status in (Status.SKIP, Status.CHECK):
-                    decision = Decision(job, Status.MAYBE, "runs if an upstream output changes")
-        else:
-            decision = judge(dag, job, state, force, hashing, seen)
-        if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE):
-            commands = [check.command for check in job.checks]
-            if decision.status in (Status.RUN, Status.MAYBE):
-                commands += [job.command, *job.verify]
-            programs = sorted({command[0] for command in commands if command is not None} & missing_programs)
-            if programs:
-                decision = Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
+            return Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
+        blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
+        if blocked:
+            return Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
+        if job.command is None:
+            return _without_command(dag, job, by_id, seen)
+        if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
+            return _below_rerun(dag, job, state, force, hashing, seen)
+        return judge(dag, job, state, force, hashing, seen)
+
+    for job in dag.jobs:
+        decision = _with_programs(decide(job), missing_programs)
         decisions.append(decision)
         by_id[job.id] = decision
     return tuple(decisions)
