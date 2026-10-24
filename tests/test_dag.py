@@ -18,6 +18,15 @@ class LoadTests(unittest.TestCase):
             with self.assertRaisesRegex(DagError, "do not match"):
                 read(data)
 
+    def test_a_link_made_after_loading_cannot_lead_outside_the_root(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory)
+            dag = read(sample(root))
+            self.assertEqual(dag.path("work/upper.txt"), root / "work" / "upper.txt")
+            (root / "work").symlink_to(outside)
+            with self.assertRaisesRegex(DagError, "escapes dataset root"):
+                dag.checked("work/upper.txt")
+
     def test_pydantic_rejects_missing_and_wrong_typed_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             data = sample(Path(directory))

@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
@@ -39,7 +40,7 @@ def stamp(path: Path, folder: bool = False) -> list[int] | None:
         info = path.stat()
     except FileNotFoundError:
         return None
-    return [info.st_size, info.st_mtime_ns] if path.is_file() else None
+    return [info.st_size, info.st_mtime_ns] if stat.S_ISREG(info.st_mode) else None
 
 
 def _folder_stamp(path: Path) -> list[int] | None:
@@ -64,8 +65,24 @@ def _folder_stamp(path: Path) -> list[int] | None:
     return [size, latest, count]
 
 
-def stamps(dag: Dag, paths: tuple[str, ...]) -> dict[str, list[int] | None]:
-    return {path: stamp(dag.path(path), path in dag.folders) for path in paths}
+Stamps = dict[str, list[int] | None]
+
+
+def stamps(dag: Dag, paths: tuple[str, ...], seen: Stamps | None = None) -> Stamps:
+    """Each path's stamp; with `seen`, each path is read once and kept there.
+
+    Planning reads a file as one job's output and again as each consumer's
+    input, and nothing changes the files meanwhile, so it keeps every stamp it
+    reads for the whole plan. A run reads them afresh: its jobs change them.
+    """
+    if seen is None:
+        return {path: stamp(dag.path(path), path in dag.folders) for path in paths}
+    found = {}
+    for path in paths:
+        if path not in seen:
+            seen[path] = stamp(dag.path(path), path in dag.folders)
+        found[path] = seen[path]
+    return found
 
 
 # A file's size and time, or a folder's, with how many files it holds. Both
@@ -86,6 +103,9 @@ class RunRecord(BaseModel):
     # file that was only touched is not a change; None when the run did not hash.
     input_hashes: dict[str, str] | None = None
     output_hashes: dict[str, str] | None = None
+    # How long the job took, from its first check to its last, for estimating
+    # how long a run will take; None for an adopted job, and before version 5.
+    seconds: float | None = None
 
 
 class StateHeader(BaseModel):
@@ -93,7 +113,8 @@ class StateHeader(BaseModel):
 
     # Version 3 records the checks each job passed; a version 2 record has none.
     # Version 4 records the hash of each file; an older record has none.
-    version: Literal[2, 3, 4]
+    # Version 5 records how long each job took; an older record has no time.
+    version: Literal[2, 3, 4, 5]
 
 
 class StateEntry(BaseModel):
@@ -173,7 +194,7 @@ class State:
             self._log.close()
             self._log = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [StateHeader(version=4).model_dump_json()]
+        lines = [StateHeader(version=5).model_dump_json()]
         lines.extend(StateEntry(key=key, record=record).model_dump_json() for key, record in sorted(self.jobs.items()))
         fd, temporary = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:
@@ -249,20 +270,21 @@ def _missing_programs(dag: Dag) -> set[str]:
 UPSTREAM = (Status.RUN, Status.MAYBE)
 
 
-def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool) -> Decision:
+def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: Stamps | None = None) -> Decision:
     """Whether a command job is current on the files it has now, ignoring the jobs upstream.
 
-    `plan` asks it for every job, and `run` asks it again for a job planned
-    `maybe`, once the jobs it waits for have finished.
+    `plan` asks it for every job, with the stamps it has read so far as
+    `seen`, and `run` asks it again for a job planned `maybe`, once the jobs it
+    waits for have finished, with none, as those jobs changed the files.
     """
-    if any(value is None for value in stamps(dag, job.outputs).values()):
+    now_in, now_out = stamps(dag, job.inputs, seen), stamps(dag, job.outputs, seen)
+    if any(value is None for value in now_out.values()):
         return Decision(job, Status.RUN, "output missing")
-    if any(value is None for value in stamps(dag, job.inputs).values()):
+    if any(value is None for value in now_in.values()):
         return Decision(job, Status.BLOCKED, "input is missing")
     if force:
         return Decision(job, Status.RUN, "forced")
     record = state.jobs.get(job_key(job))
-    now_in, now_out = stamps(dag, job.inputs), stamps(dag, job.outputs)
     if record is None:
         return Decision(job, Status.RUN, "no successful run recorded")
     if record.fingerprint != job.fingerprint:
@@ -280,48 +302,72 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool) -> Decis
     return Decision(job, Status.SKIP, "current", refresh)
 
 
+def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamps) -> Decision:
+    """A job with no command is current only when its outputs exist and are newer than its inputs."""
+    outputs = stamps(dag, job.outputs, seen)
+    if any(value is None for value in outputs.values()):
+        return Decision(job, Status.BLOCKED, "no command and output is missing")
+    # It cannot be rerun, so any change upstream would leave its outputs stale.
+    if any(by_id[dep].status is Status.RUN for dep in job.depends_on):
+        return Decision(job, Status.BLOCKED, "no command and dependency will run")
+    if any(by_id[dep].status is Status.MAYBE for dep in job.depends_on):
+        return Decision(job, Status.BLOCKED, "no command and dependency may run")
+    inputs = stamps(dag, job.inputs, seen)
+    if any(value is None for value in inputs.values()):
+        return Decision(job, Status.BLOCKED, "input is missing")
+    if job.inputs and max(value[1] for value in inputs.values()) > min(value[1] for value in outputs.values()):
+        return Decision(job, Status.BLOCKED, "no command and output is older than an input")
+    if job.checks:
+        return Decision(job, Status.CHECK, "no command; outputs exist, checking them")
+    return Decision(job, Status.SKIP, "no command; outputs exist")
+
+
+def _below_rerun(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: Stamps) -> Decision:
+    """A job that reads from one that will or may run: `maybe` when it is current as it stands."""
+    if not hashing or any(value is None for value in stamps(dag, job.inputs, seen).values()):
+        return Decision(job, Status.RUN, "dependency will run")
+    decision = judge(dag, job, state, force, hashing, seen)
+    if decision.status in (Status.SKIP, Status.CHECK):
+        return Decision(job, Status.MAYBE, "runs if an upstream output changes")
+    return decision
+
+
+def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
+    """Block a job that will start a program that cannot be found."""
+    if decision.status not in (Status.RUN, Status.CHECK, Status.MAYBE):
+        return decision
+    job = decision.job
+    commands = [check.command for check in job.checks]
+    if decision.status is not Status.CHECK:
+        commands += [job.command, *job.verify]
+    programs = sorted({command[0] for command in commands if command is not None} & missing_programs)
+    if not programs:
+        return decision
+    return Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
+
+
 def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
-    missing_external = {path for path in dag.external_inputs if stamp(dag.path(path), path in dag.folders) is None}
+    seen: Stamps = {}
+    missing_external = {path for path, value in stamps(dag, dag.external_inputs, seen).items() if value is None}
     missing_programs = _missing_programs(dag)
-    for job in dag.jobs:
+
+    def decide(job: Job) -> Decision:
         missing = [path for path in job.inputs if path in missing_external]
-        blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
         if missing:
-            decision = Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
-        elif blocked:
-            decision = Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
-        elif job.command is None:
-            outputs = stamps(dag, job.outputs)
-            if any(value is None for value in outputs.values()):
-                decision = Decision(job, Status.BLOCKED, "no command and output is missing")
-            elif any(by_id[dep].status is Status.RUN for dep in job.depends_on):
-                decision = Decision(job, Status.BLOCKED, "no command and dependency will run")
-            elif any(value is None for value in stamps(dag, job.inputs).values()):
-                decision = Decision(job, Status.BLOCKED, "input is missing")
-            elif job.inputs and max(value[1] for value in stamps(dag, job.inputs).values()) > min(value[1] for value in outputs.values()):
-                decision = Decision(job, Status.BLOCKED, "no command and output is older than an input")
-            elif job.checks:
-                decision = Decision(job, Status.CHECK, "no command; outputs exist, checking them")
-            else:
-                decision = Decision(job, Status.SKIP, "no command; outputs exist")
-        elif any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
-            if not hashing or any(value is None for value in stamps(dag, job.inputs).values()):
-                decision = Decision(job, Status.RUN, "dependency will run")
-            else:
-                decision = judge(dag, job, state, force, hashing)
-                if decision.status in (Status.SKIP, Status.CHECK):
-                    decision = Decision(job, Status.MAYBE, "runs if an upstream output changes")
-        else:
-            decision = judge(dag, job, state, force, hashing)
-        if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE):
-            commands = [check.command for check in job.checks]
-            if decision.status in (Status.RUN, Status.MAYBE):
-                commands += [job.command, *job.verify]
-            programs = sorted({command[0] for command in commands if command is not None} & missing_programs)
-            if programs:
-                decision = Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
+            return Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
+        blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
+        if blocked:
+            return Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
+        if job.command is None:
+            return _without_command(dag, job, by_id, seen)
+        if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
+            return _below_rerun(dag, job, state, force, hashing, seen)
+        return judge(dag, job, state, force, hashing, seen)
+
+    for job in dag.jobs:
+        decision = _with_programs(decide(job), missing_programs)
         decisions.append(decision)
         by_id[job.id] = decision
     return tuple(decisions)

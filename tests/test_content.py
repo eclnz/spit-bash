@@ -142,10 +142,10 @@ class ContentTests(unittest.TestCase):
             state = State(path)
             self.assertIsNone(state.jobs["k"].input_hashes)
             state.compact()
-            self.assertTrue(path.read_text().startswith('{"version":4}'))
+            self.assertTrue(path.read_text().startswith('{"version":5}'))
             self.assertIsInstance(state.jobs["k"], RunRecord)
             with self.assertRaises(DagError):
-                path.write_text('{"version": 5}\n')
+                path.write_text('{"version": 6}\n')
                 State(path)
 
 

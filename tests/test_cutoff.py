@@ -78,6 +78,13 @@ class CutoffTests(unittest.TestCase):
         self.assertEqual([d.status for d in decisions], [Status.RUN] * 3)
         self.assertEqual(decisions[1].reason, "dependency will run")
 
+    def test_a_job_with_no_command_below_a_maybe_is_blocked(self):
+        self.data["jobs"][2]["command"] = None
+        self.edit_source("Hello")
+        decisions = plan(read(self.data), state_at(self.root))
+        self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.BLOCKED])
+        self.assertEqual(decisions[2].reason, "no command and dependency may run")
+
     def test_a_job_whose_input_is_missing_is_not_a_maybe(self):
         self.edit_source("Hello")
         (self.root / "final.txt").unlink()
@@ -98,6 +105,17 @@ class CutoffTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("1 done, 0 checked, 0 failed, 2 current, 0 blocked, "
                       "2 of the current ones not rerun because upstream output was unchanged", err)
+
+    def test_the_estimate_counts_a_maybe_job_until_it_is_skipped(self):
+        self.edit_source("Hello")
+        path = self.root / "jobs.spitdag"
+        path.write_text(json.dumps(self.data))
+        code, out, err = call("run", str(path))
+        self.assertEqual(code, 0, err)
+        # Every job has a time from the first run, so there is an estimate at once.
+        self.assertRegex(out, r"(?m)^1 job to run, and 2 more that may, (about|under) ")
+        self.assertRegex(out, r"\[1\] done in [^;]+; 2 left, (about|under) ")
+        self.assertIn("[2] skip op2: upstream output unchanged\n[3] skip op3: upstream output unchanged\n", out)
 
     def test_a_failed_job_stops_the_maybes_below_it(self):
         self.edit_source("Hello")
