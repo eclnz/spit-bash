@@ -120,8 +120,12 @@ class ExampleTests(unittest.TestCase):
 
     def test_streams(self):
         recipe = str(self.examples / "streams/streams.spitin")
-        # merge declares two cores and 64 MiB, more than this run has, so it runs alone.
+        # merge declares 64 MiB, more than this run has, so the run is refused.
         result = spit_bash("run", recipe, "-j", "1", "--memory", "32M")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("merge needs 64M of memory where the run has 32M", result.stderr)
+        # Without enforcement it runs alone, as it also declares two cores and the run has one.
+        result = spit_bash("run", recipe, "-j", "1", "--memory", "32M", "--no-enforce-memory")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("needs 2 cores where the run has 1, and 64M of memory where the run has 32M; it will run alone",
                       result.stdout)

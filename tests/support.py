@@ -68,10 +68,10 @@ def read(data, root=None):
     return load_dag(io.StringIO(json.dumps(data)), root)
 
 
-def run(dag, state, cores=2, force=False, memory=None, keep_failed=False):
+def run(dag, state, cores=2, force=False, memory=None, keep_failed=False, enforce_memory=True):
     decisions = plan(dag, state, force)
     results = asyncio.run(execute(dag, decisions, state, cores, dag.root / ".spit-bash" / "logs", memory=memory,
-                                  keep_failed=keep_failed))
+                                  keep_failed=keep_failed, enforce_memory=enforce_memory))
     state.close()
     return decisions, results
 

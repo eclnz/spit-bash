@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import IO
 
 from .dag import Check, Dag, Job
+from .memory import group_memory
 from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
 from .progress import Progress, about, duration
-from .schedule import ReadyQueue, ranks, too_big
+from .schedule import ReadyQueue, ranks, size, too_big
 
 LOG_TAIL_LINES = 20
 # Files this small, all of a job's together, are hashed on the event loop.
@@ -25,6 +26,8 @@ INLINE_HASH_BYTES = 1 << 20
 # How long a cancelled command has to exit after SIGTERM before its process
 # group is killed.
 STOP_GRACE_SECONDS = 5.0
+# How often a running command's memory is read, when it has a limit.
+MEMORY_POLL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -66,12 +69,13 @@ def partial(dag: Dag, stdout: str) -> Path:
 
 
 async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
-                   stdin: str | None = None, stdout: str | None = None) -> str | None:
+                   stdin: str | None = None, stdout: str | None = None, limit: int | None = None) -> str | None:
     """Run one of a job's commands; `kind` names it in an error, as `verify 1` or `command`.
 
     The command reads the input file `stdin` on its standard input, or nothing.
     Its standard output goes to the temporary file for the output `stdout`, or
-    to the log; its standard error always goes to the log.
+    to the log; its standard error always goes to the log. A command whose
+    process group holds more than `limit` bytes is killed.
     """
     shown = shlex.join(args)
     if stdin is not None:
@@ -92,11 +96,41 @@ async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
         except OSError as exc:
             return f"{kind} could not start: {exc}"
     try:
-        code = await process.wait()
+        if limit is None:
+            code = await process.wait()
+        else:
+            used = await _within(process, limit)
+            if used is not None:
+                await _kill(process)
+                return f"{kind} used {size(used)} of memory, more than the {size(limit)} its job declares, and was killed"
+            code = process.returncode
     except asyncio.CancelledError:
         await _stop(process)
         raise
     return None if code == 0 else f"{kind} exited with status {code}"
+
+
+async def _within(process: asyncio.subprocess.Process, limit: int) -> int | None:
+    """Wait for a command, reading its process group's memory as it runs; give what it held once it went over `limit`."""
+    while True:
+        try:
+            # Shielded, so that a timeout leaves the wait to go on.
+            await asyncio.wait_for(asyncio.shield(process.wait()), MEMORY_POLL_SECONDS)
+            return None
+        except asyncio.TimeoutError:
+            # Off the event loop: it reads a file for every process, or runs `ps`.
+            used = await asyncio.to_thread(group_memory, process.pid)
+            if used > limit:
+                return used
+
+
+async def _kill(process: asyncio.subprocess.Process) -> None:
+    """Kill a command's process group at once: one over its memory has no grace period to grow in."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    await process.wait()
 
 
 async def _stop(process: asyncio.subprocess.Process) -> None:
@@ -181,10 +215,10 @@ def _remove_outputs(dag: Dag, job: Job, log: IO[bytes], keep: bool = False) -> N
     log.flush()
 
 
-async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None],
-                log: IO[bytes]) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
+async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO[bytes],
+                limit: int | None) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
     """Run a job's command and its output checks; give an error, or its inputs' and outputs' stamps."""
-    error = await _command(dag, job.command, "command", log, job.stdin, job.stdout)
+    error = await _command(dag, job.command, "command", log, job.stdin, job.stdout, limit)
     if error:
         return error
     if job.stdout is not None:
@@ -213,11 +247,13 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores: int, logs: Path,
                   hashing: bool = True, memory: int | None = None,
-                  keep_failed: bool = False) -> tuple[Result, ...]:
+                  keep_failed: bool = False, enforce_memory: bool = True) -> tuple[Result, ...]:
     """Run every job planned to run, within `cores` and `memory` bytes; stop them all if the process gets SIGTERM.
 
-    `memory` None sets no limit on memory. A job that fails once its command
-    has started loses its outputs, unless `keep_failed` keeps them for debugging.
+    `memory` None sets no limit on memory. A job that declares memory has its
+    `verify` commands and main command killed when they hold more, unless
+    `enforce_memory` is off. A job that fails once its command has started
+    loses its outputs, unless `keep_failed` keeps them for debugging.
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
@@ -293,12 +329,13 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         print(f"[{job.id}] start {job.operation}", flush=True)
         started = time.monotonic()
         state.forget(job_key(job))
+        limit = job.memory if enforce_memory else None
         with path.open("wb") as log:
             error = await _checks(dag, job.before, log)
             if error:
                 return Result(job, error, path)
             for index, command in enumerate(job.verify, 1):
-                error = await _command(dag, command, f"verify {index}", log)
+                error = await _command(dag, command, f"verify {index}", log, limit=limit)
                 if error:
                     return Result(job, error, path)
             for output in job.outputs:
@@ -310,7 +347,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             # outputs, unless they are kept. A cancelled command's process group is stopped before
             # the cancellation reaches this point.
             try:
-                made = await _make(dag, job, before, log)
+                made = await _make(dag, job, before, log, limit)
             except asyncio.CancelledError:
                 _remove_outputs(dag, job, log, keep_failed)
                 raise

@@ -65,6 +65,14 @@ def too_big(job: Job, cores: int, memory: int | None) -> str | None:
     return ", and ".join(over) or None
 
 
+def over_memory(jobs: list[Job], memory: int | None) -> list[str]:
+    """Each job that declares more memory than the run has, as `[3] align needs 64G of memory where the run has 32G`."""
+    if memory is None:
+        return []
+    return [f"[{job.id}] {job.operation} needs {size(job.memory)} of memory where the run has {size(memory)}"
+            for job in jobs if job.memory is not None and job.memory > memory]
+
+
 class ReadyQueue:
     """The run's cores and memory, and the ready jobs waiting for them, highest rank first.
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from .dag import Dag, DagError, Job, load_dag
 from .plan import State, Status, adopt, apply_refreshes, plan
 from .run import execute, log_tail
+from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
 
 SPIT_SUFFIXES = (".spitin", ".spit", ".spitout")
@@ -78,6 +79,9 @@ def _parser() -> argparse.ArgumentParser:
                                  help="memory to use, as 512M or 32G: run jobs at once while\n"
                                       "the memory they declare fits (default: the machine's)")
             command.add_argument("--logs", help="folder for job logs (default: ROOT/.spit-bash/logs)")
+            command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
+                                 help="let a job hold more memory than it declares, and run a job\n"
+                                      "declaring more than --memory alone, rather than refusing it")
             command.add_argument("--keep-failed", action="store_true",
                                  help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
@@ -206,10 +210,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.PLAN:
             return 1 if blocked else 0
 
+        if args.enforce_memory:
+            running = [d.job for d in decisions if d.status in (Status.RUN, Status.MAYBE)]
+            over = over_memory(running, args.memory)
+            if over:
+                for line in over:
+                    print(line, file=sys.stderr)
+                print("lower the job's `resources` line, give more with --memory, "
+                      "or pass --no-enforce-memory to run it alone", file=sys.stderr)
+                return 2
+
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
             results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only, args.memory,
-                                          args.keep_failed))
+                                          args.keep_failed, args.enforce_memory))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM
