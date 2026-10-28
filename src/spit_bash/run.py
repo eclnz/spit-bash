@@ -9,6 +9,7 @@ import shutil
 import signal
 import time
 from collections import deque
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO
@@ -57,18 +58,38 @@ def log_tail(path: Path, lines: int = LOG_TAIL_LINES) -> list[str]:
         return []
 
 
-async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes]) -> str | None:
-    """Run one of a job's commands; `kind` names it in an error, as `verify 1` or `command`."""
-    log.write(f"$ {shlex.join(args)}\n".encode())
+def partial(dag: Dag, stdout: str) -> Path:
+    """The temporary file a command writes its standard output to, beside the output `stdout` it becomes."""
+    path = dag.checked(stdout)
+    return path.with_name(f".{path.name}.spit-bash-partial")
+
+
+async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
+                   stdin: str | None = None, stdout: str | None = None) -> str | None:
+    """Run one of a job's commands; `kind` names it in an error, as `verify 1` or `command`.
+
+    The command reads the input file `stdin` on its standard input, or nothing.
+    Its standard output goes to the temporary file for the output `stdout`, or
+    to the log; its standard error always goes to the log.
+    """
+    shown = shlex.join(args)
+    if stdin is not None:
+        shown += f" < {shlex.quote(stdin)}"
+    if stdout is not None:
+        shown += f" > {shlex.quote(stdout)}"
+    log.write(f"$ {shown}\n".encode())
     log.flush()
-    try:
-        # A session of its own lets a cancelled job's whole process group be
-        # stopped, and keeps a terminal's Ctrl-C from reaching it directly.
-        process = await asyncio.create_subprocess_exec(
-            *args, cwd=dag.root, stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
-        )
-    except OSError as exc:
-        return f"{kind} could not start: {exc}"
+    with ExitStack() as files:
+        try:
+            source = asyncio.subprocess.DEVNULL if stdin is None else files.enter_context(dag.checked(stdin).open("rb"))
+            target = log if stdout is None else files.enter_context(partial(dag, stdout).open("wb"))
+            # A session of its own lets a cancelled job's whole process group be
+            # stopped, and keeps a terminal's Ctrl-C from reaching it directly.
+            process = await asyncio.create_subprocess_exec(
+                *args, cwd=dag.root, stdin=source, stdout=target, stderr=log, start_new_session=True,
+            )
+        except OSError as exc:
+            return f"{kind} could not start: {exc}"
     try:
         code = await process.wait()
     except asyncio.CancelledError:
@@ -144,15 +165,33 @@ def _remove_outputs(dag: Dag, job: Job, log: IO[bytes], keep: bool = False) -> N
             log.write(f"spit-bash: could not remove failed output {output}: {exc}\n".encode())
         else:
             log.write(f"spit-bash: removed failed output {output}\n".encode())
+    # The standard output the command wrote before it failed, not yet renamed onto its output.
+    if job.stdout is not None:
+        temporary = partial(dag, job.stdout)
+        if keep:
+            if temporary.exists():
+                log.write(f"spit-bash: kept failed standard output {temporary.relative_to(dag.root)}\n".encode())
+            log.flush()
+            return
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as exc:
+            log.write(f"spit-bash: could not remove partial output {temporary}: {exc}\n".encode())
     log.flush()
 
 
 async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None],
                 log: IO[bytes]) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
     """Run a job's command and its output checks; give an error, or its inputs' and outputs' stamps."""
-    error = await _command(dag, job.command, "command", log)
+    error = await _command(dag, job.command, "command", log, job.stdin, job.stdout)
     if error:
         return error
+    if job.stdout is not None:
+        # Only a command that succeeded puts its standard output at the output's path.
+        try:
+            partial(dag, job.stdout).replace(dag.checked(job.stdout))
+        except OSError as exc:
+            return f"could not move standard output onto {job.stdout}: {exc}"
     after = stamps(dag, job.inputs)
     if after != before:
         return "input changed during execution"

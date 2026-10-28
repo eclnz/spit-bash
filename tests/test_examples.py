@@ -118,6 +118,25 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("0 done, 1 checked, 1 failed", result.stderr)
 
+    def test_streams(self):
+        recipe = str(self.examples / "streams/streams.spitin")
+        result = spit_bash("run", recipe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = self.examples / "streams/output"
+        self.assertEqual((output / "loud/plot=garden.txt").read_text(), "APPLES\nPEARS\nPLUMS\n")
+        self.assertEqual((output / "merged.txt").read_text(), "APPLES\nCARROTS\nLEEKS\nPEARS\nPLUMS\n")
+        self.assertEqual(sorted(path.name for path in (output / "loud").iterdir()),
+                         ["plot=allotment.txt", "plot=garden.txt"])
+        log = (self.examples / "streams/.spit-bash/logs/1-shout.log").read_text()
+        self.assertIn("$ tr a-z A-Z < input/allotment.txt > output/loud/plot=allotment.txt\n", log)
+
+        # tr prints nothing for an empty list, so its output fails its nonempty check and is not left behind.
+        (self.examples / "streams/input/garden.txt").write_text("")
+        result = spit_bash("run", recipe)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("failed: exited with status 1", result.stderr)
+        self.assertEqual(sorted(path.name for path in (output / "loud").iterdir()), ["plot=allotment.txt"])
+
     def test_folders(self):
         recipe = str(self.examples / "folders/albums.spitin")
         result = spit_bash("run", recipe, "-j", "2")

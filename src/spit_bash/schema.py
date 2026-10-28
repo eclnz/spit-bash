@@ -1,11 +1,14 @@
-"""The version 4 to 7 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 8 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+
+# The one version of the format spit-bash reads.
+VERSION = 8
 
 
 class SchemaModel(BaseModel):
@@ -40,8 +43,7 @@ class Artifact(SchemaModel):
     entities: dict[NonEmpty, str]
     artifact_type: NamedType | VariableType | None = Field(alias="type")
     path: RelativePath
-    # Version 5 added `kind`; every artifact of a version 4 DAG is a file.
-    kind: Literal["file", "folder"] = "file"
+    kind: Literal["file", "folder"]
 
 
 class PathPart(SchemaModel):
@@ -135,15 +137,18 @@ class SpitJob(SchemaModel):
     depends_on: list[JobId]
     dependents: list[JobId]
     command: Command | None
+    # The input file `command` reads on its standard input, and the output
+    # file its standard output is written to; null when it does not redirect.
+    stdin: RelativePath | None
+    stdout: RelativePath | None
     verify: list[Command]
-    # Version 6 added `checks`; a version 4 or 5 DAG has none.
-    checks: list[Check] | None = None
-    # Version 7 added `origin`; null for a step written in the pipeline.
-    origin: Origin | None = None
+    checks: list[Check]
+    # Null for a step written in the pipeline.
+    origin: Origin | None
 
 
 class SpitDag(SchemaModel):
-    version: Literal[4, 5, 6, 7]
+    version: int
     generator: Generator
     root: str | None
     external_inputs: list[Artifact]
@@ -151,7 +156,16 @@ class SpitDag(SchemaModel):
     executables: list[str]
     removed: list[Removal]
     left_out: list[LeftOut]
-    # Version 7 added `pipeline_files` and `calls`.
-    pipeline_files: list[PipelineFile] | None = None
-    calls: list[Call] | None = None
+    pipeline_files: list[PipelineFile]
+    calls: list[Call]
     jobs: list[SpitJob]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _version(cls, data: object) -> object:
+        """Name the version first, since a DAG of another one fails on fields it lacks or adds."""
+        version = data.get("version") if isinstance(data, dict) else None
+        if version != VERSION:
+            raise ValueError(f"spit-bash reads version {VERSION} of the DAG format, not {version}; "
+                             f"use a spit and spit-bash that match")
+        return data

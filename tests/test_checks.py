@@ -1,4 +1,4 @@
-"""Checks of single artifacts, from DAG version 6: when they run, what a failure does, and reruns."""
+"""Checks of single artifacts: when they run, what a failure does, and reruns."""
 
 import tempfile
 import unittest
@@ -20,9 +20,8 @@ def check(when, port, path, text, name=None):
 
 
 def checked(root, first=(), second=()):
-    """The sample DAG as version 6, with `first` and `second` as its jobs' checks."""
+    """The sample DAG, with `first` and `second` as its jobs' checks."""
     data = sample(root)
-    data["version"] = 6
     data["jobs"][0]["checks"] = list(first)
     data["jobs"][1]["checks"] = list(second)
     return data
@@ -109,14 +108,10 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(decisions[0].status, Status.BLOCKED)
         self.assertEqual(decisions[0].reason, "program not found: no-such-checker-here")
 
-    def test_checks_must_match_the_version_and_their_ports(self):
-        data = sample(self.root)
-        data["jobs"][0]["checks"] = []
-        with self.assertRaisesRegex(DagError, "came with version 6"):
-            read(data)
+    def test_checks_must_be_given_and_match_their_ports(self):
         data = checked(self.root)
         del data["jobs"][1]["checks"]
-        with self.assertRaisesRegex(DagError, "came with version 6"):
+        with self.assertRaisesRegex(DagError, "checks"):
             read(data)
         data = checked(self.root, [check("after", "output", "source.txt", "x")])
         with self.assertRaisesRegex(DagError, "not on its output output"):
