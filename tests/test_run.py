@@ -9,9 +9,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from spit_bash.dag import load_dag
 from spit_bash.plan import Status, plan
+from spit_bash import run as run_module
 from spit_bash.run import execute
 from support import FIXTURE, artifact, command, document, job, read, run, sample, state_at
 
@@ -151,6 +153,49 @@ class RunTests(unittest.TestCase):
             state.close()
             with self.assertRaises(ProcessLookupError):
                 os.kill(int(pid_file.read_text()), 0)
+            self.assertEqual(state_at(root).jobs, {})
+
+    def test_cancelling_kills_a_command_that_ignores_sigterm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("")
+            # The command and a child it starts both ignore SIGTERM, which the
+            # child inherits, so only SIGKILL stops either.
+            script = (
+                "import os, signal, subprocess, sys, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "open(sys.argv[2] + '.pid', 'w').write(f'{os.getpid()} {child.pid}')\n"
+                "time.sleep(60)\n"
+            )
+            dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
+            state = state_at(root)
+            pid_file = root / "out.txt.pid"
+
+            async def cancel_once_started():
+                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, 1, root / "logs"))
+                while not pid_file.exists() or not pid_file.read_text():
+                    await asyncio.sleep(0.01)
+                started = time.monotonic()
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                return time.monotonic() - started
+
+            with mock.patch.object(run_module, "STOP_GRACE_SECONDS", 0.2):
+                elapsed = asyncio.run(cancel_once_started())
+            state.close()
+            self.assertLess(elapsed, 5)
+            for pid in pid_file.read_text().split():
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    try:
+                        os.kill(int(pid), 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.01)
+                else:
+                    self.fail(f"process {pid} outlived the cancelled run")
             self.assertEqual(state_at(root).jobs, {})
 
     @unittest.skipUnless(shutil.which("sort"), "requires sort")

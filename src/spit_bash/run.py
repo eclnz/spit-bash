@@ -20,6 +20,9 @@ from .progress import Progress, about, duration
 LOG_TAIL_LINES = 20
 # Files this small, all of a job's together, are hashed on the event loop.
 INLINE_HASH_BYTES = 1 << 20
+# How long a cancelled command has to exit after SIGTERM before its process
+# group is killed.
+STOP_GRACE_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -69,13 +72,30 @@ async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes]) -
     try:
         code = await process.wait()
     except asyncio.CancelledError:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        await process.wait()
+        await _stop(process)
         raise
     return None if code == 0 else f"{kind} exited with status {code}"
+
+
+async def _stop(process: asyncio.subprocess.Process) -> None:
+    """Stop a cancelled command's process group: SIGTERM, then SIGKILL after a grace period.
+
+    The group is killed even when the command exits in time, so that a child
+    which ignores SIGTERM does not outlive it.
+    """
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(process.wait(), STOP_GRACE_SECONDS)
+    except asyncio.TimeoutError:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    await process.wait()
 
 
 async def _checks(dag: Dag, checks: tuple[Check, ...], log: IO[bytes]) -> str | None:
