@@ -101,7 +101,7 @@ A command writes its outputs where they belong, so one that fails can leave a tr
 spit-bash: removed failed output work/upper.txt
 ```
 
-A job that fails before its command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: the command never touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. There is no option to keep a failed job's outputs; the log holds the command's output for debugging, and the log shows each command it ran, after `$ `, to run by hand.
+A job that fails before its command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: the command never touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. There is no option to keep a failed job's outputs; for debugging a tool, its log holds what the command printed, and each command it ran, after `$ `, to run again by hand.
 
 ## Output and logs
 
