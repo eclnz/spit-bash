@@ -145,15 +145,19 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _remove_outputs(dag: Dag, job: Job, log: IO[bytes]) -> None:
+def _remove_outputs(dag: Dag, job: Job, log: IO[bytes], keep: bool = False) -> None:
     """Remove what a failed or cancelled command left at the job's outputs, and say so in its log.
 
     Called only once the command's process group has stopped, so nothing is
-    still writing to them.
+    still writing to them. With `keep`, as for `--keep-failed`, the log names
+    what is left instead.
     """
     for output in job.outputs:
         path = dag.checked(output)
         if not (path.is_symlink() or path.exists()):
+            continue
+        if keep:
+            log.write(f"spit-bash: kept failed output {output}\n".encode())
             continue
         try:
             _clear(path)
@@ -164,6 +168,11 @@ def _remove_outputs(dag: Dag, job: Job, log: IO[bytes]) -> None:
     # The standard output the command wrote before it failed, not yet renamed onto its output.
     if job.stdout is not None:
         temporary = partial(dag, job.stdout)
+        if keep:
+            if temporary.exists():
+                log.write(f"spit-bash: kept failed standard output {temporary.relative_to(dag.root)}\n".encode())
+            log.flush()
+            return
         try:
             temporary.unlink(missing_ok=True)
         except OSError as exc:
@@ -202,8 +211,12 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
 
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path,
-                  hashing: bool = True) -> tuple[Result, ...]:
-    """Run every job planned to run; stop them all if the process gets SIGTERM."""
+                  hashing: bool = True, keep_failed: bool = False) -> tuple[Result, ...]:
+    """Run every job planned to run; stop them all if the process gets SIGTERM.
+
+    A job that fails once its command has started loses its outputs, unless
+    `keep_failed` keeps them for debugging.
+    """
     semaphore = asyncio.Semaphore(workers)
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
@@ -293,15 +306,15 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                     _clear(written)
                 written.parent.mkdir(parents=True, exist_ok=True)
             # From here on, a failure removes what the command left at the job's
-            # outputs. A cancelled command's process group is stopped before
+            # outputs, unless they are kept. A cancelled command's process group is stopped before
             # the cancellation reaches this point.
             try:
                 made = await _make(dag, job, before, log)
             except asyncio.CancelledError:
-                _remove_outputs(dag, job, log)
+                _remove_outputs(dag, job, log, keep_failed)
                 raise
             if isinstance(made, str):
-                _remove_outputs(dag, job, log)
+                _remove_outputs(dag, job, log, keep_failed)
                 return Result(job, made, path)
         after, outputs = made
         return _Ran(after, outputs, path, time.monotonic() - started)

@@ -117,7 +117,7 @@ A command writes its outputs where they belong, so one that fails can leave a tr
 spit-bash: removed failed output work/upper.txt
 ```
 
-A job that fails before its command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: the command never touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. There is no option to keep a failed job's outputs; for debugging a tool, its log holds what the command printed, other than an output it writes on its standard output, and each command it ran, after `$ `, to run again by hand.
+A job that fails before its command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: the command never touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. To debug a tool, `run --keep-failed` leaves what a failed command wrote where it is, and the log says `spit-bash: kept failed output work/upper.txt` instead. An output the command writes on its standard output stays in its temporary file, such as `work/.upper.txt.spit-bash-partial`, and is never renamed onto the output. The job's record is dropped all the same, so a kept output is never taken for a finished one: the next run runs the job again. The log also holds what the command printed, other than an output it writes on its standard output, and each command it ran, after `$ `, to run again by hand.
 
 ## Output and logs
 

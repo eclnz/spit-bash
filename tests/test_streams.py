@@ -71,6 +71,15 @@ class StreamTests(unittest.TestCase):
         self.assertFalse(partial(dag, "work/upper.txt").exists())
         self.assertEqual(list(self.output.parent.iterdir()), [])
 
+    def test_keep_failed_keeps_what_a_failed_command_wrote_on_its_standard_output(self):
+        dag = read(streamed(self.root, HALF))
+        _, results = run(dag, state_at(self.root), keep_failed=True)
+        self.assertEqual(results[0].error, "command exited with status 4")
+        self.assertEqual(partial(dag, "work/upper.txt").read_text(), "half")
+        self.assertFalse(self.output.exists())
+        self.assertIn("spit-bash: kept failed standard output work/.upper.txt.spit-bash-partial\n",
+                      self.log.read_text())
+
     def test_a_failed_output_check_removes_the_renamed_output(self):
         data = streamed(self.root, UPPER)
         data["jobs"][0]["checks"] = [{
