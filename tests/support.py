@@ -29,6 +29,7 @@ def job(id, inputs, output, script, depends_on=(), dependents=(), fingerprint=No
         "outputs": {"output": artifact(output)},
         "depends_on": list(depends_on), "verify": [], "checks": [], "origin": None,
         "command": command(script, *inputs, output), "stdin": None, "stdout": None,
+        "cores": 1, "memory": None,
     }
 
 
@@ -67,9 +68,9 @@ def read(data, root=None):
     return load_dag(io.StringIO(json.dumps(data)), root)
 
 
-def run(dag, state, workers=2, force=False):
+def run(dag, state, cores=2, force=False, memory=None):
     decisions = plan(dag, state, force)
-    results = asyncio.run(execute(dag, decisions, state, workers, dag.root / ".spit-bash" / "logs"))
+    results = asyncio.run(execute(dag, decisions, state, cores, dag.root / ".spit-bash" / "logs", memory=memory))
     state.close()
     return decisions, results
 

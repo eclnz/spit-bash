@@ -35,13 +35,13 @@ def folders_dag(root):
         {
             "id": 1, "operation": "upper", "fingerprint": "a" * 16, "stage": [], "dependents": [2],
             "inputs": {"input": [folder("pages")]}, "outputs": {"output": folder("work/upper")},
-            "depends_on": [], "verify": [], "checks": [], "origin": None, "stdin": None, "stdout": None,
+            "depends_on": [], "verify": [], "checks": [], "origin": None, "stdin": None, "stdout": None, "cores": 1, "memory": None,
             "command": command(COPY_UPPER, "pages", "work/upper"),
         },
         {
             "id": 2, "operation": "join", "fingerprint": "b" * 16, "stage": [], "dependents": [],
             "inputs": {"input": [folder("work/upper")]}, "outputs": {"output": artifact("book.txt")},
-            "depends_on": [1], "verify": [], "checks": [], "origin": None, "stdin": None, "stdout": None,
+            "depends_on": [1], "verify": [], "checks": [], "origin": None, "stdin": None, "stdout": None, "cores": 1, "memory": None,
             "command": command(JOIN, "work/upper", "book.txt"),
         },
     ], [])
