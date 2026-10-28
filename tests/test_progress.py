@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -41,12 +42,59 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(progress.remaining(), (60 + 90 + 90) / 2)
 
     def test_a_running_job_counts_for_what_it_has_left(self):
-        a1, a2 = jobs("a", "a")
-        progress = Progress.of([a1, a2], (a1, a2), {1: 100.0, 2: 100.0}, workers=2)
+        a1, a2, a3 = jobs("a", "a", "a")
+        progress = Progress.of([a1, a2, a3], (a1, a2, a3), {1: 100.0, 2: 100.0, 3: 100.0}, workers=2)
         with mock.patch.object(timing.time, "monotonic", return_value=1000.0):
             progress.started(a1)
         with mock.patch.object(timing.time, "monotonic", return_value=1030.0):
-            self.assertEqual(progress.remaining(), (70 + 100) / 2)
+            self.assertEqual(progress.remaining(), (70 + 100 + 100) / 2)
+
+    def test_a_chain_is_decided_by_its_length_not_the_workers(self):
+        # Four jobs, each waiting for the one before: sixteen workers do not help.
+        chain = [replace(job, depends_on=(job.id - 1,) if job.id > 1 else ()) for job in jobs("a", "b", "c", "d")]
+        progress = Progress.of(chain, tuple(chain), {1: 10.0, 2: 20.0, 3: 30.0, 4: 40.0}, workers=16)
+        self.assertEqual(progress.remaining(), 100.0)
+        # The first job is running with 4s left: the rest of the chain still waits for it.
+        with mock.patch.object(timing.time, "monotonic", return_value=1000.0):
+            progress.started(chain[0])
+        with mock.patch.object(timing.time, "monotonic", return_value=1006.0):
+            self.assertEqual(progress.remaining(), 4 + 20 + 30 + 40)
+
+    def test_a_wide_dag_is_decided_by_its_work_shared_among_the_workers(self):
+        # Eight independent jobs, then one that reads them all.
+        wide = jobs(*"a" * 8, "group")
+        wide[-1] = replace(wide[-1], depends_on=tuple(range(1, 9)))
+        progress = Progress.of(wide, tuple(wide), {job.id: 10.0 for job in wide}, workers=2)
+        # Longest chain is 20s; the work is 90s over two workers.
+        self.assertEqual(progress.remaining(), 45.0)
+
+    def test_a_group_job_after_every_subject_lengthens_the_estimate(self):
+        # Two subjects of 10s each, then a 50s template over both, with four workers.
+        wide = jobs("subject", "subject", "template")
+        wide[-1] = replace(wide[-1], depends_on=(1, 2))
+        progress = Progress.of(wide, tuple(wide), {1: 10.0, 2: 10.0, 3: 50.0}, workers=4)
+        self.assertEqual(progress.remaining(), 60.0)
+
+    def test_the_longest_path_is_worked_out_again_as_estimates_change(self):
+        a, b2, b3, b4, b5 = jobs("a", "b", "b", "b", "b")
+        b2, b3, b4 = (replace(b2, depends_on=(1,)), replace(b3, depends_on=(2,)), replace(b4, depends_on=(3,)))
+        progress = Progress.of([a, b2, b3, b4, b5], (a, b2, b3, b4, b5), {1: 10.0}, workers=4)
+        # b has no time yet, so there is no estimate.
+        self.assertIsNone(progress.remaining())
+        with mock.patch.object(timing.time, "monotonic", return_value=1000.0):
+            progress.started(a)
+            progress.finished(a, 10.0)
+            progress.started(b2)
+            progress.started(b5)
+            progress.finished(b2, 30.0)
+            # b3 then b4, at b's mean of 30s each.
+            self.assertEqual(progress.remaining(), 60.0)
+            progress.finished(b5, 90.0)
+        # b's mean is now 60s, but the path is not worked out again so soon.
+        with mock.patch.object(timing.time, "monotonic", return_value=1001.0):
+            self.assertEqual(progress.remaining(), 60.0)
+        with mock.patch.object(timing.time, "monotonic", return_value=1000.0 + timing.REFRESH_SECONDS):
+            self.assertEqual(progress.remaining(), 120.0)
 
     def test_a_dropped_job_is_no_longer_left(self):
         a1, a2 = jobs("a", "a")
