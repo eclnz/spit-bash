@@ -237,7 +237,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(state_at(root).jobs, {})
 
     @unittest.skipUnless(shutil.which("sort"), "requires sort")
-    def test_runs_real_spit_version_four_fixture(self):
+    def test_runs_real_spit_fixture(self):
         with tempfile.TemporaryDirectory() as directory, FIXTURE.open(encoding="utf-8") as source:
             root = Path(directory)
             for path, content in {

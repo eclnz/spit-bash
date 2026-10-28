@@ -97,6 +97,7 @@ class ContentTests(unittest.TestCase):
             data["jobs"] = [{
                 "id": 1, "operation": "both", "fingerprint": "1" * 16, "stage": [], "dependents": [], "depends_on": [],
                 "inputs": {"items": [artifact(f"{n}.txt") for n in "abc"]}, "verify": [],
+                "checks": [], "origin": None, "stdin": None, "stdout": None,
                 "outputs": {"first": artifact("one.txt"), "second": artifact("two.txt")},
                 "command": command(script, "one.txt", "two.txt", "a.txt", "b.txt", "c.txt"),
             }]

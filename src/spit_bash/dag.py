@@ -54,6 +54,11 @@ class Job:
     command: tuple[str, ...] | None
     verify: tuple[tuple[str, ...], ...]
     checks: tuple[Check, ...] = ()
+    # The input file `command` reads on its standard input, and the output file
+    # its standard output is written to, relative to the root; None when it does
+    # not redirect.
+    stdin: str | None = None
+    stdout: str | None = None
     # Where a job made by a call to an operation carried out by steps comes
     # from, innermost first; empty for a step written in the pipeline.
     origin: tuple[str, ...] = ()
@@ -138,8 +143,8 @@ def _origin(document: SpitDag, job: SpitJob) -> tuple[str, ...]:
     """The body step that made `job`, then each call it is nested in, as lines to show."""
     if job.origin is None:
         return ()
-    files = document.pipeline_files or []
-    calls = document.calls or []
+    files = document.pipeline_files
+    calls = document.calls
 
     def place(file: int | None, line: int) -> str:
         return f"{files[file].path} line {line}" if file is not None else f"line {line}"
@@ -154,11 +159,9 @@ def _origin(document: SpitDag, job: SpitJob) -> tuple[str, ...]:
 
 
 def _check_origins(document: SpitDag) -> None:
-    """Version 7 names its files and calls, and every reference into them is in range."""
-    if (document.pipeline_files is not None, document.calls is not None) != (document.version >= 7,) * 2:
-        raise DagError("`pipeline_files` and `calls` came with version 7, and a DAG of it has both")
-    files = len(document.pipeline_files or [])
-    calls = document.calls or []
+    """Every reference into the pipeline's files and calls is in range."""
+    files = len(document.pipeline_files)
+    calls = document.calls
     for position, call in enumerate(calls):
         if any(file is not None and file >= files for file in (call.file, call.at.file)):
             raise DagError(f"call {position} names a file that `pipeline_files` does not hold")
@@ -168,6 +171,22 @@ def _check_origins(document: SpitDag) -> None:
     for job in document.jobs:
         if job.origin is not None and job.origin.call >= len(calls):
             raise DagError(f"job {job.id}: `origin` names a call that `calls` does not hold")
+
+
+def _check_streams(job: SpitJob, folders: frozenset[str]) -> None:
+    """`stdin` names one of the job's input files, and `stdout` one of its output files."""
+    if job.command is None and (job.stdin is not None or job.stdout is not None):
+        raise DagError(f"job {job.id}: a job with no command has no `stdin` or `stdout`")
+    for field_name, path, ports, side in (
+        ("stdin", job.stdin, [artifact for port in job.inputs.values() for artifact in port], "inputs"),
+        ("stdout", job.stdout, list(job.outputs.values()), "outputs"),
+    ):
+        if path is None:
+            continue
+        if not any(artifact.path == path for artifact in ports):
+            raise DagError(f"job {job.id}: `{field_name}` names {path}, which is not one of its {side}")
+        if path in folders:
+            raise DagError(f"job {job.id}: `{field_name}` names {path}, which is a folder, not a file")
 
 
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
@@ -182,10 +201,6 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     if not root.is_dir():
         raise DagError(f"dataset root is not a directory: {root}")
 
-    if document.version == 4 and any(
-        artifact.kind == "folder" for artifact in _artifacts(document)
-    ):
-        raise DagError("a version 4 DAG has no folders; `kind` came with version 5")
     _check_origins(document)
     folders = frozenset(artifact.path for artifact in _artifacts(document) if artifact.kind == "folder")
     for artifact in _artifacts(document):
@@ -199,8 +214,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     for item in document.jobs:
         if item.id in seen_ids:
             raise DagError(f"duplicate job id: {item.id}")
-        if (item.checks is not None) != (document.version >= 6):
-            raise DagError(f"job {item.id}: `checks` came with version 6, and every job of one has them")
+        _check_streams(item, folders)
         inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
         produced = tuple(
             Output(port, artifact.path, artifact.product, tuple(sorted(artifact.entities.items())))
@@ -225,11 +239,13 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             verify=tuple(_command(command) for command in item.verify),
             checks=tuple(
                 Check(check.when, check.check, check.port, check.path, _command(check.command))
-                for check in item.checks or ()
+                for check in item.checks
             ),
             origin=_origin(document, item),
+            stdin=item.stdin,
+            stdout=item.stdout,
         ))
-        for check in item.checks or ():
+        for check in item.checks:
             ports = item.inputs if check.when == "before" else {k: [v] for k, v in item.outputs.items()}
             if not any(artifact.path == check.path for artifact in ports.get(check.port, ())):
                 raise DagError(f"job {item.id}: check {check.check} names {check.path}, "

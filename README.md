@@ -1,6 +1,6 @@
 # spit-bash
 
-`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads SPIT DAG formats 4 to 7; format 5 added folder artifacts, format 6 [checks](#checks), and format 7 [where each job comes from](#where-jobs-come-from).
+`spit-bash` runs the jobs of a [SPIT](https://github.com/eclnz/spit) pipeline on one machine. Give it a recipe and it runs `spit dag` for you; give it a saved `.spitdag` or `dag --json` output and it needs nothing else, not the original `.spit` pipeline or `.spitout` inventory. It reads version 8 of SPIT's DAG format, and no other: a DAG of another version is rejected before anything runs, so use a `spit` and a `spit-bash` that match.
 
 See the [runnable examples](examples/README.md) for the recipes in SPIT's repository, their commands, and expected output.
 
@@ -63,7 +63,7 @@ A blocked job blocks the jobs that depend on it, but not the rest of the plan: `
 
 ## Folders
 
-A DAG of format 5 marks each artifact as a `file` or a `folder`, for a product SPIT declares with a `/` after its type, such as `source dicom : Dicom / [sub]`. The runner treats a folder as one artifact:
+A DAG marks each artifact as a `file` or a `folder`, for a product SPIT declares with a `/` after its type, such as `source dicom : Dicom / [sub]`. The runner treats a folder as one artifact:
 
 - A source folder must exist as a folder, or the jobs that read it are blocked.
 - Before a job's command runs, and after its `verify` commands pass, the runner removes whatever an earlier run left at each of its output folders. The job owns the folder, since SPIT puts no other artifact inside one, and old files would otherwise mix with the new run's. Then it makes the folder's parent, but not the folder: the tool makes it, as `cp -R` does, and some tools refuse to write into a folder that exists. A tool that needs the folder to exist first, such as `dcm2niix -o`, is wrapped in a script that makes it.
@@ -72,7 +72,7 @@ A DAG of format 5 marks each artifact as a `file` or a `folder`, for a product S
 
 ## Checks
 
-A DAG of format 6 gives each job its `checks`: commands that each test one artifact, which the pipeline declares once with SPIT's `check` and attaches to ports and sources. A `before` check tests an input before the job's `verify` commands; an `after` check tests an output once the command has made it. A failed check fails the job, even when its command exited 0, and the jobs that depend on it do not run:
+A DAG gives each job its `checks`: commands that each test one artifact, which the pipeline declares once with SPIT's `check` and attaches to ports and sources. A `before` check tests an input before the job's `verify` commands; an `after` check tests an output once the command has made it. A failed check fails the job, even when its command exited 0, and the jobs that depend on it do not run:
 
 ```text
 [2] failed: check contains(today) on output output output/copied/day=tuesday.txt failed: exited with status 1
@@ -82,7 +82,7 @@ A successful run records the checks the job passed. SPIT leaves checks out of a 
 
 ## Where jobs come from
 
-In SPIT, an operation can be carried out by a body of steps, often declared in a library, and a call to it becomes ordinary jobs. A DAG of format 7 says where each such job came from: the files the pipeline was read from, each call, and the line of the body's step. When one of these jobs fails, `run` prints the step and every call it is nested in, innermost first:
+In SPIT, an operation can be carried out by a body of steps, often declared in a library, and a call to it becomes ordinary jobs. The DAG says where each such job came from: the files the pipeline was read from, each call, and the line of the body's step. When one of these jobs fails, `run` prints the step and every call it is nested in, innermost first:
 
 ```text
 [1] failed: command exited with status 3
@@ -93,6 +93,22 @@ In SPIT, an operation can be carried out by a body of steps, often declared in a
 
 None of this is part of a job's fingerprint, so an edit to a library that leaves a job's command as it was reruns nothing.
 
+## Standard input and output
+
+A SPIT command written `wc -l < {table} > {@output}` reads an input file on its standard input and writes an output file on its standard output. The DAG gives the job's command as `wc -l` alone, and names the two files in the job's `stdin` and `stdout`:
+
+- The runner opens the `stdin` file for reading as the command's standard input. A command without one reads nothing: its standard input is `/dev/null`.
+- The runner writes the command's standard output to a temporary file beside the `stdout` output, named like `.x.txt.spit-bash-partial` for `x.txt`, and renames it onto the output only once the command exits 0. So a failed or stopped command never leaves a partial output at its path, and the temporary file is removed with the job's other outputs. After the rename the output is like any other: it must exist, which an empty file does, and its output checks run on it.
+- The command's standard error goes to the job's log in either case. A command without `stdout` has its standard output logged as well.
+
+The log shows the redirections on the command's line, as a shell would write them:
+
+```text
+$ grep -v '^#' < input/allotment.txt > output/plain/plot=allotment.txt
+```
+
+`verify` commands and checks never redirect. When the DAG is loaded, a job's `stdin` must be one of its input files and its `stdout` one of its output files, neither a folder, and a job with no command has neither; a DAG that breaks one of these is rejected.
+
 ## When a job fails
 
 A command writes its outputs where they belong, so one that fails can leave a truncated file that another tool, a person or `spit discover` would take for a finished one. Once a job's command has been started, any failure removes everything at the job's declared outputs, files and folders alike: a non-zero exit, a command that could not start, a missing output, an input that changed while it ran, a failed output check, or a run that was stopped. An output that passed the command but failed a check is complete but rejected, and is removed too. The runner removes them only after the command's process group has stopped, so nothing is still writing, and the job's log ends with a line for each output it removed:
@@ -101,11 +117,11 @@ A command writes its outputs where they belong, so one that fails can leave a tr
 spit-bash: removed failed output work/upper.txt
 ```
 
-A job that fails before its command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: the command never touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. There is no option to keep a failed job's outputs; for debugging a tool, its log holds what the command printed, and each command it ran, after `$ `, to run again by hand.
+A job that fails before its command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: the command never touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. There is no option to keep a failed job's outputs; for debugging a tool, its log holds what the command printed, other than an output it writes on its standard output, and each command it ran, after `$ `, to run again by hand.
 
 ## Output and logs
 
-Each job's output, from its checks, its `verify` commands and its command, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
+Each job's output, from its checks, its `verify` commands and its command, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, except a command's standard output when it is [one of the job's outputs](#standard-input-and-output), which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
 
 `run` also says how long it expects to take, and as each job finishes, how long it took and how many jobs are left:
 
@@ -150,4 +166,4 @@ messie -af .
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-The test fixture under `tests/fixtures/` is actual version 4 output from SPIT's `command_demo` example. `tests/test_examples.py` runs the [examples](examples/README.md), which live in SPIT's repository under `examples/runnable` so that SPIT's own tests keep them in step with its syntax, with a real `spit`: set `SPIT` to the binary or put it on `PATH`, and `SPIT_REPOSITORY` to the checkout it was built from (a sibling `../spit` by default), or the tests are skipped. CI builds `spit` from SPIT's `dev` branch, where its work merges, for them, on every push and weekly, so a change to SPIT's DAG format fails here. A branch whose name SPIT also has, other than `main` and `dev`, builds SPIT's branch of that name instead, so a change made in both repositories is tested together before SPIT's half merges.
+The test fixture under `tests/fixtures/` is actual version 8 output from SPIT's `command_demo` example, written without a root. `tests/test_examples.py` runs the [examples](examples/README.md), which live in SPIT's repository under `examples/runnable` so that SPIT's own tests keep them in step with its syntax, with a real `spit`: set `SPIT` to the binary or put it on `PATH`, and `SPIT_REPOSITORY` to the checkout it was built from (a sibling `../spit` by default), or the tests are skipped. CI builds `spit` from SPIT's `dev` branch, where its work merges, for them, on every push and weekly, so a change to SPIT's DAG format fails here. A branch whose name SPIT also has, other than `main` and `dev`, builds SPIT's branch of that name instead, so a change made in both repositories is tested together before SPIT's half merges.

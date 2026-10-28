@@ -50,7 +50,7 @@ class LoadTests(unittest.TestCase):
                 read(data)
             self.assertEqual(read(data, directory).root, Path(directory).resolve())
 
-    def test_reads_real_spit_version_four_fixture(self):
+    def test_reads_real_spit_fixture(self):
         with tempfile.TemporaryDirectory() as directory, FIXTURE.open(encoding="utf-8") as source:
             dag = load_dag(source, directory)
             self.assertEqual(len(dag.jobs), 5)
