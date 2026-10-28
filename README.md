@@ -104,7 +104,7 @@ A SPIT command written `wc -l < {table} > {@output}` reads an input file on its 
 The log shows the redirections on the command's line, as a shell would write them:
 
 ```text
-$ grep -v '^#' < input/allotment.txt > output/plain/plot=allotment.txt
+$ tr a-z A-Z < input/allotment.txt > output/loud/plot=allotment.txt
 ```
 
 `verify` commands and checks never redirect. When the DAG is loaded, a job's `stdin` must be one of its input files and its `stdout` one of its output files, neither a folder, and a job with no command has neither; a DAG that breaks one of these is rejected.
