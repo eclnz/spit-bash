@@ -110,11 +110,13 @@ async def _checks(dag: Dag, checks: tuple[Check, ...], log: IO[bytes]) -> str | 
 
 
 def _clear(path: Path) -> None:
-    """Remove what an earlier run left at a folder output's path.
+    """Remove whatever is at an output's path, file or folder.
 
-    The job owns the folder, as SPIT puts nothing else inside it, so files an
-    earlier run left would only mix with this run's. The tool makes the folder
-    itself: some refuse to write into one that exists.
+    The job owns the path, as SPIT puts nothing else there or inside it. Before
+    the command, it clears an output folder, so that files an earlier run left
+    do not mix with this run's: the tool makes the folder itself, since some
+    refuse to write into one that exists. After a failure, it clears every
+    output, so that a half-written file does not look finished.
     """
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -122,13 +124,60 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _remove_outputs(dag: Dag, job: Job, log: IO[bytes], keep: bool = False) -> None:
+    """Remove what a failed or cancelled command left at the job's outputs, and say so in its log.
+
+    Called only once the command's process group has stopped, so nothing is
+    still writing to them. With `keep`, as for `--keep-failed`, the log names
+    what is left instead.
+    """
+    for output in job.outputs:
+        path = dag.checked(output)
+        if not (path.is_symlink() or path.exists()):
+            continue
+        if keep:
+            log.write(f"spit-bash: kept failed output {output}\n".encode())
+            continue
+        try:
+            _clear(path)
+        except OSError as exc:
+            log.write(f"spit-bash: could not remove failed output {output}: {exc}\n".encode())
+        else:
+            log.write(f"spit-bash: removed failed output {output}\n".encode())
+    log.flush()
+
+
+async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None],
+                log: IO[bytes]) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
+    """Run a job's command and its output checks; give an error, or its inputs' and outputs' stamps."""
+    error = await _command(dag, job.command, "command", log)
+    if error:
+        return error
+    after = stamps(dag, job.inputs)
+    if after != before:
+        return "input changed during execution"
+    outputs = stamps(dag, job.outputs)
+    missing = [f"output {output.port} {output.path}" for output in job.produced
+               if outputs[output.path] is None]
+    if missing:
+        return "command succeeded but did not create " + ", ".join(missing)
+    error = await _checks(dag, job.after, log)
+    if error:
+        return error
+    return after, outputs
+
+
 def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
     return hashes(dag, job.inputs), hashes(dag, job.outputs)
 
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path,
-                  hashing: bool = True) -> tuple[Result, ...]:
-    """Run every job planned to run; stop them all if the process gets SIGTERM."""
+                  hashing: bool = True, keep_failed: bool = False) -> tuple[Result, ...]:
+    """Run every job planned to run; stop them all if the process gets SIGTERM.
+
+    A job that fails once its command has started loses its outputs, unless
+    `keep_failed` keeps them for debugging.
+    """
     semaphore = asyncio.Semaphore(workers)
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
@@ -217,20 +266,18 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
                 if output in dag.folders:
                     _clear(written)
                 written.parent.mkdir(parents=True, exist_ok=True)
-            error = await _command(dag, job.command, "command", log)
-            if error:
-                return Result(job, error, path)
-            after = stamps(dag, job.inputs)
-            if after != before:
-                return Result(job, "input changed during execution", path)
-            outputs = stamps(dag, job.outputs)
-            missing = [f"output {output.port} {output.path}" for output in job.produced
-                       if outputs[output.path] is None]
-            if missing:
-                return Result(job, "command succeeded but did not create " + ", ".join(missing), path)
-            error = await _checks(dag, job.after, log)
-            if error:
-                return Result(job, error, path)
+            # From here on, a failure removes what the command left at the job's
+            # outputs, unless they are kept. A cancelled command's process group is stopped before
+            # the cancellation reaches this point.
+            try:
+                made = await _make(dag, job, before, log)
+            except asyncio.CancelledError:
+                _remove_outputs(dag, job, log, keep_failed)
+                raise
+            if isinstance(made, str):
+                _remove_outputs(dag, job, log, keep_failed)
+                return Result(job, made, path)
+        after, outputs = made
         return _Ran(after, outputs, path, time.monotonic() - started)
 
     async def check_one(job: Job) -> Result:

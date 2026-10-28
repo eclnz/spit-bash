@@ -112,7 +112,8 @@ class ExampleTests(unittest.TestCase):
         pipeline.write_text(pipeline.read_text().replace("contains(today)", "contains(for)"))
         result = spit_bash("plan", recipe)
         self.assertIn("[1] check   copy: checks changed", result.stdout)
-        self.assertIn("[2] run     copy: no successful run recorded", result.stdout)
+        # The failed job's output was removed, so it runs again.
+        self.assertIn("[2] run     copy: output missing", result.stdout)
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 1)
         self.assertIn("0 done, 1 checked, 1 failed", result.stderr)

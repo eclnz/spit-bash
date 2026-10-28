@@ -62,6 +62,8 @@ class CheckTests(unittest.TestCase):
         self.assertIn("check holds(nope) on output output work/upper.txt failed", results[0].error)
         self.assertEqual(results[1].error, "dependency 1 failed")
         self.assertEqual(state_at(self.root).jobs, {})
+        # The output is whole but rejected, so it is removed.
+        self.assertFalse((self.root / "work/upper.txt").exists())
 
     def test_a_changed_check_reruns_the_check_not_the_command(self):
         run(read(checked(self.root)), state_at(self.root))

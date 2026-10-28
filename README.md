@@ -67,7 +67,7 @@ A DAG of format 5 marks each artifact as a `file` or a `folder`, for a product S
 
 - A source folder must exist as a folder, or the jobs that read it are blocked.
 - Before a job's command runs, and after its `verify` commands pass, the runner removes whatever an earlier run left at each of its output folders. The job owns the folder, since SPIT puts no other artifact inside one, and old files would otherwise mix with the new run's. Then it makes the folder's parent, but not the folder: the tool makes it, as `cp -R` does, and some tools refuse to write into a folder that exists. A tool that needs the folder to exist first, such as `dcm2niix -o`, is wrapped in a script that makes it.
-- After the command, each output folder must exist. It may be empty.
+- After the command, each output folder must exist. It may be empty. If the job fails once its command has started, the folder is [removed](#when-a-job-fails) with everything in it.
 - A folder counts as changed when anything under it does. Its record is the total size of the files under it, the latest modification time of any of them or of any folder under it, and how many files it holds. A folder's own modification time is not enough, as it changes only when an entry directly in it is added, removed or renamed.
 
 ## Checks
@@ -93,6 +93,16 @@ In SPIT, an operation can be carried out by a body of steps, often declared in a
 
 None of this is part of a job's fingerprint, so an edit to a library that leaves a job's command as it was reruns nothing.
 
+## When a job fails
+
+A command writes its outputs where they belong, so one that fails can leave a truncated file that another tool, a person or `spit discover` would take for a finished one. Once a job's command has been started, any failure removes everything at the job's declared outputs, files and folders alike: a non-zero exit, a command that could not start, a missing output, an input that changed while it ran, a failed output check, or a run that was stopped. An output that passed the command but failed a check is complete but rejected, and is removed too. The runner removes them only after the command's process group has stopped, so nothing is still writing, and the job's log ends with a line for each output it removed:
+
+```text
+spit-bash: removed failed output work/upper.txt
+```
+
+A job that fails before its command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: the command never touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. To debug a tool, `run --keep-failed` leaves what a failed command wrote where it is, and the log says `spit-bash: kept failed output work/upper.txt` instead. The job's record is dropped all the same, so a kept output is never taken for a finished one: the next run runs the job again. The log also holds what the command printed, and each command it ran, after `$ `, to run again by hand.
+
 ## Output and logs
 
 Each job's output, from its checks, its `verify` commands and its command, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
@@ -116,7 +126,7 @@ A job with a reason of its own, such as a changed input, a missing output or a c
 
 ## Stopping a run
 
-Ctrl-C (SIGINT) or SIGTERM, as a cluster scheduler sends at a time limit, stops every running job's process group and exits with 130 or 143. Each job's group gets SIGTERM, then SIGKILL once the command has exited or five seconds have passed, whichever is first, so a tool that ignores SIGTERM or hangs while cleaning up cannot keep the run from stopping. Each job runs in a session of its own, so a tool's own child processes are stopped with it. A stopped job has no successful record, so the next run starts it again.
+Ctrl-C (SIGINT) or SIGTERM, as a cluster scheduler sends at a time limit, stops every running job's process group and exits with 130 or 143. Each job's group gets SIGTERM, then SIGKILL once the command has exited or five seconds have passed, whichever is first, so a tool that ignores SIGTERM or hangs while cleaning up cannot keep the run from stopping. Each job runs in a session of its own, so a tool's own child processes are stopped with it. A stopped job has no successful record, so the next run starts it again, and what its command had written at its outputs is [removed](#when-a-job-fails).
 
 ## Existing paths and reruns
 
@@ -124,7 +134,7 @@ The runner records successful jobs in `ROOT/.spit-bash/state.jsonl`, keyed by th
 
 Existing outputs with no successful record are run again; use `plan` to inspect this before `run`. For a dataset whose outputs were made before spit-bash was used, `spit-bash adopt` records every job whose inputs and outputs all exist as current, without running it. It trusts the files as they are, so adopt only outputs you know were made by the commands in the DAG.
 
-Jobs with no command can only be skipped, or checked, when all their outputs already exist and are at least as new as their inputs; a missing or stale output blocks them. Failed verification, failed commands, failed checks and missing outputs fail the job and its dependents. A partial DAG reports its `left_out` count while still planning and running its complete jobs.
+Jobs with no command can only be skipped, or checked, when all their outputs already exist and are at least as new as their inputs; a missing or stale output blocks them. Failed verification, failed commands, failed checks and missing outputs fail the job and its dependents, and a failure once the command has started [removes the job's outputs](#when-a-job-fails). A partial DAG reports its `left_out` count while still planning and running its complete jobs.
 
 A file is first compared by size and modification time, which costs one `stat`, and only a file whose stamp differs from the record is read and hashed. A folder's stamp sums these over the files under it, and its hash covers the names of everything under it and the bytes of its files. When the hash matches, `run` stores the new stamp, so the next plan need not hash the file again; `plan` itself changes nothing. If another tool changes a file while preserving both its size and its modification time, the runner will not notice. After a job runs, the hashes of its inputs and outputs are recorded; `adopt` records none, so a touched file of an adopted job counts as changed once. `--stat-only` on `plan` and `run` judges by size and time alone, as before, and records no hashes. The hash is xxh3_128 from the `xxhash` package, or BLAKE2b where that has no wheel, and each recorded hash names its algorithm, so one made with another is never taken as equal. The state path can be changed with `--state PATH`; keep one state file per dataset root.
 
