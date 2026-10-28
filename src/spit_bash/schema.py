@@ -145,6 +145,10 @@ class SpitJob(SchemaModel):
     checks: list[Check]
     # Null for a step written in the pipeline.
     origin: Origin | None
+    # What the job needs while its commands run: cores, 1 when its operation
+    # declares none, and memory in bytes, null when it claims none.
+    cores: Annotated[int, Field(ge=1)]
+    memory: Annotated[int, Field(ge=0, le=2**53)] | None
 
 
 class SpitDag(SchemaModel):

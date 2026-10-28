@@ -175,7 +175,7 @@ class RunTests(unittest.TestCase):
             jobs = [job(1, ["source.txt"], "a.txt", MEET), job(2, ["source.txt"], "b.txt", MEET)]
             jobs[0]["command"].append(["b.txt.here"])
             jobs[1]["command"].append(["a.txt.here"])
-            _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), workers=2)
+            _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), cores=2)
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "a.txt").read_text(), "True")
             self.assertEqual((root / "b.txt").read_text(), "True")
@@ -267,7 +267,7 @@ class RunTests(unittest.TestCase):
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(content)
             dag = load_dag(source, directory)
-            decisions, results = run(dag, state_at(root), workers=3)
+            decisions, results = run(dag, state_at(root), cores=3)
             self.assertEqual([d.status for d in decisions], [Status.RUN] * 5)
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "merged/group=alpha.txt").read_text(), "a\nb\nz\n")

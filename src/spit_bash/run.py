@@ -17,6 +17,7 @@ from typing import IO
 from .dag import Check, Dag, Job
 from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
 from .progress import Progress, about, duration
+from .schedule import ReadyQueue, ranks, too_big
 
 LOG_TAIL_LINES = 20
 # Files this small, all of a job's together, are hashed on the event loop.
@@ -210,14 +211,14 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
     return hashes(dag, job.inputs), hashes(dag, job.outputs)
 
 
-async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path,
-                  hashing: bool = True, keep_failed: bool = False) -> tuple[Result, ...]:
-    """Run every job planned to run; stop them all if the process gets SIGTERM.
+async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores: int, logs: Path,
+                  hashing: bool = True, memory: int | None = None,
+                  keep_failed: bool = False) -> tuple[Result, ...]:
+    """Run every job planned to run, within `cores` and `memory` bytes; stop them all if the process gets SIGTERM.
 
-    A job that fails once its command has started loses its outputs, unless
-    `keep_failed` keeps them for debugging.
+    `memory` None sets no limit on memory. A job that fails once its command
+    has started loses its outputs, unless `keep_failed` keeps them for debugging.
     """
-    semaphore = asyncio.Semaphore(workers)
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
 
@@ -257,7 +258,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
 
     async def perform(decision: Decision) -> Result:
         job = decision.job
-        async with semaphore:
+        async with queue.slot(job):
             if decision.status is Status.CHECK:
                 return await check_one(job)
             progress.started(job)
@@ -265,7 +266,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
             if isinstance(ran, Result):
                 progress.finished(job, None)
                 return ran
-        # With the worker slot freed. Big files are hashed off the event loop, so they
+        # With the job's cores and memory freed. Big files are hashed off the event loop, so they
         # hold up neither another job's start nor the loop; small ones where they are,
         # since a thread hop costs more than hashing a small file.
         if not hashing:
@@ -347,7 +348,14 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
         record = state.jobs.get(job_key(job))
         if record is not None and record.seconds is not None:
             previous[job.id] = record.seconds
-    progress = Progress.of(to_run, dag.jobs, previous, workers)
+    progress = Progress.of(to_run, dag.jobs, previous, cores)
+    # Every job that will take cores and memory, ranked by the longest chain of work it heads.
+    slotted = [decision.job for decision in decisions if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE)]
+    queue = ReadyQueue(cores, memory, ranks(slotted, progress.expected, previous))
+    for job in slotted:
+        over = too_big(job, cores, memory)
+        if over is not None:
+            print(f"[{job.id}] needs {over}; it will run alone, once no other job is running", flush=True)
     if to_run:
         remaining = progress.remaining()
         estimate = "" if remaining is None else f", {about(remaining)}"

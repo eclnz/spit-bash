@@ -62,6 +62,10 @@ class Job:
     # Where a job made by a call to an operation carried out by steps comes
     # from, innermost first; empty for a step written in the pipeline.
     origin: tuple[str, ...] = ()
+    # What the job needs while its commands run: cores, and memory in bytes,
+    # None when it claims none.
+    cores: int = 1
+    memory: int | None = None
 
     @property
     def outputs(self) -> tuple[str, ...]:
@@ -244,6 +248,8 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             origin=_origin(document, item),
             stdin=item.stdin,
             stdout=item.stdout,
+            cores=item.cores,
+            memory=item.memory,
         ))
         for check in item.checks:
             ports = item.inputs if check.when == "before" else {k: [v] for k, v in item.outputs.items()}
