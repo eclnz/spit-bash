@@ -170,9 +170,9 @@ def _clear(path: Path) -> None:
 
     The job owns the path, as SPIT puts nothing else there or inside it. Before
     the command, it clears an output folder, so that files an earlier run left
-    do not mix with this run's: the tool makes the folder itself, since some
-    refuse to write into one that exists. After a failure, it clears every
-    output, so that a half-written file does not look finished.
+    do not mix with this run's, and the folder is made again, empty, for the
+    tool to write into. After a failure, it clears every output, so that a
+    half-written file does not look finished.
     """
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -341,8 +341,11 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             for output in job.outputs:
                 written = dag.checked(output)
                 if output in dag.folders:
+                    # An earlier run's files would mix with this run's; the tool writes into an empty folder.
                     _clear(written)
-                written.parent.mkdir(parents=True, exist_ok=True)
+                    written.mkdir(parents=True)
+                else:
+                    written.parent.mkdir(parents=True, exist_ok=True)
             # From here on, a failure removes what the command left at the job's
             # outputs, unless they are kept. A cancelled command's process group is stopped before
             # the cancellation reaches this point.
