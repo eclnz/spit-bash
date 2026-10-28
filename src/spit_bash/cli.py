@@ -78,6 +78,8 @@ def _parser() -> argparse.ArgumentParser:
                                  help="memory to use, as 512M or 32G: run jobs at once while\n"
                                       "the memory they declare fits (default: the machine's)")
             command.add_argument("--logs", help="folder for job logs (default: ROOT/.spit-bash/logs)")
+            command.add_argument("--keep-failed", action="store_true",
+                                 help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
 
 
@@ -206,7 +208,8 @@ def main(argv: list[str] | None = None) -> int:
 
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only, args.memory))
+            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only, args.memory,
+                                          args.keep_failed))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM
