@@ -101,6 +101,18 @@ class FolderTests(unittest.TestCase):
             self.assertFalse((root / "work/upper/stale.txt").exists())
             self.assertEqual((root / "book.txt").read_text(), "ONE TWO")
 
+    def test_a_failed_command_leaves_no_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pages(root)
+            data = folders_dag(root)
+            data["jobs"][0]["command"][2] = [COPY_UPPER + "sys.exit(2)\n"]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(results[0].error, "command exited with status 2")
+            self.assertFalse((root / "work/upper").exists())
+            self.assertTrue((root / "work").is_dir())
+            self.assertIn("removed failed output work/upper", results[0].log.read_text())
+
     def test_a_missing_folder_blocks_and_a_command_must_make_its_folder(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

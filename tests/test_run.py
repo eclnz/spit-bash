@@ -105,7 +105,37 @@ class RunTests(unittest.TestCase):
                 "command succeeded but did not create output meta work/upper.json, "
                 "output log work/conversion.log",
             )
-            self.assertTrue((root / "work/upper.txt").exists())
+            # The output the command did write is removed with the failure.
+            self.assertFalse((root / "work/upper.txt").exists())
+            self.assertIn("removed failed output work/upper.txt", results[0].log.read_text())
+
+    def test_a_failed_command_leaves_no_partial_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            data["jobs"][0]["command"][2] = [
+                "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
+            ]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(results[0].error, "command exited with status 4")
+            self.assertFalse((root / "work/upper.txt").exists())
+            log = results[0].log.read_text()
+            self.assertTrue(log.endswith("spit-bash: removed failed output work/upper.txt\n"), log)
+
+    def test_a_failure_before_the_command_keeps_an_earlier_runs_outputs(self):
+        # The command never ran, so the files are still the last run's, whole.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            run(read(data), state_at(root))
+            data["jobs"][0]["fingerprint"] = "c" * 16
+            data["jobs"][0]["verify"] = [command("import sys; sys.exit(3)")]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(results[0].error, "verify 1 exited with status 3")
+            self.assertEqual((root / "work/upper.txt").read_text(), "HELLO")
+            self.assertNotIn("removed", results[0].log.read_text())
 
     def test_job_output_goes_to_its_log(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -136,7 +166,12 @@ class RunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "source.txt").write_text("")
-            script = "import os, sys, time; open(sys.argv[2] + '.pid', 'w').write(str(os.getpid())); time.sleep(60)"
+            script = (
+                "import os, sys, time\n"
+                "open(sys.argv[2], 'w').write('half')\n"
+                "open(sys.argv[2] + '.pid', 'w').write(str(os.getpid()))\n"
+                "time.sleep(60)\n"
+            )
             dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
             state = state_at(root)
             pid_file = root / "out.txt.pid"
@@ -154,6 +189,9 @@ class RunTests(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(int(pid_file.read_text()), 0)
             self.assertEqual(state_at(root).jobs, {})
+            # The half-written output went with the stopped command.
+            self.assertFalse((root / "out.txt").exists())
+            self.assertIn("removed failed output out.txt", (root / "logs/1-op1.log").read_text())
 
     def test_cancelling_kills_a_command_that_ignores_sigterm(self):
         with tempfile.TemporaryDirectory() as directory:
