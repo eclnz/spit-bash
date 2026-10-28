@@ -64,14 +64,14 @@ Both copies pass. Write `Rest.` into `$EXAMPLES/checks/input/tuesday.txt` and ru
 
 ## Standard input and output
 
-`streams.spit` runs `grep -v '^#' < {list} > {@output}` on each plot's list, then `sort {items} > {@output}` on the results. The runner feeds each list to `grep` on its standard input, and writes each command's standard output to its output file, which appears only once the command succeeds:
+`streams.spit` runs `tr a-z A-Z < {list} > {@output}` on each plot's list, then `sort {items} > {@output}` on the results. `tr` reads only its standard input, so the runner feeds each list to it there, and writes each command's standard output to its output file, which appears only once the command succeeds:
 
 ```sh
 spit-bash run $EXAMPLES/streams/streams.spitin
 cat $EXAMPLES/streams/output/merged.txt
 ```
 
-The result is `apples`, `carrots`, `leeks`, `pears`, `plums`. The log of each `uncomment` job, such as `$EXAMPLES/streams/.spit-bash/logs/1-uncomment.log`, shows its command with the redirections; the lines `grep` keeps go to the output, not the log. Write only comment lines into `$EXAMPLES/streams/input/garden.txt` and run again: `grep` keeps nothing and exits with status 1, so the job fails and leaves no `plot=garden.txt`, not even an empty one. Restore the input before planning another run.
+The result is `APPLES`, `CARROTS`, `LEEKS`, `PEARS`, `PLUMS`. The log of each `shout` job, such as `$EXAMPLES/streams/.spit-bash/logs/1-shout.log`, shows its command with the redirections; the capitals `tr` prints go to the output, not the log. Empty `$EXAMPLES/streams/input/garden.txt` and run again: `tr` prints nothing, so its output fails its `nonempty` check, the job fails, and it leaves no `plot=garden.txt`, not even an empty one. Restore the input before planning another run.
 
 ## Folders in and out
 

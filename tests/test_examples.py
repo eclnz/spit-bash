@@ -123,19 +123,19 @@ class ExampleTests(unittest.TestCase):
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 0, result.stderr)
         output = self.examples / "streams/output"
-        self.assertEqual((output / "plain/plot=garden.txt").read_text(), "apples\npears\nplums\n")
-        self.assertEqual((output / "merged.txt").read_text(), "apples\ncarrots\nleeks\npears\nplums\n")
-        self.assertEqual(sorted(path.name for path in (output / "plain").iterdir()),
+        self.assertEqual((output / "loud/plot=garden.txt").read_text(), "APPLES\nPEARS\nPLUMS\n")
+        self.assertEqual((output / "merged.txt").read_text(), "APPLES\nCARROTS\nLEEKS\nPEARS\nPLUMS\n")
+        self.assertEqual(sorted(path.name for path in (output / "loud").iterdir()),
                          ["plot=allotment.txt", "plot=garden.txt"])
-        log = (self.examples / "streams/.spit-bash/logs/1-uncomment.log").read_text()
-        self.assertIn("$ grep -v '^#' < input/allotment.txt > output/plain/plot=allotment.txt\n", log)
+        log = (self.examples / "streams/.spit-bash/logs/1-shout.log").read_text()
+        self.assertIn("$ tr a-z A-Z < input/allotment.txt > output/loud/plot=allotment.txt\n", log)
 
-        # grep finds nothing to keep and exits with status 1, so its empty output is not left behind.
-        (self.examples / "streams/input/garden.txt").write_text("# only comments\n")
+        # tr prints nothing for an empty list, so its output fails its nonempty check and is not left behind.
+        (self.examples / "streams/input/garden.txt").write_text("")
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("command exited with status 1", result.stderr)
-        self.assertEqual(sorted(path.name for path in (output / "plain").iterdir()), ["plot=allotment.txt"])
+        self.assertIn("failed: exited with status 1", result.stderr)
+        self.assertEqual(sorted(path.name for path in (output / "loud").iterdir()), ["plot=allotment.txt"])
 
     def test_folders(self):
         recipe = str(self.examples / "folders/albums.spitin")
