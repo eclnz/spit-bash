@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import heapq
 import time
 from dataclasses import dataclass, field
 
 from .dag import Job
+from .schedule import longest_paths
+
+# How often, at most, the longest path through the jobs left is worked out
+# again, in seconds: it takes a pass over every job left.
+REFRESH_SECONDS = 5.0
 
 
 def duration(seconds: float) -> str:
@@ -49,6 +55,10 @@ class Progress:
     with no time of its own is expected to take the mean time of its
     operation's jobs, from earlier runs and from this one. Until every
     remaining job has an estimate, there is no estimate for the run.
+
+    The run has at least two things left to do: its work, shared among the
+    workers, and its longest chain of jobs that wait for one another, which
+    extra workers cannot shorten. The estimate is the longer of the two.
     """
 
     workers: int
@@ -57,11 +67,24 @@ class Progress:
     _own: dict[int, float] = field(default_factory=dict)
     # The jobs running now, by id, and when each started.
     _started: dict[int, tuple[Job, float]] = field(default_factory=dict)
+    # The jobs to run, in DAG order, and the ids of those not started yet.
+    _jobs: list[Job] = field(default_factory=list)
+    _waiting: set[int] = field(default_factory=set)
+    # The longest path to the end of the run from each job's end, and the
+    # waiting jobs by the longest from their start, longest first; ids no
+    # longer waiting are dropped as they reach the top. Worked out at
+    # `_paths_at`, by the estimates then.
+    _after: dict[int, float] = field(default_factory=dict)
+    _longest: list[tuple[float, int]] = field(default_factory=list)
+    _paths_at: float | None = None
 
     @classmethod
     def of(cls, to_run: list[Job], dag_jobs: tuple[Job, ...], previous: dict[int, float], workers: int) -> Progress:
-        """`previous` gives each job's time from its last run, by job id, for any job in the DAG."""
-        progress = cls(workers, len(to_run))
+        """`previous` gives each job's time from its last run, by job id, for any job in the DAG.
+
+        `to_run` is in DAG order, as the plan gives it.
+        """
+        progress = cls(workers, len(to_run), _jobs=list(to_run), _waiting={job.id for job in to_run})
         for job in dag_jobs:
             if job.id in previous:
                 operation = progress._operation(job)
@@ -79,8 +102,12 @@ class Progress:
     def _operation(self, job: Job) -> _Operation:
         return self._operations.setdefault(job.operation, _Operation())
 
-    def _expected(self, job: Job) -> float | None:
-        return self._own.get(job.id, self._operation(job).mean())
+    def expected(self, job: Job) -> float | None:
+        """How long a job is expected to take, or None when neither it nor its operation has a time."""
+        if job.id in self._own:
+            return self._own[job.id]
+        operation = self._operations.get(job.operation)
+        return None if operation is None else operation.mean()
 
     def _remove(self, job: Job) -> None:
         operation = self._operation(job)
@@ -89,6 +116,7 @@ class Progress:
         else:
             operation.unknown -= 1
         self.left -= 1
+        self._waiting.discard(job.id)
 
     def started(self, job: Job) -> None:
         self._remove(job)
@@ -117,14 +145,37 @@ class Progress:
         # A running job counts for what it has left, by its estimate.
         now = time.monotonic()
         for job, start in self._started.values():
-            expected = self._expected(job)
+            expected = self.expected(job)
             if expected is None:
                 return None
             work += max(expected - (now - start), 0.0)
         jobs = self.left + len(self._started)
         if jobs == 0:
             return 0.0
-        return work / min(self.workers, jobs)
+        return max(work / min(self.workers, jobs), self._critical(now))
+
+    def _critical(self, now: float) -> float:
+        """The longest chain of expected times through the jobs left; a running job counts for what it has left.
+
+        Called only once every job left has an estimate.
+        """
+        if self._paths_at is None or now - self._paths_at >= REFRESH_SECONDS:
+            self._paths(now)
+        while self._longest and self._longest[0][1] not in self._waiting:
+            heapq.heappop(self._longest)
+        longest = -self._longest[0][0] if self._longest else 0.0
+        for job, start in self._started.values():
+            left = max((self.expected(job) or 0.0) - (now - start), 0.0)
+            longest = max(longest, left + self._after.get(job.id, 0.0))
+        return longest
+
+    def _paths(self, now: float) -> None:
+        """Work out each job's longest path again, by the estimates now, over the jobs left."""
+        self._jobs = [job for job in self._jobs if job.id in self._waiting or job.id in self._started]
+        start, self._after = longest_paths(self._jobs, lambda job: self.expected(job) or 0.0)
+        self._longest = [(-start[job.id], job.id) for job in self._jobs if job.id in self._waiting]
+        heapq.heapify(self._longest)
+        self._paths_at = now
 
     def report(self) -> str:
         """`5 left, about 12m`, or `5 left` without an estimate."""
