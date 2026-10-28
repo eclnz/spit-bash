@@ -123,6 +123,24 @@ class RunTests(unittest.TestCase):
             log = results[0].log.read_text()
             self.assertTrue(log.endswith("spit-bash: removed failed output work/upper.txt\n"), log)
 
+    def test_keep_failed_leaves_a_failed_commands_outputs_and_reruns_the_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            data["jobs"][0]["command"][2] = [
+                "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
+            ]
+            dag = read(data)
+            _, results = run(dag, state_at(root), keep_failed=True)
+            self.assertEqual(results[0].error, "command exited with status 4")
+            self.assertEqual((root / "work/upper.txt").read_text(), "HAL")
+            log = results[0].log.read_text()
+            self.assertTrue(log.endswith("spit-bash: kept failed output work/upper.txt\n"), log)
+            # The kept output is not a finished one, so the next run runs the job again.
+            decisions, _ = run(dag, state_at(root))
+            self.assertEqual(decisions[0].status, Status.RUN)
+
     def test_a_failure_before_the_command_keeps_an_earlier_runs_outputs(self):
         # The command never ran, so the files are still the last run's, whole.
         with tempfile.TemporaryDirectory() as directory:

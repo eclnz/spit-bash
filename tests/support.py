@@ -65,9 +65,10 @@ def read(data, root=None):
     return load_dag(io.StringIO(json.dumps(data)), root)
 
 
-def run(dag, state, workers=2, force=False):
+def run(dag, state, workers=2, force=False, keep_failed=False):
     decisions = plan(dag, state, force)
-    results = asyncio.run(execute(dag, decisions, state, workers, dag.root / ".spit-bash" / "logs"))
+    results = asyncio.run(execute(dag, decisions, state, workers, dag.root / ".spit-bash" / "logs",
+                                  keep_failed=keep_failed))
     state.close()
     return decisions, results
 
