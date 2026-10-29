@@ -73,6 +73,18 @@ cat $EXAMPLES/streams/output/merged.txt
 
 The result is `APPLES`, `CARROTS`, `LEEKS`, `PEARS`, `PLUMS`. The log of each `shout` job, such as `$EXAMPLES/streams/.spit-bash/logs/1-shout.log`, shows its command with the redirections; the capitals `tr` prints go to the output, not the log. Empty `$EXAMPLES/streams/input/garden.txt` and run again: `tr` prints nothing, so its output fails its `nonempty` check, the job fails, and it leaves no `plot=garden.txt`, not even an empty one. Restore the input before planning another run.
 
+## Several commands in one job
+
+`sequence.spit` runs two tools, one after the other, in each `tally` job: `sort -o {sorted} {list}` writes the sorted list, then `uniq -c {sorted} > {counts}` reads it and prints how often each line comes:
+
+```sh
+spit dag $EXAMPLES/sequence/sequence.spitin --commands
+spit-bash run $EXAMPLES/sequence/sequence.spitin
+cat $EXAMPLES/sequence/output/counts/plot=garden.txt
+```
+
+`spit dag --commands` shows a `run:` line for each. The garden counts are `2 bean`, `3 carrot` and `1 pea`, each count padded with spaces, as `uniq -c` writes it. The log of each job, such as `$EXAMPLES/sequence/.spit-bash/logs/1-tally.log`, shows both commands after `$ `.
+
 ## Folders in and out
 
 Each trip's notes are a folder, and each job copies a folder whole, then packs the copy into an archive. The source and the copy are declared with a `/` after their types, so SPIT finds `input/alpha` and `input/beta` as folders and the runner treats each copy as one output:

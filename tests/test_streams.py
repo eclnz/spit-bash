@@ -24,9 +24,9 @@ WAIT = ("import sys, time; from pathlib import Path\n"
 def streamed(root, script, *args, stdin="source.txt"):
     """source.txt -> work/upper.txt, through the command's standard input and output."""
     item = job(1, ["source.txt"], "work/upper.txt", script)
-    item["command"] = command(script) + [[arg] for arg in args]
-    item["stdin"] = stdin
-    item["stdout"] = "work/upper.txt"
+    item["commands"][0]["command"] = command(script) + [[arg] for arg in args]
+    item["commands"][0]["stdin"] = stdin
+    item["commands"][0]["stdout"] = "work/upper.txt"
     return document(root, [item], ["source.txt"])
 
 
@@ -41,7 +41,8 @@ class StreamTests(unittest.TestCase):
 
     def test_reads_stdin_and_writes_stdout_to_the_output(self):
         dag = read(streamed(self.root, UPPER))
-        self.assertEqual((dag.jobs[0].stdin, dag.jobs[0].stdout), ("source.txt", "work/upper.txt"))
+        run_ = dag.jobs[0].commands[0]
+        self.assertEqual((run_.stdin, run_.stdout), ("source.txt", "work/upper.txt"))
         decisions, results = run(dag, state_at(self.root))
         self.assertEqual([r.error for r in results], [None])
         self.assertEqual(self.output.read_text(), "HELLO\n")
@@ -113,7 +114,7 @@ class StreamTests(unittest.TestCase):
         with self.assertRaisesRegex(DagError, "`stdin` names work/upper.txt, which is not one of its inputs"):
             read(data)
         data = streamed(self.root, UPPER)
-        data["jobs"][0]["stdout"] = "source.txt"
+        data["jobs"][0]["commands"][0]["stdout"] = "source.txt"
         with self.assertRaisesRegex(DagError, "`stdout` names source.txt, which is not one of its outputs"):
             read(data)
         data = streamed(self.root, UPPER)
@@ -121,11 +122,11 @@ class StreamTests(unittest.TestCase):
         with self.assertRaisesRegex(DagError, "`stdout` names work/upper.txt, which is a folder"):
             read(data)
         data = streamed(self.root, UPPER)
-        data["jobs"][0]["command"] = None
-        with self.assertRaisesRegex(DagError, "a job with no command has no `stdin` or `stdout`"):
+        data["jobs"][0]["commands"].append(dict(data["jobs"][0]["commands"][0], stdin=None))
+        with self.assertRaisesRegex(DagError, "more than one of its commands has a `stdout`"):
             read(data)
         data = streamed(self.root, UPPER)
-        del data["jobs"][0]["stdout"]
+        del data["jobs"][0]["commands"][0]["stdout"]
         with self.assertRaisesRegex(DagError, "stdout"):
             read(data)
 

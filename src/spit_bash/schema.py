@@ -127,6 +127,16 @@ class Origin(SchemaModel):
     line: Line
 
 
+class JobCommand(SchemaModel):
+    """One of a job's commands, which run in order, and the files its streams are connected to."""
+
+    command: Command
+    # The input file the command reads on its standard input, and the output
+    # file its standard output is written to; null when it does not redirect.
+    stdin: RelativePath | None
+    stdout: RelativePath | None
+
+
 class SpitJob(SchemaModel):
     id: JobId
     operation: NonEmpty
@@ -136,11 +146,8 @@ class SpitJob(SchemaModel):
     outputs: Annotated[dict[NonEmpty, Artifact], Field(min_length=1)]
     depends_on: list[JobId]
     dependents: list[JobId]
-    command: Command | None
-    # The input file `command` reads on its standard input, and the output
-    # file its standard output is written to; null when it does not redirect.
-    stdin: RelativePath | None
-    stdout: RelativePath | None
+    # Empty for an operation with no command.
+    commands: list[JobCommand]
     verify: list[Command]
     checks: list[Check]
     # Null for a step written in the pipeline.

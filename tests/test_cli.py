@@ -61,7 +61,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("2 done, 0 checked, 0 failed, 0 current, 1 blocked", err)
 
     def test_failure_prints_the_end_of_the_log(self):
-        self.data["jobs"][0]["command"][2] = ["import sys; print('something broke'); sys.exit(4)"]
+        self.data["jobs"][0]["commands"][0]["command"][2] = ["import sys; print('something broke'); sys.exit(4)"]
         code, _, err = call("run", self.write())
         self.assertEqual(code, 1)
         self.assertIn("[1] failed: command exited with status 4", err)

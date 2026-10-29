@@ -144,6 +144,22 @@ class ExampleTests(unittest.TestCase):
         self.assertIn("failed: exited with status 1", result.stderr)
         self.assertEqual(sorted(path.name for path in (output / "loud").iterdir()), ["plot=allotment.txt"])
 
+    def test_sequence(self):
+        result = spit_bash("run", str(self.examples / "sequence/sequence.spitin"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = self.examples / "sequence/output"
+        self.assertEqual((output / "sorted/plot=garden.txt").read_text(), "bean\nbean\ncarrot\ncarrot\ncarrot\npea\n")
+        counts = (output / "counts/plot=garden.txt").read_text().split("\n")
+        self.assertEqual([line.split() for line in counts if line], [["2", "bean"], ["3", "carrot"], ["1", "pea"]])
+        log = (self.examples / "sequence/.spit-bash/logs/1-tally.log").read_text()
+        commands = [line for line in log.splitlines() if line.startswith("$ ")]
+        self.assertEqual(commands, [
+            "$ sort -o output/sorted/plot=allotment.txt input/allotment.txt",
+            "$ uniq -c output/sorted/plot=allotment.txt > output/counts/plot=allotment.txt",
+        ])
+        result = spit_bash("plan", str(self.examples / "sequence/sequence.spitin"))
+        self.assertEqual(result.stdout.count(" skip "), 2, result.stdout)
+
     def test_folders(self):
         recipe = str(self.examples / "folders/albums.spitin")
         result = spit_bash("run", recipe, "-j", "2")
