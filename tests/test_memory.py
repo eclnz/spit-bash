@@ -32,14 +32,18 @@ class GroupMemoryTests(unittest.TestCase):
         )
         self.addCleanup(parent.wait)
         self.addCleanup(os.killpg, parent.pid, 9)
-        for _ in range(100):
+        # Wait until both processes hold their memory and the reading has settled,
+        # so that /proc and `ps` are compared on the same pages.
+        used, last = 0, -1
+        for _ in range(200):
             used = group_memory(parent.pid)
-            if used > 100 * MIB:
+            if used > 100 * MIB and abs(used - last) < MIB:
                 break
+            last = used
             subprocess.run(["sleep", "0.05"])
         self.assertGreater(used, 100 * MIB)
-        # `ps`, read where there is no /proc, gives the same within the pages that changed between the two reads.
-        self.assertAlmostEqual(memory_module._from_ps(parent.pid) / MIB, used / MIB, delta=10)
+        # `ps`, read where there is no /proc, gives the same.
+        self.assertAlmostEqual(memory_module._from_ps(parent.pid) / MIB, group_memory(parent.pid) / MIB, delta=5)
 
     def test_an_empty_group_holds_nothing(self):
         # A group id no process uses, as process ids are below 2^22 on Linux and 99999 on macOS.
