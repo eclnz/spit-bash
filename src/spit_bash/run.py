@@ -16,6 +16,7 @@ from typing import IO
 from .dag import Check, Dag, Job
 from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
 from .progress import Progress, about, duration
+from .schedule import ReadyQueue, ranks
 
 LOG_TAIL_LINES = 20
 # Files this small, all of a job's together, are hashed on the event loop.
@@ -129,7 +130,6 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, workers: int, logs: Path,
                   hashing: bool = True) -> tuple[Result, ...]:
     """Run every job planned to run; stop them all if the process gets SIGTERM."""
-    semaphore = asyncio.Semaphore(workers)
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
 
@@ -169,7 +169,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
 
     async def perform(decision: Decision) -> Result:
         job = decision.job
-        async with semaphore:
+        async with queue.slot(job):
             if decision.status is Status.CHECK:
                 return await check_one(job)
             progress.started(job)
@@ -262,6 +262,9 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, worke
         if record is not None and record.seconds is not None:
             previous[job.id] = record.seconds
     progress = Progress.of(to_run, dag.jobs, previous, workers)
+    # Every job that will take a worker slot, ranked by the longest chain of work it heads.
+    slotted = [decision.job for decision in decisions if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE)]
+    queue = ReadyQueue(workers, ranks(slotted, progress.expected, previous))
     if to_run:
         remaining = progress.remaining()
         estimate = "" if remaining is None else f", {about(remaining)}"
