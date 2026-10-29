@@ -119,6 +119,36 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             main(["run", str(self.dag), "-j", "0"])
 
+    def test_a_job_needing_more_cores_than_the_run_has_runs_alone_with_a_note(self):
+        self.data["jobs"][0]["cores"] = 4
+        code, out, err = call("run", self.write(), "-j", "2")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[1] needs 4 cores where the run has 2; it will run alone", out)
+        self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
+
+    def test_a_job_declaring_more_memory_than_the_run_has_is_refused(self):
+        self.data["jobs"][1]["memory"] = 64 * 2**20
+        code, out, err = call("run", self.write(), "--memory", "32M")
+        self.assertEqual(code, 2)
+        self.assertIn("[2] op2 needs 64M of memory where the run has 32M", err)
+        self.assertIn("pass --no-enforce-memory to run it alone", err)
+        self.assertNotIn("start", out)
+        self.assertFalse((self.root / "work/upper.txt").exists())
+        # Without enforcement it runs alone, as a job needing more cores does.
+        code, out, err = call("run", self.write(), "--memory", "32M", "--no-enforce-memory")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[2] needs 64M of memory where the run has 32M; it will run alone", out)
+        self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
+
+    def test_memory_takes_a_size_with_a_unit(self):
+        for bad in ("lots", "1.5G", "0", "-2G"):
+            with self.subTest(bad=bad), contextlib.redirect_stderr(io.StringIO()) as err, \
+                    self.assertRaises(SystemExit):
+                main(["run", self.write(), f"--memory={bad}"])
+            self.assertIn("expected a size such as 512M or 32G", err.getvalue())
+        code, _, err = call("run", self.write(), "--memory", "64m")
+        self.assertEqual(code, 0, err)
+
 
 if __name__ == "__main__":
     unittest.main()

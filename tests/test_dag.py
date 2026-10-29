@@ -42,6 +42,25 @@ class LoadTests(unittest.TestCase):
             with self.assertRaisesRegex(DagError, "unknown"):
                 read(data)
 
+    def test_reads_cores_and_memory_and_rejects_bad_ones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = sample(Path(directory))
+            data["jobs"][1]["cores"], data["jobs"][1]["memory"] = 8, 16 * 2**30
+            dag = read(data)
+            self.assertEqual([(job.cores, job.memory) for job in dag.jobs], [(1, None), (8, 16 * 2**30)])
+            for field, value, message in (("cores", 0, "greater_than_equal"), ("cores", True, "int_type"),
+                                          ("cores", None, "int_type"), ("memory", -1, "greater_than_equal"),
+                                          ("memory", 2**53 + 1, "less_than_equal"), ("memory", "16G", "int_type")):
+                data = sample(Path(directory))
+                data["jobs"][0][field] = value
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(DagError, message):
+                    read(data)
+            for field in ("cores", "memory"):
+                data = sample(Path(directory))
+                del data["jobs"][0][field]
+                with self.subTest(missing=field), self.assertRaisesRegex(DagError, field):
+                    read(data)
+
     def test_requires_a_root(self):
         with tempfile.TemporaryDirectory() as directory:
             data = sample(Path(directory))
@@ -50,13 +69,14 @@ class LoadTests(unittest.TestCase):
                 read(data)
             self.assertEqual(read(data, directory).root, Path(directory).resolve())
 
-    def test_reads_real_spit_version_four_fixture(self):
+    def test_reads_real_spit_fixture(self):
         with tempfile.TemporaryDirectory() as directory, FIXTURE.open(encoding="utf-8") as source:
             dag = load_dag(source, directory)
             self.assertEqual(len(dag.jobs), 5)
             self.assertEqual(dag.jobs[3].depends_on, (1, 2))
             self.assertEqual(dag.jobs[3].command[4], "merged/group=alpha.txt")
             self.assertEqual(dag.executables, ("sort",))
+            self.assertEqual({(job.cores, job.memory) for job in dag.jobs}, {(1, None)})
 
 
 if __name__ == "__main__":

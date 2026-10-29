@@ -14,7 +14,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "command_demo.spitdag"
 
 
 def artifact(path):
-    return {"product": path, "entities": {}, "type": None, "path": path}
+    return {"product": path, "entities": {}, "type": None, "path": path, "kind": "file"}
 
 
 def command(script, *paths):
@@ -27,14 +27,15 @@ def job(id, inputs, output, script, depends_on=(), dependents=(), fingerprint=No
         "stage": [], "dependents": list(dependents),
         "inputs": {"input": [artifact(path) for path in inputs]},
         "outputs": {"output": artifact(output)},
-        "depends_on": list(depends_on), "verify": [],
-        "command": command(script, *inputs, output),
+        "depends_on": list(depends_on), "verify": [], "checks": [], "origin": None,
+        "command": command(script, *inputs, output), "stdin": None, "stdout": None,
+        "cores": 1, "memory": None,
     }
 
 
 def document(root, jobs, external_inputs):
     return {
-        "version": 4,
+        "version": 8,
         "generator": {"name": "spit", "version": "0.2.1"},
         "root": None if root is None else str(root),
         "external_inputs": [artifact(path) for path in external_inputs],
@@ -42,6 +43,8 @@ def document(root, jobs, external_inputs):
         "executables": [],
         "removed": [],
         "left_out": [],
+        "pipeline_files": [],
+        "calls": [],
         "jobs": jobs,
     }
 
@@ -65,9 +68,10 @@ def read(data, root=None):
     return load_dag(io.StringIO(json.dumps(data)), root)
 
 
-def run(dag, state, workers=2, force=False):
+def run(dag, state, cores=2, force=False, memory=None, keep_failed=False, enforce_memory=True):
     decisions = plan(dag, state, force)
-    results = asyncio.run(execute(dag, decisions, state, workers, dag.root / ".spit-bash" / "logs"))
+    results = asyncio.run(execute(dag, decisions, state, cores, dag.root / ".spit-bash" / "logs", memory=memory,
+                                  keep_failed=keep_failed, enforce_memory=enforce_memory))
     state.close()
     return decisions, results
 

@@ -29,7 +29,7 @@ After a run, SPIT may report generated files that match no source path rule. Tho
 
 ## Operations carried out by steps
 
-`steps.spit` declares `tidy` with a body of two `sort_lines` steps, then calls it once. The call becomes two ordinary jobs, so the runner plans and runs them like any others; the DAG's `calls` and each job's `origin` (format 7) say they came from `tidy`.
+`steps.spit` declares `tidy` with a body of two `sort_lines` steps, then calls it once. The call becomes two ordinary jobs, so the runner plans and runs them like any others; the DAG's `calls` and each job's `origin` say they came from `tidy`.
 
 ```sh
 spit-bash run $EXAMPLES/steps/steps.spitin
@@ -62,6 +62,17 @@ spit-bash run $EXAMPLES/checks/notes.spitin
 
 Both copies pass. Write `Rest.` into `$EXAMPLES/checks/input/tuesday.txt` and run again: `cp` succeeds, but the copy fails `contains(today)`, so the job fails and its log shows the failing `grep`. Then change `contains(today)` to `contains(for)` in `notes.spit` and plan: Monday's job is marked `check`, since only its check changed, and `run` checks its existing copy without copying again; it passes. Tuesday's job, which failed, runs again and fails again, since `Rest.` holds no `for`. Restore the inputs and `notes.spit` before planning another run.
 
+## Standard input and output
+
+`streams.spit` runs `tr a-z A-Z < {list} > {@output}` on each plot's list, then `sort {items} > {@output}` on the results. `tr` reads only its standard input, so the runner feeds each list to it there, and writes each command's standard output to its output file, which appears only once the command succeeds:
+
+```sh
+spit-bash run $EXAMPLES/streams/streams.spitin
+cat $EXAMPLES/streams/output/merged.txt
+```
+
+The result is `APPLES`, `CARROTS`, `LEEKS`, `PEARS`, `PLUMS`. The log of each `shout` job, such as `$EXAMPLES/streams/.spit-bash/logs/1-shout.log`, shows its command with the redirections; the capitals `tr` prints go to the output, not the log. Empty `$EXAMPLES/streams/input/garden.txt` and run again: `tr` prints nothing, so its output fails its `nonempty` check, the job fails, and it leaves no `plot=garden.txt`, not even an empty one. Restore the input before planning another run.
+
 ## Folders in and out
 
 Each trip's notes are a folder, and each job copies a folder whole, then packs the copy into an archive. The source and the copy are declared with a `/` after their types, so SPIT finds `input/alpha` and `input/beta` as folders and the runner treats each copy as one output:
@@ -71,6 +82,6 @@ spit-bash run $EXAMPLES/folders/albums.spitin -j 2
 tar -tf $EXAMPLES/folders/output/archive/trip=alpha.tar
 ```
 
-The alpha archive holds `./day1/morning.txt` and `./evening.txt`. `cp -R` makes each copy itself. Before it runs, the runner removes any copy an earlier run left, so the command never copies into an existing folder. Edit a file anywhere under `$EXAMPLES/folders/input/alpha/` and plan again: the alpha copy and its archive rerun, because a folder counts as changed when any file under it does.
+The alpha archive holds `./day1/morning.txt` and `./evening.txt`. Before each copy runs, the runner removes any copy an earlier run left and makes the folder again, empty, and `cp -R {notes}/. {@output}` copies the trip's contents into it. Edit a file anywhere under `$EXAMPLES/folders/input/alpha/` and plan again: the alpha copy and its archive rerun, because a folder counts as changed when any file under it does.
 
 `tests/test_examples.py` runs these examples, and checks the results above.

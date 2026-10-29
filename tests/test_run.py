@@ -105,7 +105,55 @@ class RunTests(unittest.TestCase):
                 "command succeeded but did not create output meta work/upper.json, "
                 "output log work/conversion.log",
             )
-            self.assertTrue((root / "work/upper.txt").exists())
+            # The output the command did write is removed with the failure.
+            self.assertFalse((root / "work/upper.txt").exists())
+            self.assertIn("removed failed output work/upper.txt", results[0].log.read_text())
+
+    def test_a_failed_command_leaves_no_partial_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            data["jobs"][0]["command"][2] = [
+                "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
+            ]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(results[0].error, "command exited with status 4")
+            self.assertFalse((root / "work/upper.txt").exists())
+            log = results[0].log.read_text()
+            self.assertTrue(log.endswith("spit-bash: removed failed output work/upper.txt\n"), log)
+
+    def test_keep_failed_leaves_a_failed_commands_outputs_and_reruns_the_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            data["jobs"][0]["command"][2] = [
+                "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
+            ]
+            dag = read(data)
+            _, results = run(dag, state_at(root), keep_failed=True)
+            self.assertEqual(results[0].error, "command exited with status 4")
+            self.assertEqual((root / "work/upper.txt").read_text(), "HAL")
+            log = results[0].log.read_text()
+            self.assertTrue(log.endswith("spit-bash: kept failed output work/upper.txt\n"), log)
+            # The kept output is not a finished one, so the next run runs the job again.
+            decisions, _ = run(dag, state_at(root))
+            self.assertEqual(decisions[0].status, Status.RUN)
+
+    def test_a_failure_before_the_command_keeps_an_earlier_runs_outputs(self):
+        # The command never ran, so the files are still the last run's, whole.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            run(read(data), state_at(root))
+            data["jobs"][0]["fingerprint"] = "c" * 16
+            data["jobs"][0]["verify"] = [command("import sys; sys.exit(3)")]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(results[0].error, "verify 1 exited with status 3")
+            self.assertEqual((root / "work/upper.txt").read_text(), "HELLO")
+            self.assertNotIn("removed", results[0].log.read_text())
 
     def test_job_output_goes_to_its_log(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -127,7 +175,7 @@ class RunTests(unittest.TestCase):
             jobs = [job(1, ["source.txt"], "a.txt", MEET), job(2, ["source.txt"], "b.txt", MEET)]
             jobs[0]["command"].append(["b.txt.here"])
             jobs[1]["command"].append(["a.txt.here"])
-            _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), workers=2)
+            _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), cores=2)
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "a.txt").read_text(), "True")
             self.assertEqual((root / "b.txt").read_text(), "True")
@@ -136,7 +184,12 @@ class RunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "source.txt").write_text("")
-            script = "import os, sys, time; open(sys.argv[2] + '.pid', 'w').write(str(os.getpid())); time.sleep(60)"
+            script = (
+                "import os, sys, time\n"
+                "open(sys.argv[2], 'w').write('half')\n"
+                "open(sys.argv[2] + '.pid', 'w').write(str(os.getpid()))\n"
+                "time.sleep(60)\n"
+            )
             dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
             state = state_at(root)
             pid_file = root / "out.txt.pid"
@@ -154,6 +207,9 @@ class RunTests(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(int(pid_file.read_text()), 0)
             self.assertEqual(state_at(root).jobs, {})
+            # The half-written output went with the stopped command.
+            self.assertFalse((root / "out.txt").exists())
+            self.assertIn("removed failed output out.txt", (root / "logs/1-op1.log").read_text())
 
     def test_cancelling_kills_a_command_that_ignores_sigterm(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -199,7 +255,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(state_at(root).jobs, {})
 
     @unittest.skipUnless(shutil.which("sort"), "requires sort")
-    def test_runs_real_spit_version_four_fixture(self):
+    def test_runs_real_spit_fixture(self):
         with tempfile.TemporaryDirectory() as directory, FIXTURE.open(encoding="utf-8") as source:
             root = Path(directory)
             for path, content in {
@@ -211,7 +267,7 @@ class RunTests(unittest.TestCase):
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(content)
             dag = load_dag(source, directory)
-            decisions, results = run(dag, state_at(root), workers=3)
+            decisions, results = run(dag, state_at(root), cores=3)
             self.assertEqual([d.status for d in decisions], [Status.RUN] * 5)
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "merged/group=alpha.txt").read_text(), "a\nb\nz\n")

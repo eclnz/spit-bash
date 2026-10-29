@@ -25,7 +25,9 @@ jobs:
     # Builds SPIT from `dev`, the branch its work merges into, and runs the
     # examples end to end. A change made in both repositories has one branch
     # name in each, so a branch that SPIT also has builds SPIT's branch
-    # instead, and the two are tested together.
+    # instead, and the two are tested together. A SPIT branch already merged
+    # into `dev` adds nothing to it and falls behind as `dev` moves, so it
+    # builds `dev`.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +39,13 @@ jobs:
           ref=dev
           if [ "$BRANCH" != main ] && [ "$BRANCH" != dev ] &&
               git ls-remote --exit-code --heads https://github.com/eclnz/spit "refs/heads/$BRANCH" > /dev/null; then
-            ref=$BRANCH
+            refs="$RUNNER_TEMP/spit-refs"
+            git init -q "$refs"
+            git -C "$refs" fetch -q --filter=blob:none https://github.com/eclnz/spit \
+                "refs/heads/dev:refs/heads/dev" "refs/heads/$BRANCH:refs/heads/branch"
+            if ! git -C "$refs" merge-base --is-ancestor branch dev; then
+              ref=$BRANCH
+            fi
           fi
           echo "Building SPIT from $ref"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
