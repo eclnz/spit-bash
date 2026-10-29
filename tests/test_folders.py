@@ -13,7 +13,7 @@ from support import artifact, command, document, read, run, state_at
 COPY_UPPER = (
     "from pathlib import Path; import sys\n"
     "source, target = Path(sys.argv[1]), Path(sys.argv[2])\n"
-    "target.mkdir()\n"
+    "assert target.is_dir() and not any(target.iterdir()), 'the runner makes the folder, empty'\n"
     "for file in sorted(source.rglob('*.txt')):\n"
     "    (target / file.name).write_text(file.read_text().upper())\n"
 )
@@ -93,7 +93,7 @@ class FolderTests(unittest.TestCase):
             decisions, results = run(dag, state_at(root))
             self.assertEqual(decisions[0].reason, "no successful run recorded")
             self.assertFalse(any(r.error for r in results), [r.error for r in results])
-            # The tool's `mkdir` did not fail, and the stale file is gone.
+            # The folder was made again, empty, for the tool: the stale file is gone.
             self.assertFalse((root / "work/upper/stale.txt").exists())
             self.assertEqual((root / "book.txt").read_text(), "ONE TWO")
 
@@ -109,7 +109,7 @@ class FolderTests(unittest.TestCase):
             self.assertTrue((root / "work").is_dir())
             self.assertIn("removed failed output work/upper", results[0].log.read_text())
 
-    def test_a_missing_folder_blocks_and_a_command_must_make_its_folder(self):
+    def test_a_missing_folder_blocks_and_a_command_that_writes_nothing_leaves_an_empty_folder(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "pages").write_text("a file, not a folder")
@@ -122,7 +122,9 @@ class FolderTests(unittest.TestCase):
             data = folders_dag(root)
             data["jobs"][0]["command"] = command("pass")
             decisions, results = run(read(data), state_at(root))
-            self.assertEqual(results[0].error, "command succeeded but did not create output output work/upper")
+            # The runner made the folder, and an empty one is a finished output.
+            self.assertIsNone(results[0].error)
+            self.assertEqual(list((root / "work/upper").iterdir()), [])
 
     def test_a_folder_stamp_follows_the_files_under_it(self):
         with tempfile.TemporaryDirectory() as directory:
