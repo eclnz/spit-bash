@@ -256,10 +256,11 @@ def _missing_programs(dag: Dag) -> set[str]:
     """Programs that commands start with but that cannot be run."""
     missing = {name for name in dag.executables if shutil.which(name) is None}
     for job in dag.jobs:
-        for command in (job.command, *job.verify, *(check.command for check in job.checks)):
+        runs = (run.arguments for run in job.commands)
+        for command in (*runs, *job.verify, *(check.command for check in job.checks)):
             # SPIT leaves a program named by a path out of `executables`. It is
             # run from the root, so check it there.
-            if command is not None and "/" in command[0] and command[0] not in missing:
+            if "/" in command[0] and command[0] not in missing:
                 program = dag.root / command[0]
                 if not (program.is_file() and os.access(program, os.X_OK)):
                     missing.add(command[0])
@@ -339,8 +340,8 @@ def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
     job = decision.job
     commands = [check.command for check in job.checks]
     if decision.status is not Status.CHECK:
-        commands += [job.command, *job.verify]
-    programs = sorted({command[0] for command in commands if command is not None} & missing_programs)
+        commands += [*(run.arguments for run in job.commands), *job.verify]
+    programs = sorted({command[0] for command in commands} & missing_programs)
     if not programs:
         return decision
     return Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
@@ -360,7 +361,7 @@ def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> t
         blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
         if blocked:
             return Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
-        if job.command is None:
+        if not job.commands:
             return _without_command(dag, job, by_id, seen)
         if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
             return _below_rerun(dag, job, state, force, hashing, seen)
@@ -401,7 +402,7 @@ def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
     for job in dag.jobs:
         inputs = stamps(dag, job.inputs)
         outputs = stamps(dag, job.outputs)
-        if job.command is None:
+        if not job.commands:
             adoption = Adoption(job, AdoptStatus.LEFT, "no command")
         elif any(value is None for value in outputs.values()):
             adoption = Adoption(job, AdoptStatus.LEFT, "output missing")

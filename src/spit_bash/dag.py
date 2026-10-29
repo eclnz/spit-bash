@@ -10,7 +10,7 @@ from typing import Iterator, TextIO
 
 from pydantic import ValidationError
 
-from .schema import Artifact, Command, DirPart, PathPart, SpitDag, SpitJob, StemPart
+from .schema import Artifact, Command, DirPart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
 
 
 class DagError(ValueError):
@@ -43,6 +43,21 @@ class Check:
 
 
 @dataclass(frozen=True)
+class Run:
+    """One of a job's commands: its arguments, and the input file it reads on its
+    standard input and the output file its standard output is written to,
+    relative to the root, or None when it does not redirect."""
+
+    arguments: tuple[str, ...]
+    stdin: str | None = None
+    stdout: str | None = None
+
+    def describe(self, index: int, of: int) -> str:
+        """The command as an error names it: `command`, or `command 2` of several."""
+        return "command" if of == 1 else f"command {index}"
+
+
+@dataclass(frozen=True)
 class Job:
     id: int
     operation: str
@@ -51,14 +66,11 @@ class Job:
     inputs: tuple[str, ...]
     produced: tuple[Output, ...]
     depends_on: tuple[int, ...]
-    command: tuple[str, ...] | None
+    # The commands that make the outputs, run in order until one fails; empty
+    # for an operation with none.
+    commands: tuple[Run, ...]
     verify: tuple[tuple[str, ...], ...]
     checks: tuple[Check, ...] = ()
-    # The input file `command` reads on its standard input, and the output file
-    # its standard output is written to, relative to the root; None when it does
-    # not redirect.
-    stdin: str | None = None
-    stdout: str | None = None
     # Where a job made by a call to an operation carried out by steps comes
     # from, innermost first; empty for a step written in the pipeline.
     origin: tuple[str, ...] = ()
@@ -71,6 +83,11 @@ class Job:
     def outputs(self) -> tuple[str, ...]:
         """Output paths in DAG order, for planning and state records."""
         return tuple(output.path for output in self.produced)
+
+    @property
+    def stdout(self) -> str | None:
+        """The output file a command's standard output is written to, of which a job has one at most."""
+        return next((run.stdout for run in self.commands if run.stdout is not None), None)
 
     @property
     def before(self) -> tuple[Check, ...]:
@@ -178,19 +195,27 @@ def _check_origins(document: SpitDag) -> None:
 
 
 def _check_streams(job: SpitJob, folders: frozenset[str]) -> None:
-    """`stdin` names one of the job's input files, and `stdout` one of its output files."""
-    if job.command is None and (job.stdin is not None or job.stdout is not None):
-        raise DagError(f"job {job.id}: a job with no command has no `stdin` or `stdout`")
-    for field_name, path, ports, side in (
-        ("stdin", job.stdin, [artifact for port in job.inputs.values() for artifact in port], "inputs"),
-        ("stdout", job.stdout, list(job.outputs.values()), "outputs"),
-    ):
-        if path is None:
-            continue
-        if not any(artifact.path == path for artifact in ports):
-            raise DagError(f"job {job.id}: `{field_name}` names {path}, which is not one of its {side}")
-        if path in folders:
-            raise DagError(f"job {job.id}: `{field_name}` names {path}, which is a folder, not a file")
+    """Each command's `stdin` names one of the job's input files, and its `stdout` one of its
+    output files; one command at most has a `stdout`."""
+    if sum(command.stdout is not None for command in job.commands) > 1:
+        raise DagError(f"job {job.id}: more than one of its commands has a `stdout`")
+    inputs = [artifact for port in job.inputs.values() for artifact in port]
+    outputs = list(job.outputs.values())
+    for command in job.commands:
+        for field_name, path, ports, side in (
+            ("stdin", command.stdin, inputs, "inputs"),
+            ("stdout", command.stdout, outputs, "outputs"),
+        ):
+            if path is None:
+                continue
+            if not any(artifact.path == path for artifact in ports):
+                raise DagError(f"job {job.id}: `{field_name}` names {path}, which is not one of its {side}")
+            if path in folders:
+                raise DagError(f"job {job.id}: `{field_name}` names {path}, which is a folder, not a file")
+
+
+def _run(command: JobCommand) -> Run:
+    return Run(_command(command.command), command.stdin, command.stdout)
 
 
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
@@ -239,15 +264,13 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             inputs=inputs,
             produced=produced,
             depends_on=tuple(item.depends_on),
-            command=None if item.command is None else _command(item.command),
+            commands=tuple(_run(command) for command in item.commands),
             verify=tuple(_command(command) for command in item.verify),
             checks=tuple(
                 Check(check.when, check.check, check.port, check.path, _command(check.command))
                 for check in item.checks
             ),
             origin=_origin(document, item),
-            stdin=item.stdin,
-            stdout=item.stdout,
             cores=item.cores,
             memory=item.memory,
         ))

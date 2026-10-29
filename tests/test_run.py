@@ -114,7 +114,7 @@ class RunTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("hello")
             data = sample(root)
-            data["jobs"][0]["command"][2] = [
+            data["jobs"][0]["commands"][0]["command"][2] = [
                 "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
             ]
             _, results = run(read(data), state_at(root))
@@ -128,7 +128,7 @@ class RunTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("hello")
             data = sample(root)
-            data["jobs"][0]["command"][2] = [
+            data["jobs"][0]["commands"][0]["command"][2] = [
                 "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
             ]
             dag = read(data)
@@ -160,7 +160,7 @@ class RunTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("hello")
             data = sample(root)
-            data["jobs"][0]["command"][2] = ["import sys; print('to stdout'); print('to stderr', file=sys.stderr); " + data["jobs"][0]["command"][2][0]]
+            data["jobs"][0]["commands"][0]["command"][2] = ["import sys; print('to stdout'); print('to stderr', file=sys.stderr); " + data["jobs"][0]["commands"][0]["command"][2][0]]
             _, results = run(read(data), state_at(root))
             log = (root / ".spit-bash/logs/1-op1.log").read_text()
             self.assertEqual(results[0].log, root / ".spit-bash/logs/1-op1.log")
@@ -173,8 +173,8 @@ class RunTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("")
             jobs = [job(1, ["source.txt"], "a.txt", MEET), job(2, ["source.txt"], "b.txt", MEET)]
-            jobs[0]["command"].append(["b.txt.here"])
-            jobs[1]["command"].append(["a.txt.here"])
+            jobs[0]["commands"][0]["command"].append(["b.txt.here"])
+            jobs[1]["commands"][0]["command"].append(["a.txt.here"])
             _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), cores=2)
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "a.txt").read_text(), "True")

@@ -62,7 +62,7 @@ class EnforcementTests(unittest.TestCase):
 
     def greedy(self, memory):
         data = sample(self.root)
-        data["jobs"][0]["command"][2] = [GREEDY]
+        data["jobs"][0]["commands"][0]["command"][2] = [GREEDY]
         data["jobs"][0]["memory"] = memory
         return read(data)
 

@@ -70,7 +70,7 @@ def partial(dag: Dag, stdout: str) -> Path:
 
 async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
                    stdin: str | None = None, stdout: str | None = None, limit: int | None = None) -> str | None:
-    """Run one of a job's commands; `kind` names it in an error, as `verify 1` or `command`.
+    """Run one of a job's commands; `kind` names it in an error, as `verify 1`, `command` or `command 2`.
 
     The command reads the input file `stdin` on its standard input, or nothing.
     Its standard output goes to the temporary file for the output `stdout`, or
@@ -217,16 +217,22 @@ def _remove_outputs(dag: Dag, job: Job, log: IO[bytes], keep: bool = False) -> N
 
 async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO[bytes],
                 limit: int | None) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
-    """Run a job's command and its output checks; give an error, or its inputs' and outputs' stamps."""
-    error = await _command(dag, job.command, "command", log, job.stdin, job.stdout, limit)
-    if error:
-        return error
-    if job.stdout is not None:
-        # Only a command that succeeded puts its standard output at the output's path.
-        try:
-            partial(dag, job.stdout).replace(dag.checked(job.stdout))
-        except OSError as exc:
-            return f"could not move standard output onto {job.stdout}: {exc}"
+    """Run a job's commands in order, then its output checks; give an error, or its inputs' and outputs' stamps.
+
+    The first command that fails stops the job, and the commands after it do not run.
+    """
+    for index, run in enumerate(job.commands, 1):
+        kind = run.describe(index, len(job.commands))
+        error = await _command(dag, run.arguments, kind, log, run.stdin, run.stdout, limit)
+        if error:
+            return error
+        if run.stdout is not None:
+            # Only a command that succeeded puts its standard output at the output's path, where
+            # the commands after it may read it.
+            try:
+                partial(dag, run.stdout).replace(dag.checked(run.stdout))
+            except OSError as exc:
+                return f"could not move standard output onto {run.stdout}: {exc}"
     after = stamps(dag, job.inputs)
     if after != before:
         return "input changed during execution"
@@ -250,9 +256,9 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
                   keep_failed: bool = False, enforce_memory: bool = True) -> tuple[Result, ...]:
     """Run every job planned to run, within `cores` and `memory` bytes; stop them all if the process gets SIGTERM.
 
-    `memory` None sets no limit on memory. A job that declares memory has its
-    `verify` commands and main command killed when they hold more, unless
-    `enforce_memory` is off. A job that fails once its command has started
+    `memory` None sets no limit on memory. A job that declares memory has each
+    of its `verify` commands and commands killed when it holds more, unless
+    `enforce_memory` is off. A job that fails once its first command has started
     loses its outputs, unless `keep_failed` keeps them for debugging.
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
@@ -319,11 +325,11 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         return Result(job, None, ran.log)
 
     async def attempt(job: Job) -> Result | _Ran:
-        """Run one job: its input checks and `verify` commands, its command, then its output checks."""
+        """Run one job: its input checks and `verify` commands, its commands, then its output checks."""
         before = stamps(dag, job.inputs)
         if any(value is None for value in before.values()):
             return Result(job, "input disappeared before execution")
-        if job.command is None:
+        if not job.commands:
             return Result(job, "job has no command")
         path = log_path(logs, job)
         print(f"[{job.id}] start {job.operation}", flush=True)

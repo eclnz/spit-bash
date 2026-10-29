@@ -57,7 +57,7 @@ Choosing jobs does not change how a job is planned: a chosen job is still skippe
 
 SPIT writes the absolute dataset `root` into a DAG when it knows it. If `root` is `null`, pass `--root /path/to/dataset`. Relative paths in artifacts and commands are interpreted from this root.
 
-`plan` reports `run`, `check`, `skip`, `maybe` or `blocked` for each job, and exits 1 if any job is blocked. A `maybe` job is current as it stands, but a job it reads from will run, so whether it must is not known until that job has finished: see [Stopping at an unchanged output](#stopping-at-an-unchanged-output). `plan --json` prints the same as JSON. `run` makes the same plan and runs every job that is not current or blocked. It runs each job's input checks and `verify` commands in order, then its main command, then its output checks, and only starts a dependent after its producers finish successfully. Independent jobs run together, as many as the run's cores and memory hold: see [Cores and memory](#cores-and-memory). When more jobs are ready than can start, the one at the head of the longest chain of work still to come starts first: each job is ranked by its own expected time, as in [the estimate](#output-and-logs), plus the longest of the ranks of the jobs that depend on it, a job with no time counting as the median of the times the state holds, or 1 second when it holds none. Jobs of equal rank start in DAG order. So a long chain, such as a subject's preprocessing followed by its model fit, starts early, rather than finishing alone at the end of the run while the other cores sit idle. Commands are passed as argument arrays directly to the operating system; no shell parses them. Output parent directories are created when a job starts. A command must create every declared output file, or [folder](#folders), to count as successful. A declared output is never optional: a job whose command exits 0 but leaves one missing fails, records no success, runs no output checks and holds back its dependents, and the failure names each missing output's port and path, as `command succeeded but did not create output meta derivatives/image/sub=01.json`. A tool run with a flag that turns a file off, such as `dcm2niix -b n` and its `.json`, needs an operation that does not declare that file.
+`plan` reports `run`, `check`, `skip`, `maybe` or `blocked` for each job, and exits 1 if any job is blocked. A `maybe` job is current as it stands, but a job it reads from will run, so whether it must is not known until that job has finished: see [Stopping at an unchanged output](#stopping-at-an-unchanged-output). `plan --json` prints the same as JSON. `run` makes the same plan and runs every job that is not current or blocked. It runs each job's input checks and `verify` commands in order, then its [commands](#several-commands), then its output checks, and only starts a dependent after its producers finish successfully. Independent jobs run together, as many as the run's cores and memory hold: see [Cores and memory](#cores-and-memory). When more jobs are ready than can start, the one at the head of the longest chain of work still to come starts first: each job is ranked by its own expected time, as in [the estimate](#output-and-logs), plus the longest of the ranks of the jobs that depend on it, a job with no time counting as the median of the times the state holds, or 1 second when it holds none. Jobs of equal rank start in DAG order. So a long chain, such as a subject's preprocessing followed by its model fit, starts early, rather than finishing alone at the end of the run while the other cores sit idle. Commands are passed as argument arrays directly to the operating system; no shell parses them. Output parent directories are created when a job starts. A command must create every declared output file, or [folder](#folders), to count as successful. A declared output is never optional: a job whose commands exit 0 but leave one missing fails, records no success, runs no output checks and holds back its dependents, and the failure names each missing output's port and path, as `command succeeded but did not create output meta derivatives/image/sub=01.json`. A tool run with a flag that turns a file off, such as `dcm2niix -b n` and its `.json`, needs an operation that does not declare that file.
 
 A blocked job blocks the jobs that depend on it, but not the rest of the plan: `run` still runs every other job, then exits 1. A job is blocked when an external input is missing, when the program its command, a `verify` command or a check starts with cannot be found, or when a job it depends on is blocked. Programs are looked up on `PATH`, from SPIT's `executables` list; a program named by a path, such as `bin/check`, is looked up from the root.
 
@@ -66,8 +66,8 @@ A blocked job blocks the jobs that depend on it, but not the rest of the plan: `
 A DAG marks each artifact as a `file` or a `folder`, for a product SPIT declares with a `/` after its type, such as `source dicom : Dicom / [sub]`. The runner treats a folder as one artifact:
 
 - A source folder must exist as a folder, or the jobs that read it are blocked.
-- Before a job's command runs, and after its `verify` commands pass, the runner removes whatever an earlier run left at each of its output folders. The job owns the folder, since SPIT puts no other artifact inside one, and old files would otherwise mix with the new run's. Then it makes the folder again, empty, for the tool to write into, as tools given a folder to fill, such as `bwa index -p` or `dcm2niix -o`, expect. Copy a folder's contents into it with `cp -R {notes}/. {@output}`: `cp -R {notes} {@output}` puts a copy of `notes` inside the folder. A tool that refuses to write into a folder that exists is wrapped in a command that removes it first.
-- After the command, each output folder must exist. It may be empty. If the job fails once its command has started, the folder is [removed](#when-a-job-fails) with everything in it.
+- Before a job's first command runs, and after its `verify` commands pass, the runner removes whatever an earlier run left at each of its output folders. The job owns the folder, since SPIT puts no other artifact inside one, and old files would otherwise mix with the new run's. Then it makes the folder again, empty, for the tool to write into, as tools given a folder to fill, such as `bwa index -p` or `dcm2niix -o`, expect. Copy a folder's contents into it with `cp -R {notes}/. {@output}`: `cp -R {notes} {@output}` puts a copy of `notes` inside the folder. A tool that refuses to write into a folder that exists is wrapped in a command that removes it first.
+- After the last command, each output folder must exist. It may be empty. If the job fails once its first command has started, the folder is [removed](#when-a-job-fails) with everything in it.
 - A folder counts as changed when anything under it does. Its record is the total size of the files under it, the latest modification time of any of them or of any folder under it, and how many files it holds. A folder's own modification time is not enough, as it changes only when an entry directly in it is added, removed or renamed.
 
 ## Checks
@@ -93,12 +93,32 @@ In SPIT, an operation can be carried out by a body of steps, often declared in a
 
 None of this is part of a job's fingerprint, so an edit to a library that leaves a job's command as it was reruns nothing.
 
+## Several commands
+
+A job's `commands` in the DAG run in order, each once the one before it exits 0. A SPIT command written as a block runs a line each, as an aligner's output is sorted and then indexed in one job:
+
+```text
+command sort:
+    samtools sort --threads {@cores} -o {bam} {sam}
+    samtools index {bam}
+```
+
+- Each command runs as a job's only command does: in a process group and session of its own, stopped with the job when the run is, held to the job's memory, with the standard input and output described [below](#standard-input-and-output).
+- The first command that fails stops the job, and the commands after it do not run. The failure names it by its place, from 1, as `command 2 exited with status 1`; a job of one command says `command`, as `command exited with status 1`.
+- Once the first command has started, a failure in any of them [removes the job's outputs](#when-a-job-fails), what an earlier command wrote included, and `--keep-failed` keeps them.
+- The log shows each command after `$ `, in the order they ran:
+
+```text
+$ samtools sort --threads 4 -o out/bam/sample=A.bam out/sam/sample=A.sam
+$ samtools index out/bam/sample=A.bam
+```
+
 ## Standard input and output
 
-A SPIT command written `wc -l < {table} > {@output}` reads an input file on its standard input and writes an output file on its standard output. The DAG gives the job's command as `wc -l` alone, and names the two files in the job's `stdin` and `stdout`:
+A SPIT command written `wc -l < {table} > {@output}` reads an input file on its standard input and writes an output file on its standard output. The DAG gives the command as `wc -l` alone, and names the two files in its `stdin` and `stdout`:
 
 - The runner opens the `stdin` file for reading as the command's standard input. A command without one reads nothing: its standard input is `/dev/null`.
-- The runner writes the command's standard output to a temporary file beside the `stdout` output, named like `.x.txt.spit-bash-partial` for `x.txt`, and renames it onto the output only once the command exits 0. So a failed or stopped command never leaves a partial output at its path, and the temporary file is removed with the job's other outputs. After the rename the output is like any other: it must exist, which an empty file does, and its output checks run on it.
+- The runner writes the command's standard output to a temporary file beside the `stdout` output, named like `.x.txt.spit-bash-partial` for `x.txt`, and renames it onto the output only once the command exits 0, before the next command runs, which may read it. So a failed or stopped command never leaves a partial output at its path, and the temporary file is removed with the job's other outputs. After the rename the output is like any other: it must exist, which an empty file does, and its output checks run on it.
 - The command's standard error goes to the job's log in either case. A command without `stdout` has its standard output logged as well.
 
 The log shows the redirections on the command's line, as a shell would write them:
@@ -107,7 +127,7 @@ The log shows the redirections on the command's line, as a shell would write the
 $ tr a-z A-Z < input/allotment.txt > output/loud/plot=allotment.txt
 ```
 
-`verify` commands and checks never redirect. When the DAG is loaded, a job's `stdin` must be one of its input files and its `stdout` one of its output files, neither a folder, and a job with no command has neither; a DAG that breaks one of these is rejected.
+`verify` commands and checks never redirect. When the DAG is loaded, each command's `stdin` must be one of the job's input files and its `stdout` one of its output files, neither a folder, and one of a job's commands at most has a `stdout`; a DAG that breaks one of these is rejected.
 
 ## Cores and memory
 
@@ -120,7 +140,7 @@ spit-bash run dataset.spitin -j 16 --memory 64G
 - `-j CORES` is the cores to use, by default the number of CPUs. A pipeline that declares no `resources` runs `-j` jobs at once.
 - `--memory SIZE` is the memory to use, a whole number with a unit `K`, `M`, `G` or `T`, each 1024 times the one before, as in a `resources` line, or a number of bytes. By default it is the machine's physical memory; where the system does not report it, memory sets no limit.
 - A job starts only when its cores and memory are free beside those of the jobs already running, and holds them until its output checks finish. A job with no memory claim needs none.
-- A job's declared memory is a limit. While its `verify` commands and its main command run, `run` reads twice a second how much memory the command's process group holds, from `/proc` on Linux and `ps` elsewhere, and kills the group at once when it holds more than the job declares. The job fails, as `command used 212M of memory, more than the 64M its job declares, and was killed`, and loses its outputs as any failed job does. Raise the job's `resources` line and run again. A job with no memory claim is not limited, and checks are not. The reading counts each process's resident memory, so pages that forked workers share count once for each worker, and a group of them can read higher than it holds.
+- A job's declared memory is a limit. While each of its `verify` commands and commands runs, `run` reads twice a second how much memory the command's process group holds, from `/proc` on Linux and `ps` elsewhere, and kills the group at once when it holds more than the job declares. The job fails, as `command used 212M of memory, more than the 64M its job declares, and was killed`, and loses its outputs as any failed job does. Raise the job's `resources` line and run again. A job with no memory claim is not limited, and checks are not. The reading counts each process's resident memory, so pages that forked workers share count once for each worker, and a group of them can read higher than it holds.
 - A job that declares more memory than `--memory` is refused before anything runs, and `run` exits 2 naming it, as `[3] align needs 64G of memory where the run has 32G`.
 - Ready jobs start in rank order and no other. While the job at the head waits for cores or memory, the jobs behind it wait too, even ones that would fit: the head is on the longest chain of work, and letting smaller jobs past it could delay the run or keep a big job waiting for good. Some cores may sit idle while a big job waits for enough to free.
 - A job that needs more cores than `-j` takes all of the run's cores and memory: it starts once no other job is running, and runs alone. `run` says so as it starts, as `[3] needs 16 cores where the run has 8; it will run alone, once no other job is running`.
@@ -129,17 +149,17 @@ spit-bash run dataset.spitin -j 16 --memory 64G
 
 ## When a job fails
 
-A command writes its outputs where they belong, so one that fails can leave a truncated file that another tool, a person or `spit discover` would take for a finished one. Once a job's command has been started, any failure removes everything at the job's declared outputs, files and folders alike: a non-zero exit, a command that could not start, a missing output, an input that changed while it ran, a failed output check, or a run that was stopped. An output that passed the command but failed a check is complete but rejected, and is removed too. The runner removes them only after the command's process group has stopped, so nothing is still writing, and the job's log ends with a line for each output it removed:
+A command writes its outputs where they belong, so one that fails can leave a truncated file that another tool, a person or `spit discover` would take for a finished one. Once a job's first command has been started, any failure removes everything at the job's declared outputs, files and folders alike: a non-zero exit, a command that could not start, a missing output, an input that changed while it ran, a failed output check, or a run that was stopped. An output that passed the command but failed a check is complete but rejected, and is removed too. The runner removes them only after the failed command's process group has stopped, so nothing is still writing, and the job's log ends with a line for each output it removed:
 
 ```text
 spit-bash: removed failed output work/upper.txt
 ```
 
-A job that fails before its command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: the command never touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. To debug a tool, `run --keep-failed` leaves what a failed command wrote where it is, and the log says `spit-bash: kept failed output work/upper.txt` instead. An output the command writes on its standard output stays in its temporary file, such as `work/.upper.txt.spit-bash-partial`, and is never renamed onto the output. The job's record is dropped all the same, so a kept output is never taken for a finished one: the next run runs the job again. The log also holds what the command printed, other than an output it writes on its standard output, and each command it ran, after `$ `, to run again by hand.
+A job that fails before its first command starts, at a missing input, an input check or a `verify` command, keeps what is at its outputs: no command touched them, so they are still an earlier run's, whole. The job's record is still dropped, so the next run runs it again. To debug a tool, `run --keep-failed` leaves what a failed job's commands wrote where it is, and the log says `spit-bash: kept failed output work/upper.txt` instead. An output the command writes on its standard output stays in its temporary file, such as `work/.upper.txt.spit-bash-partial`, and is never renamed onto the output. The job's record is dropped all the same, so a kept output is never taken for a finished one: the next run runs the job again. The log also holds what the command printed, other than an output it writes on its standard output, and each command it ran, after `$ `, to run again by hand.
 
 ## Output and logs
 
-Each job's output, from its checks, its `verify` commands and its command, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, except a command's standard output when it is [one of the job's outputs](#standard-input-and-output), which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
+Each job's output, from its checks, its `verify` commands and its commands, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, except a command's standard output when it is [one of the job's outputs](#standard-input-and-output), which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
 
 `run` also says how long it expects to take, and as each job finishes, how long it took and how many jobs are left:
 

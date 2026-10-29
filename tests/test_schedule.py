@@ -5,14 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import Job, Output
+from spit_bash.dag import Job, Output, Run
 from spit_bash.schedule import ReadyQueue, longest_paths, ranks, size, too_big
 from support import UPPER, document, job, read, run, state_at
 
 
 def chain_job(id, depends_on=(), cores=1, memory=None):
     return Job(id=id, operation=f"op{id}", stage=(), fingerprint="0" * 16, inputs=(),
-               produced=(Output("output", f"{id}.txt", "p", ()),), depends_on=depends_on, command=("true",), verify=(),
+               produced=(Output("output", f"{id}.txt", "p", ()),), depends_on=depends_on, commands=(Run(("true",)),), verify=(),
                cores=cores, memory=memory)
 
 

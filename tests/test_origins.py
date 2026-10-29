@@ -43,7 +43,7 @@ class OriginTests(unittest.TestCase):
 
     def test_a_failed_job_says_where_it_comes_from(self):
         data = called(self.root)
-        data["jobs"][0]["command"][2] = ["import sys; sys.exit(3)"]
+        data["jobs"][0]["commands"][0]["command"][2] = ["import sys; sys.exit(3)"]
         path = self.root / "jobs.spitdag"
         path.write_text(json.dumps(data))
         code, _, err = call("run", str(path))

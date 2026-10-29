@@ -28,7 +28,7 @@ def job(id, inputs, output, script, depends_on=(), dependents=(), fingerprint=No
         "inputs": {"input": [artifact(path) for path in inputs]},
         "outputs": {"output": artifact(output)},
         "depends_on": list(depends_on), "verify": [], "checks": [], "origin": None,
-        "command": command(script, *inputs, output), "stdin": None, "stdout": None,
+        "commands": [{"command": command(script, *inputs, output), "stdin": None, "stdout": None}],
         "cores": 1, "memory": None,
     }
 
