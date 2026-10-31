@@ -215,6 +215,51 @@ def _remove_outputs(dag: Dag, job: Job, log: IO[bytes], keep: bool = False) -> N
     log.flush()
 
 
+def _aside(path: Path) -> Path:
+    """Where an output's earlier version waits while its job runs, beside it so a move keeps it on one disk."""
+    return path.with_name(f".{path.name}.spit-bash-previous")
+
+
+def _set_aside(dag: Dag, job: Job, log: IO[bytes]) -> list[tuple[str, Path, Path]]:
+    """Move what an earlier run left at each of the job's outputs out of the way, so the job starts
+    from the state a first run does. Some tools refuse to write over a file that exists.
+
+    An earlier version already waiting aside is a run that was killed, whose output may be half
+    written, so it is the version to keep. Gives each output moved with its path and its place aside.
+    """
+    moved = []
+    for output in job.outputs:
+        path = dag.checked(output)
+        if not (path.is_symlink() or path.exists()):
+            continue
+        waiting = _aside(path)
+        if waiting.is_symlink() or waiting.exists():
+            _clear(path)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.rename(waiting)
+        moved.append((output, path, waiting))
+    return moved
+
+
+def _settle_aside(moved: list[tuple[str, Path, Path]], log: IO[bytes], restore: bool) -> None:
+    """Delete the earlier versions after a success, or put them back after a failure.
+
+    Call after `_remove_outputs`, so that nothing is at the paths a version goes back to.
+    Without `restore`, as for `--keep-failed`, the failed output stays and the earlier version goes.
+    """
+    for output, path, waiting in moved:
+        try:
+            if restore and not (path.is_symlink() or path.exists()):
+                waiting.rename(path)
+                log.write(f"spit-bash: restored the earlier {output}\n".encode())
+            else:
+                _clear(waiting)
+        except OSError as exc:
+            log.write(f"spit-bash: could not settle the earlier {output} at {waiting}: {exc}\n".encode())
+    log.flush()
+
+
 async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO[bytes],
                 limit: int | None) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
     """Run a job's commands in order, then its output checks; give an error, or its inputs' and outputs' stamps.
@@ -344,11 +389,13 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
                 error = await _command(dag, command, f"verify {index}", log, limit=limit)
                 if error:
                     return Result(job, error, path)
+            # An earlier run's files would mix with this run's, and some tools refuse to write over
+            # them: the job starts with nothing at its outputs, as a first run does.
+            moved = _set_aside(dag, job, log)
             for output in job.outputs:
                 written = dag.checked(output)
                 if output in dag.folders:
-                    # An earlier run's files would mix with this run's; the tool writes into an empty folder.
-                    _clear(written)
+                    # The tool writes into an empty folder.
                     written.mkdir(parents=True)
                 else:
                     written.parent.mkdir(parents=True, exist_ok=True)
@@ -359,10 +406,13 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
                 made = await _make(dag, job, before, log, limit)
             except asyncio.CancelledError:
                 _remove_outputs(dag, job, log, keep_failed)
+                _settle_aside(moved, log, not keep_failed)
                 raise
             if isinstance(made, str):
                 _remove_outputs(dag, job, log, keep_failed)
+                _settle_aside(moved, log, not keep_failed)
                 return Result(job, made, path)
+            _settle_aside(moved, log, False)
         after, outputs = made
         return _Ran(after, outputs, path, time.monotonic() - started)
 

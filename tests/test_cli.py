@@ -42,6 +42,31 @@ class CliTests(unittest.TestCase):
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
         self.assertEqual(call("plan", str(self.dag))[1].count("skip"), 2)
 
+    def test_run_counts_current_jobs_and_lists_them_only_when_asked(self):
+        call("run", self.write())
+        code, out, _ = call("run", str(self.dag))
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines()[0], "2 skip")
+        self.assertNotIn("op1", out)
+        _, out, _ = call("run", str(self.dag), "--verbose")
+        self.assertIn("[1] skip    op1", out)
+        self.assertIn("[2] skip    op2", out)
+
+    def test_run_lists_the_jobs_that_will_do_something_up_to_a_limit(self):
+        code, out, _ = call("run", self.write())
+        self.assertEqual(out.splitlines()[0], "2 run")
+        self.assertIn("[1] run     op1: output missing", out)
+
+    def test_a_partial_run_says_which_jobs_it_left_out_of_date(self):
+        call("run", self.write())
+        (self.root / "source.txt").write_text("changed")
+        code, _, err = call("run", str(self.dag), "--product", "work/upper.txt")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 job outside the selection read outputs this run changed", err)
+        self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
+        code, _, err = call("run", str(self.dag))
+        self.assertNotIn("outside the selection", err)
+
     def test_reads_stdin_and_needs_root_when_dag_has_none(self):
         self.data["root"] = None
         code, _, err = call("plan", "-", stdin=json.dumps(self.data))
