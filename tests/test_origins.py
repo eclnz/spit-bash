@@ -21,7 +21,7 @@ def called(root):
         {"operation": "L::tidy", "instance": "m::cleaned", "parent": 0, "file": 1,
          "at": {"file": 1, "line": 13}},
     ]
-    data["jobs"][0]["origin"] = {"call": 1, "line": 10}
+    data["jobs"][0]["origin"] = {"call": 1, "file": 1, "line": 10}
     return data
 
 
@@ -40,6 +40,15 @@ class OriginTests(unittest.TestCase):
             "in `m = L::summarise(...)` at main.spit line 8",
         ))
         self.assertEqual(dag.jobs[1].origin, ())
+
+    def test_a_step_written_in_the_pipeline_names_its_line(self):
+        data = called(self.root)
+        data["jobs"][1]["origin"] = {"call": None, "file": 0, "line": 14}
+        dag = read(data)
+        self.assertEqual(dag.jobs[1].origin, ("step at main.spit line 14",))
+        data["jobs"][1]["origin"] = {"call": None, "file": 2, "line": 14}
+        with self.assertRaisesRegex(DagError, "names a file"):
+            read(data)
 
     def test_a_failed_job_says_where_it_comes_from(self):
         data = called(self.root)
@@ -70,7 +79,7 @@ class OriginTests(unittest.TestCase):
         with self.assertRaisesRegex(DagError, "not an earlier call"):
             read(data)
         data = called(self.root)
-        data["jobs"][1]["origin"] = {"call": 2, "line": 1}
+        data["jobs"][1]["origin"] = {"call": 2, "file": 1, "line": 1}
         with self.assertRaisesRegex(DagError, "names a call"):
             read(data)
         data = called(self.root)
