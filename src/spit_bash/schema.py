@@ -1,4 +1,4 @@
-"""The version 9 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 10 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 # The one version of the format spit-bash reads.
-VERSION = 9
+VERSION = 10
 
 
 class SchemaModel(BaseModel):
@@ -60,7 +60,13 @@ class StemPart(SchemaModel):
     of_path: RelativePath = Field(alias="of")
 
 
-CommandPart = str | PathPart | DirPart | StemPart
+class HerePart(SchemaModel):
+    """The folder of the file declaring the job's operation, relative to the pipeline's folder; "" is that folder."""
+
+    here: str
+
+
+CommandPart = str | PathPart | DirPart | StemPart | HerePart
 Argument = Annotated[list[CommandPart], Field(min_length=1)]
 Command = Annotated[list[Argument], Field(min_length=1)]
 
@@ -171,6 +177,8 @@ class SpitDag(SchemaModel):
     executables: list[str]
     removed: list[Removal]
     left_out: list[LeftOut]
+    # The absolute folder of the pipeline's own file, null when SPIT read the pipeline from no file.
+    pipeline_folder: NonEmpty | None
     pipeline_files: list[PipelineFile]
     calls: list[Call]
     jobs: list[SpitJob]
