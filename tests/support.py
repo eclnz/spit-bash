@@ -35,7 +35,7 @@ def job(id, inputs, output, script, depends_on=(), dependents=(), fingerprint=No
 
 def document(root, jobs, external_inputs):
     return {
-        "version": 8,
+        "version": 9,
         "generator": {"name": "spit", "version": "0.2.1"},
         "root": None if root is None else str(root),
         "external_inputs": [artifact(path) for path in external_inputs],

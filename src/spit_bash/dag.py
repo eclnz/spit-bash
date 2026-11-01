@@ -170,8 +170,10 @@ def _origin(document: SpitDag, job: SpitJob) -> tuple[str, ...]:
     def place(file: int | None, line: int) -> str:
         return f"{files[file].path} line {line}" if file is not None else f"line {line}"
 
+    lines = [f"step at {place(job.origin.file, job.origin.line)}"]
+    if job.origin.call is None:
+        return tuple(lines)
     call = calls[job.origin.call]
-    lines = [f"step at {place(call.file, job.origin.line)}"]
     while True:
         lines.append(f"in `{call.instance} = {call.operation}(...)` at {place(call.at.file, call.at.line)}")
         if call.parent is None:
@@ -190,8 +192,12 @@ def _check_origins(document: SpitDag) -> None:
         if call.parent is not None and call.parent >= position:
             raise DagError(f"call {position} names a parent that is not an earlier call")
     for job in document.jobs:
-        if job.origin is not None and job.origin.call >= len(calls):
+        if job.origin is None:
+            continue
+        if job.origin.call is not None and job.origin.call >= len(calls):
             raise DagError(f"job {job.id}: `origin` names a call that `calls` does not hold")
+        if job.origin.file is not None and job.origin.file >= files:
+            raise DagError(f"job {job.id}: `origin` names a file that `pipeline_files` does not hold")
 
 
 def _check_streams(job: SpitJob, folders: frozenset[str]) -> None:

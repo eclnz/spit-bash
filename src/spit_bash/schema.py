@@ -1,4 +1,4 @@
-"""The version 8 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 9 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 # The one version of the format spit-bash reads.
-VERSION = 8
+VERSION = 9
 
 
 class SchemaModel(BaseModel):
@@ -121,9 +121,13 @@ class Call(SchemaModel):
 
 
 class Origin(SchemaModel):
-    """The call whose body made a job, and the line of the body's step."""
+    """Where the step that made a job is written: the line of a file, and the call whose body holds it.
 
-    call: Index
+    A step written in the pipeline has no call.
+    """
+
+    call: Index | None
+    file: Index | None
     line: Line
 
 
@@ -150,7 +154,7 @@ class SpitJob(SchemaModel):
     commands: list[JobCommand]
     verify: list[Command]
     checks: list[Check]
-    # Null for a step written in the pipeline.
+    # Null for a step SPIT did not read from a file.
     origin: Origin | None
     # What the job needs while its commands run: cores, 1 when its operation
     # declares none, and memory in bytes, null when it claims none.
