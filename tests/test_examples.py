@@ -112,8 +112,8 @@ class ExampleTests(unittest.TestCase):
         pipeline.write_text(pipeline.read_text().replace("contains(today)", "contains(for)"))
         result = spit_bash("plan", recipe)
         self.assertIn("[1] check   copy: checks changed", result.stdout)
-        # The failed job's output was removed, so it runs again.
-        self.assertIn("[2] run     copy: output missing", result.stdout)
+        # The failed job's record was dropped, so it runs again.
+        self.assertIn("[2] run     copy: no successful run recorded", result.stdout)
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 1)
         self.assertIn("0 done, 1 checked, 1 failed", result.stderr)
@@ -137,12 +137,15 @@ class ExampleTests(unittest.TestCase):
         log = (self.examples / "streams/.spit-bash/logs/1-shout.log").read_text()
         self.assertIn("$ tr a-z A-Z < input/allotment.txt > output/loud/plot=allotment.txt\n", log)
 
-        # tr prints nothing for an empty list, so its output fails its nonempty check and is not left behind.
+        # tr prints nothing for an empty list, so its output fails its nonempty check: the failed
+        # output is not left behind, and the earlier one is put back.
         (self.examples / "streams/input/garden.txt").write_text("")
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 1)
         self.assertIn("failed: exited with status 1", result.stderr)
-        self.assertEqual(sorted(path.name for path in (output / "loud").iterdir()), ["plot=allotment.txt"])
+        self.assertEqual(sorted(path.name for path in (output / "loud").iterdir()),
+                         ["plot=allotment.txt", "plot=garden.txt"])
+        self.assertEqual((output / "loud/plot=garden.txt").read_text(), "APPLES\nPEARS\nPLUMS\n")
 
     def test_sequence(self):
         result = spit_bash("run", str(self.examples / "sequence/sequence.spitin"))

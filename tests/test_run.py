@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -12,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.dag import load_dag
-from spit_bash.plan import Status, plan
+from spit_bash.plan import State, Status, plan
 from spit_bash import run as run_module
 from spit_bash.run import execute
 from support import FIXTURE, artifact, command, document, job, read, run, sample, state_at
@@ -308,3 +310,44 @@ class SignalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EarlierOutputTests(unittest.TestCase):
+    """A job starts with nothing at its outputs, and a failure puts the earlier version back."""
+
+    REFUSE = ("from pathlib import Path; import sys; out = Path(sys.argv[2]); "
+              "assert not out.exists(), 'exists'; out.write_text('new')")
+    FAIL = ("from pathlib import Path; import sys; Path(sys.argv[2]).write_text('half'); sys.exit(1)")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "in.txt").write_text("x")
+        (self.root / "out.txt").write_text("earlier")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_job(self, script, keep_failed=False):
+        dag = load_dag(io.StringIO(json.dumps(document(self.root, [job(1, ["in.txt"], "out.txt", script)], ["in.txt"]))), None)
+        state = State(self.root / "state.jsonl")
+        decisions = plan(dag, state, False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            return asyncio.run(execute(dag, decisions, state, 1, self.root / "logs", keep_failed=keep_failed))
+
+    def test_a_tool_that_refuses_to_overwrite_runs_again(self):
+        (result,) = self.run_job(self.REFUSE)
+        self.assertIsNone(result.error)
+        self.assertEqual((self.root / "out.txt").read_text(), "new")
+        self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())
+
+    def test_a_failure_puts_the_earlier_output_back(self):
+        (result,) = self.run_job(self.FAIL)
+        self.assertIsNotNone(result.error)
+        self.assertEqual((self.root / "out.txt").read_text(), "earlier")
+        self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())
+
+    def test_keep_failed_keeps_the_failed_output_instead(self):
+        self.run_job(self.FAIL, keep_failed=True)
+        self.assertEqual((self.root / "out.txt").read_text(), "half")
+        self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())

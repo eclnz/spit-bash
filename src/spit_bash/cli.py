@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
 from .plan import State, Status, adopt, apply_refreshes, plan
-from .run import execute, log_tail
+from .run import Result, execute, log_tail
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
 
@@ -78,6 +78,8 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--memory", type=_memory, default=_machine_memory(), metavar="SIZE",
                                  help="memory to use, as 512M or 32G: run jobs at once while\n"
                                       "the memory they declare fits (default: the machine's)")
+            command.add_argument("--verbose", action="store_true",
+                                 help="list every job before running, current ones too (default: counts, and the jobs that will do something)")
             command.add_argument("--logs", help="folder for job logs (default: ROOT/.spit-bash/logs)")
             command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
                                  help="let a job hold more memory than it declares, and run a job\n"
@@ -145,6 +147,45 @@ def _selection(args: argparse.Namespace) -> Selection:
         raise DagError(str(exc)) from exc
 
 
+# How many jobs `run` lists before it counts the rest.
+LISTED_JOBS = 20
+
+
+def _line(decision: Decision) -> str:
+    return f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}"
+
+
+def _summarize(decisions: tuple[Decision, ...]) -> None:
+    """Print the plan for `run` as counts, then a line for each job that will do something, up to a limit.
+
+    Current jobs are only counted: `plan` and `run --verbose` list them.
+    """
+    count = {status: 0 for status in Status}
+    for decision in decisions:
+        count[decision.status] += 1
+    order = (Status.RUN, Status.MAYBE, Status.CHECK, Status.BLOCKED, Status.SKIP)
+    print(", ".join(f"{count[status]} {status.value}" for status in order if count[status]) or "no jobs")
+    active = [decision for decision in decisions if decision.status is not Status.SKIP]
+    for decision in active[:LISTED_JOBS]:
+        print(_line(decision))
+    if len(active) > LISTED_JOBS:
+        print(f"... and {len(active) - LISTED_JOBS} more; `plan` or `run --verbose` lists every job")
+
+
+def _stale(everything: Dag, chosen: Dag, decisions: tuple[Decision, ...], results: tuple[Result, ...]) -> int:
+    """The jobs left out of a partial run that read an output the run rewrote."""
+    settled = {result.job.id: result.settled for result in results if result.error is None}
+    rewritten = set()
+    for decision in decisions:
+        if decision.job.id not in settled:
+            continue
+        status = settled[decision.job.id] or decision.status
+        if status is Status.RUN:
+            rewritten.update(decision.job.outputs)
+    kept = {job.id for job in chosen.jobs}
+    return sum(1 for job in everything.jobs if job.id not in kept and rewritten.intersection(job.inputs))
+
+
 def _report_failure(job: Job, error: str, log: Path | None) -> None:
     job_id = job.id
     print(f"[{job_id}] failed: {error}", file=sys.stderr)
@@ -169,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         selection = _selection(args)
         dag = _load(args)
+        everything = dag
         total = len(dag.jobs)
         selected = select(dag, selection)
         dag = selected.dag
@@ -200,9 +242,11 @@ def main(argv: list[str] | None = None) -> int:
                 ],
             }, sys.stdout, indent=2)
             print()
+        elif args.action is Action.RUN and not args.verbose:
+            _summarize(decisions)
         else:
             for decision in decisions:
-                print(f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}")
+                print(_line(decision))
         maybe = sum(decision.status is Status.MAYBE for decision in decisions)
         if maybe:
             certain = sum(decision.status is Status.RUN for decision in decisions)
@@ -251,6 +295,10 @@ def main(argv: list[str] | None = None) -> int:
         if cutoff:
             summary += f", {cutoff} of the current ones not rerun because upstream output was unchanged"
         print(summary, file=sys.stderr)
+        stale = _stale(everything, dag, decisions, results) if selection else 0
+        if stale:
+            print(f"{stale} job{'' if stale == 1 else 's'} outside the selection read outputs this run changed; "
+                  "run without the selection to bring them up to date", file=sys.stderr)
         return 1 if failed or blocked else 0
     except (DagError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

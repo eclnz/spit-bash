@@ -62,15 +62,15 @@ class StreamTests(unittest.TestCase):
         self.assertIn(" > work/upper.txt\n", self.log.read_text())
         self.assertNotIn(" < ", self.log.read_text())
 
-    def test_a_failed_command_leaves_neither_the_output_nor_its_temporary_file(self):
+    def test_a_failed_command_leaves_the_earlier_output_and_no_temporary_file(self):
         self.output.parent.mkdir()
         self.output.write_text("from an earlier run")
         dag = read(streamed(self.root, HALF))
         _, results = run(dag, state_at(self.root))
         self.assertEqual(results[0].error, "command exited with status 4")
-        self.assertFalse(self.output.exists())
+        self.assertEqual(self.output.read_text(), "from an earlier run")
         self.assertFalse(partial(dag, "work/upper.txt").exists())
-        self.assertEqual(list(self.output.parent.iterdir()), [])
+        self.assertEqual(list(self.output.parent.iterdir()), [self.output])
 
     def test_keep_failed_keeps_what_a_failed_command_wrote_on_its_standard_output(self):
         dag = read(streamed(self.root, HALF))
