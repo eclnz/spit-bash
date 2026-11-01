@@ -81,3 +81,33 @@ class LoadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HereTests(unittest.TestCase):
+    """`{@here}` arrives as a part under the pipeline's folder."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "source.txt").write_text("hello")
+
+    def data(self, here):
+        data = sample(self.root)
+        data["pipeline_folder"] = "/home/lab/study"
+        data["jobs"][0]["commands"][0]["command"][2] = ["print(1)", {"here": here}, "/run.sh"]
+        return data
+
+    def test_a_here_part_is_the_pipelines_folder_with_the_relative_folder_under_it(self):
+        self.assertEqual(read(self.data(""), self.root).jobs[0].commands[0].arguments[2], "print(1)/home/lab/study/run.sh")
+        self.assertEqual(read(self.data("libs/sub"), self.root).jobs[0].commands[0].arguments[2],
+                         "print(1)/home/lab/study/libs/sub/run.sh")
+
+    def test_a_here_part_needs_the_folder_and_stays_under_it(self):
+        data = self.data("libs")
+        data["pipeline_folder"] = None
+        with self.assertRaisesRegex(DagError, "pipeline_folder"):
+            read(data, self.root)
+        for bad in ("../x", "/etc"):
+            with self.assertRaisesRegex(DagError, "not a folder under"):
+                read(self.data(bad), self.root)

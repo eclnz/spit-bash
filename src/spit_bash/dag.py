@@ -10,7 +10,7 @@ from typing import Iterator, TextIO
 
 from pydantic import ValidationError
 
-from .schema import Artifact, Command, DirPart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
+from .schema import Artifact, Command, DirPart, HerePart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
 
 
 class DagError(ValueError):
@@ -131,7 +131,17 @@ class Dag:
         return path
 
 
-def _command(command: Command) -> tuple[str, ...]:
+def _here(part: HerePart, folder: str | None) -> str:
+    if folder is None:
+        raise DagError("a command uses the pipeline's folder, but `pipeline_folder` is null")
+    inside = PurePosixPath(part.here)
+    if inside.is_absolute() or ".." in inside.parts:
+        raise DagError(f"`here` names {part.here}, which is not a folder under the pipeline's")
+    return str(PurePosixPath(folder) / inside)
+
+
+def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
+    """A command's arguments as text; `folder` is the pipeline's, which a `here` part is under."""
     arguments = []
     for argument in command:
         parts = []
@@ -144,6 +154,8 @@ def _command(command: Command) -> tuple[str, ...]:
                 parts.append(part.dir)
             elif isinstance(part, StemPart):
                 parts.append(part.stem)
+            elif isinstance(part, HerePart):
+                parts.append(_here(part, folder))
         arguments.append("".join(parts))
     if not arguments[0]:
         raise DagError("command has no executable")
@@ -220,8 +232,8 @@ def _check_streams(job: SpitJob, folders: frozenset[str]) -> None:
                 raise DagError(f"job {job.id}: `{field_name}` names {path}, which is a folder, not a file")
 
 
-def _run(command: JobCommand) -> Run:
-    return Run(_command(command.command), command.stdin, command.stdout)
+def _run(command: JobCommand, folder: str | None) -> Run:
+    return Run(_command(command.command, folder), command.stdin, command.stdout)
 
 
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
@@ -270,10 +282,10 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             inputs=inputs,
             produced=produced,
             depends_on=tuple(item.depends_on),
-            commands=tuple(_run(command) for command in item.commands),
-            verify=tuple(_command(command) for command in item.verify),
+            commands=tuple(_run(command, document.pipeline_folder) for command in item.commands),
+            verify=tuple(_command(command, document.pipeline_folder) for command in item.verify),
             checks=tuple(
-                Check(check.when, check.check, check.port, check.path, _command(check.command))
+                Check(check.when, check.check, check.port, check.path, _command(check.command, document.pipeline_folder))
                 for check in item.checks
             ),
             origin=_origin(document, item),
