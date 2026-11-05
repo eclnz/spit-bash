@@ -31,6 +31,40 @@ MEET = (
 )
 
 
+class InputChangeDiagnosticTests(unittest.TestCase):
+    def test_names_changed_file_and_stamps(self):
+        error = run_module._input_changes(
+            {"source.txt": [10, 100], "stable.txt": [2, 30]},
+            {"source.txt": [12, 150], "stable.txt": [2, 30]},
+            set(),
+        )
+        self.assertEqual(
+            error,
+            "input changed during execution: source.txt: size 10 -> 12, mtime_ns 100 -> 150",
+        )
+
+    def test_names_folder_mtime_and_file_count(self):
+        error = run_module._input_changes(
+            {"templates": [1024, 100, 4]},
+            {"templates": [1024, 200, 5]},
+            {"templates"},
+        )
+        self.assertEqual(
+            error,
+            "input changed during execution: templates: latest mtime_ns 100 -> 200, file count 4 -> 5",
+        )
+
+    def test_names_missing_input(self):
+        error = run_module._input_changes(
+            {"source.txt": [12, 100]},
+            {"source.txt": None},
+            set(),
+        )
+        self.assertEqual(
+            error, "input changed during execution: source.txt: [12, 100] -> None",
+        )
+
+
 class RunTests(unittest.TestCase):
     def test_runs_in_dependency_order_then_skips_and_reruns_stale_jobs(self):
         with tempfile.TemporaryDirectory() as directory:

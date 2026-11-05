@@ -113,6 +113,30 @@ async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
     return None if code == 0 else f"{kind} exited with status {code}"
 
 
+def _input_changes(
+    before: dict[str, list[int] | None],
+    after: dict[str, list[int] | None],
+    folders: set[str] | frozenset[str],
+) -> str:
+    """Name every changed input and show which recorded stamp fields changed."""
+    changes = []
+    for path, original in before.items():
+        current = after.get(path)
+        if original == current:
+            continue
+        if original is None or current is None:
+            changes.append(f"{path}: {original!r} -> {current!r}")
+            continue
+        fields = ("total size", "latest mtime_ns", "file count") if path in folders else ("size", "mtime_ns")
+        changed = [
+            f"{field} {old} -> {new}"
+            for field, old, new in zip(fields, original, current)
+            if old != new
+        ]
+        changes.append(f"{path}: {', '.join(changed)}")
+    return "input changed during execution: " + "; ".join(changes)
+
+
 async def _within(process: asyncio.subprocess.Process, limit: int) -> int | None:
     """Wait for a command, reading its process group's memory as it runs; give what it held once it went over `limit`."""
     while True:
@@ -283,7 +307,7 @@ async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO
                 return f"could not move standard output onto {run.stdout}: {exc}"
     after = stamps(dag, job.inputs)
     if after != before:
-        return "input changed during execution"
+        return _input_changes(before, after, dag.folders)
     outputs = stamps(dag, job.outputs)
     missing = [f"output {output.port} {output.path}" for output in job.produced
                if outputs[output.path] is None]
