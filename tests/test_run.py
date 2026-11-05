@@ -65,6 +65,65 @@ class InputChangeDiagnosticTests(unittest.TestCase):
         )
 
 
+class DirectoryTimestampTests(unittest.TestCase):
+    def test_touching_directory_metadata_during_job_does_not_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "input"
+            folder.mkdir()
+            (folder / "a.txt").write_text("hello")
+            data = sample(root)
+            data["external_inputs"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["inputs"]["input"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["commands"][0]["command"] = command(
+                "from pathlib import Path; import os, sys; "
+                "folder = Path(sys.argv[1]); old = folder.stat().st_mtime_ns; "
+                "os.utime(folder, ns=(old + 1000000000, old + 1000000000)); "
+                "Path(sys.argv[2]).write_text('ok')",
+                "input", "work/upper.txt",
+            )
+            _, results = run(read(data), state_at(root))
+            self.assertEqual([result.error for result in results], [None, None])
+
+    def test_renaming_file_inside_directory_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "input"
+            folder.mkdir()
+            (folder / "a.txt").write_text("hello")
+            data = sample(root)
+            data["external_inputs"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["inputs"]["input"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["commands"][0]["command"] = command(
+                "from pathlib import Path; import sys; "
+                "folder = Path(sys.argv[1]); (folder / 'a.txt').rename(folder / 'b.txt'); "
+                "Path(sys.argv[2]).write_text('ok')",
+                "input", "work/upper.txt",
+            )
+            _, results = run(read(data), state_at(root))
+            self.assertIn("input changed during execution", results[0].error)
+
+    def test_touching_a_file_inside_directory_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "input"
+            folder.mkdir()
+            file = folder / "a.txt"
+            file.write_text("hello")
+            data = sample(root)
+            data["external_inputs"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["inputs"]["input"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["commands"][0]["command"] = command(
+                "from pathlib import Path; import os, sys; "
+                "file = Path(sys.argv[1]) / 'a.txt'; old = file.stat().st_mtime_ns; "
+                "os.utime(file, ns=(old + 1000000000, old + 1000000000)); "
+                "Path(sys.argv[2]).write_text('ok')",
+                "input", "work/upper.txt",
+            )
+            _, results = run(read(data), state_at(root))
+            self.assertIn("input changed during execution", results[0].error)
+
+
 class RunTests(unittest.TestCase):
     def test_runs_in_dependency_order_then_skips_and_reruns_stale_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
