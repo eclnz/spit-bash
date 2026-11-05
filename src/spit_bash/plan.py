@@ -29,10 +29,9 @@ def stamp(path: Path, folder: bool = False) -> list[int] | None:
     """A file's size and modification time, or None when it is not a file.
 
     A folder's stamp is the total size of the files under it, the latest
-    modification time of any of them or of any folder under it, and how many
-    files it holds, or None when it is not a folder. A folder's own time
-    changes only when an entry directly in it is added, removed or renamed, so
-    a change deeper down shows only in what is under it.
+    modification time of any file under it, and how many files it holds, or
+    None when it is not a folder. Directory mtimes are deliberately excluded:
+    syncing software can touch them without changing the input files.
     """
     if folder:
         return _folder_stamp(path)
@@ -46,13 +45,8 @@ def stamp(path: Path, folder: bool = False) -> list[int] | None:
 def _folder_stamp(path: Path) -> list[int] | None:
     if not path.is_dir():
         return None
-    size, latest, count = 0, path.stat().st_mtime_ns, 0
+    size, latest, count = 0, 0, 0
     for directory, folders, files in os.walk(path):
-        for name in folders:
-            try:
-                latest = max(latest, os.stat(os.path.join(directory, name)).st_mtime_ns)
-            except FileNotFoundError:
-                pass
         for name in files:
             try:
                 info = os.stat(os.path.join(directory, name))
