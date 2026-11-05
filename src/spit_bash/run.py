@@ -107,6 +107,9 @@ async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
     except asyncio.CancelledError:
         await _stop(process)
         raise
+    if code == -signal.SIGKILL:
+        declared = f", declared memory={size(limit)}" if limit is not None else ""
+        return f"{kind} killed by signal 9 (SIGKILL), possibly out of memory{declared}"
     return None if code == 0 else f"{kind} exited with status {code}"
 
 
