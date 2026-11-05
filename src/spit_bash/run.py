@@ -137,6 +137,28 @@ def _input_changes(
     return "input changed during execution: " + "; ".join(changes)
 
 
+def _folder_entries(root: Path) -> tuple[tuple[str, int, int], ...]:
+    """Record folder names and file metadata, excluding directory mtimes."""
+    entries = []
+    for directory, folders, files in os.walk(root):
+        folders.sort()
+        for name in folders:
+            entries.append((f"d:{(Path(directory) / name).relative_to(root)}", 0, 0))
+        for name in sorted(files):
+            path = Path(directory) / name
+            try:
+                info = path.stat()
+            except FileNotFoundError:
+                continue
+            if path.is_file():
+                entries.append((f"f:{path.relative_to(root)}", info.st_size, info.st_mtime_ns))
+    return tuple(entries)
+
+
+def _folder_inputs(dag: Dag, job: Job) -> dict[str, tuple[tuple[str, int, int], ...]]:
+    return {path: _folder_entries(dag.path(path)) for path in job.inputs if path in dag.folders}
+
+
 async def _within(process: asyncio.subprocess.Process, limit: int) -> int | None:
     """Wait for a command, reading its process group's memory as it runs; give what it held once it went over `limit`."""
     while True:
@@ -288,7 +310,8 @@ def _settle_aside(moved: list[tuple[str, Path, Path]], log: IO[bytes], restore: 
 
 
 async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO[bytes],
-                limit: int | None) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
+                limit: int | None, folder_entries: dict[str, tuple[tuple[str, int, int], ...]],
+                ) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
     """Run a job's commands in order, then its output checks; give an error, or its inputs' and outputs' stamps.
 
     The first command that fails stops the job, and the commands after it do not run.
@@ -306,8 +329,15 @@ async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO
             except OSError as exc:
                 return f"could not move standard output onto {run.stdout}: {exc}"
     after = stamps(dag, job.inputs)
-    if after != before:
-        return _input_changes(before, after, dag.folders)
+    changed_folders = {
+        path for path, entries in folder_entries.items()
+        if entries != _folder_entries(dag.path(path))
+    }
+    if after != before or changed_folders:
+        message = _input_changes(before, after, dag.folders) if after != before else "input changed during execution"
+        extra = [f"{path}: directory entries or file metadata changed" for path in sorted(changed_folders)
+                 if before[path] == after[path]]
+        return message + ("; " + "; ".join(extra) if extra else "")
     outputs = stamps(dag, job.outputs)
     missing = [f"output {output.port} {output.path}" for output in job.produced
                if outputs[output.path] is None]
@@ -403,6 +433,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             return Result(job, "input disappeared before execution")
         if not job.commands:
             return Result(job, "job has no command")
+        folder_entries = _folder_inputs(dag, job)
         path = log_path(logs, job)
         print(f"[{job.id}] start {job.operation}", flush=True)
         started = time.monotonic()
@@ -430,7 +461,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             # outputs, unless they are kept. A cancelled command's process group is stopped before
             # the cancellation reaches this point.
             try:
-                made = await _make(dag, job, before, log, limit)
+                made = await _make(dag, job, before, log, limit, folder_entries)
             except asyncio.CancelledError:
                 _remove_outputs(dag, job, log, keep_failed)
                 _settle_aside(moved, log, not keep_failed)
