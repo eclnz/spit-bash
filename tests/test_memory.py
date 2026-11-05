@@ -75,6 +75,30 @@ class EnforcementTests(unittest.TestCase):
         self.assertFalse((self.root / "work/upper.txt").exists())
         self.assertEqual(results[1].error, "dependency 1 failed")
 
+    def test_sigkill_reports_possible_oom_and_declared_memory(self):
+        data = sample(self.root)
+        data["jobs"][0]["commands"][0]["command"][2] = [
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+        ]
+        data["jobs"][0]["memory"] = 64 * MIB
+        _, results = run(read(data), state_at(self.root))
+        self.assertEqual(
+            results[0].error,
+            "command killed by signal 9 (SIGKILL), possibly out of memory, declared memory=64M",
+        )
+
+    def test_sigkill_without_memory_declaration_still_reports_signal(self):
+        data = sample(self.root)
+        data["jobs"][0]["commands"][0]["command"][2] = [
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+        ]
+        data["jobs"][0]["memory"] = None
+        _, results = run(read(data), state_at(self.root))
+        self.assertEqual(
+            results[0].error,
+            "command killed by signal 9 (SIGKILL), possibly out of memory",
+        )
+
     def test_a_job_within_what_it_declares_runs(self):
         _, results = run(self.greedy(1024 * MIB), state_at(self.root))
         self.assertEqual([result.error for result in results], [None, None])
