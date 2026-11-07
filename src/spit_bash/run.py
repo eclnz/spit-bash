@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import signal
+import sys
 import time
 from collections import deque
 from contextlib import ExitStack
@@ -84,29 +85,58 @@ async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
         shown += f" > {shlex.quote(stdout)}"
     log.write(f"$ {shown}\n".encode())
     log.flush()
+    peak_read: int | None = None
+    peak_write: int | None = None
+    ack_read: int | None = None
+    ack_write: int | None = None
     with ExitStack() as files:
         try:
             source = asyncio.subprocess.DEVNULL if stdin is None else files.enter_context(dag.checked(stdin).open("rb"))
             target = log if stdout is None else files.enter_context(partial(dag, stdout).open("wb"))
+            command = args
+            kwargs = {}
+            if limit is not None and hasattr(os, "wait4"):
+                peak_read, peak_write = os.pipe()
+                ack_read, ack_write = os.pipe()
+                command = (sys.executable, str(Path(__file__).with_name("memory.py")),
+                           str(peak_write), str(ack_read), "--", *args)
+                kwargs["pass_fds"] = (peak_write, ack_read)
             # A session of its own lets a cancelled job's whole process group be
             # stopped, and keeps a terminal's Ctrl-C from reaching it directly.
             process = await asyncio.create_subprocess_exec(
-                *args, cwd=dag.root, stdin=source, stdout=target, stderr=log, start_new_session=True,
+                *command, cwd=dag.root, stdin=source, stdout=target, stderr=log, start_new_session=True, **kwargs,
             )
+            if peak_write is not None:
+                os.close(peak_write)
+                peak_write = None
+                os.close(ack_read)
+                ack_read = None
         except OSError as exc:
+            for fd in (peak_read, peak_write, ack_read, ack_write):
+                if fd is not None:
+                    os.close(fd)
             return f"{kind} could not start: {exc}"
     try:
         if limit is None:
             code = await process.wait()
         else:
-            used = await _within(process, limit)
-            if used is not None:
-                await _kill(process)
-                return f"{kind} used {size(used)} of memory, more than the {size(limit)} its job declares, and was killed"
+            over = await _within(process, limit, peak_read, ack_write)
+            if over is not None:
+                used, completed = over
+                outcome = "was rejected after it exited" if completed else "was killed"
+                return f"{kind} used {size(used)} of memory, more than the {size(limit)} its job declares, and {outcome}"
             code = process.returncode
     except asyncio.CancelledError:
         await _stop(process)
         raise
+    except RuntimeError as exc:
+        if process.returncode is None:
+            await _kill(process)
+        return f"{kind} memory accounting failed: {exc}"
+    finally:
+        for fd in (peak_read, ack_write):
+            if fd is not None:
+                os.close(fd)
     if code == -signal.SIGKILL:
         declared = f", declared memory={size(limit)}" if limit is not None else ""
         return f"{kind} killed by signal 9 (SIGKILL), possibly out of memory{declared}"
@@ -159,18 +189,75 @@ def _folder_inputs(dag: Dag, job: Job) -> dict[str, tuple[tuple[str, int, int], 
     return {path: _folder_entries(dag.path(path)) for path in job.inputs if path in dag.folders}
 
 
-async def _within(process: asyncio.subprocess.Process, limit: int) -> int | None:
-    """Wait for a command, reading its process group's memory as it runs; give what it held once it went over `limit`."""
-    while True:
+async def _read_peak(fd: int) -> int:
+    data = bytearray()
+    loop = asyncio.get_running_loop()
+    ready = loop.create_future()
+
+    def read_ready() -> None:
+        if ready.done():
+            return
         try:
-            # Shielded, so that a timeout leaves the wait to go on.
-            await asyncio.wait_for(asyncio.shield(process.wait()), MEMORY_POLL_SECONDS)
-            return None
-        except asyncio.TimeoutError:
+            part = os.read(fd, 8 - len(data))
+            if not part:
+                raise RuntimeError("memory monitor exited without reporting command peak RSS")
+            data.extend(part)
+            if len(data) == 8:
+                ready.set_result(None)
+        except Exception as exc:
+            ready.set_exception(exc)
+
+    loop.add_reader(fd, read_ready)
+    try:
+        await ready
+    finally:
+        loop.remove_reader(fd)
+    return int.from_bytes(data, "big")
+
+
+async def _within(process: asyncio.subprocess.Process, limit: int, peak_fd: int | None = None,
+                  ack_fd: int | None = None) -> tuple[int, bool] | None:
+    """Sample the group; the peak helper holds its process group until accounting finishes."""
+    peak_task = asyncio.create_task(_read_peak(peak_fd)) if peak_fd is not None else None
+    wait_future = asyncio.shield(process.wait())
+    try:
+        while True:
+            watching = {wait_future} if peak_task is None else {wait_future, peak_task}
+            done, _ = await asyncio.wait(watching, timeout=MEMORY_POLL_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+            if peak_task is not None and peak_task in done:
+                try:
+                    peak = peak_task.result()
+                except RuntimeError:
+                    if process.returncode is not None and process.returncode < 0:
+                        return None
+                    raise
+                group = await asyncio.to_thread(group_memory, process.pid, process.pid)
+                used = max(peak, group)
+                if used > limit:
+                    await _kill(process)
+                    return used, True
+                if ack_fd is not None:
+                    os.write(ack_fd, b"1")
+                await process.wait()
+                return None
+            if wait_future in done:
+                if process.returncode is not None and process.returncode < 0:
+                    return None
+                if peak_task is None:
+                    return None
+                raise RuntimeError("memory monitor exited before reporting command peak RSS")
             # Off the event loop: it reads a file for every process, or runs `ps`.
-            used = await asyncio.to_thread(group_memory, process.pid)
+            used = await asyncio.to_thread(group_memory, process.pid, process.pid if peak_fd is not None else None)
             if used > limit:
-                return used
+                await _kill(process)
+                if peak_task is not None:
+                    await asyncio.gather(peak_task, return_exceptions=True)
+                return used, False
+    finally:
+        if peak_task is not None:
+            if not peak_task.done():
+                peak_task.cancel()
+            await asyncio.gather(peak_task, return_exceptions=True)
 
 
 async def _kill(process: asyncio.subprocess.Process) -> None:
