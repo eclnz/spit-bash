@@ -5,7 +5,7 @@ from __future__ import annotations
 from .content import content_hash
 from .dag import Dag, DagError, Job
 from .display import labels, name
-from .plan import Decision, State, Status, UPSTREAM, job_key, stamps
+from .plan import changed_parts, Decision, State, Status, UPSTREAM, job_key, stamps
 
 
 def _stamp(value: list[int] | None, folder: bool) -> str:
@@ -61,6 +61,8 @@ def explain(dag: Dag, state: State, decisions: tuple[Decision, ...], job_id: int
     else:
         same = "same" if record.fingerprint == job.fingerprint else "changed"
         lines.append(f"  fingerprint: {same} (recorded {record.fingerprint}, now {job.fingerprint})")
+        if same == "changed":
+            lines.append(f"  changed: {changed_parts(record, job)}")
         lines.append(f"  checks: {'same' if record.checks == job.checks_key else 'differ'} "
                      f"(recorded {record.checks or 'none'}, now {job.checks_key or 'none'})")
         seen: dict = {}

@@ -73,6 +73,36 @@ class IdentityTests(unittest.TestCase):
         self.assertIsNotNone(before)
         self.assertEqual(before, after)
 
+    def test_a_changed_job_names_the_part_that_changed(self):
+        (self.root / "source.txt").write_text("hello")
+        run(read(self.data), state_at(self.root))
+        for edit, reason in [
+            (lambda item: item["commands"][0]["command"].append(["x"]), "command changed"),
+            (lambda item: item["inputs"]["input"][0].update(entities={"sub": "01"}),
+             "the artifacts it reads changed"),  # its command names them too
+        ]:
+            changed = copy.deepcopy(self.data)
+            edit(changed["jobs"][0])
+            decision = plan(read(changed), state_at(self.root))[0]
+            self.assertIn(reason, decision.reason)
+
+    def test_a_record_without_parts_still_reports_a_changed_fingerprint(self):
+        (self.root / "source.txt").write_text("hello")
+        run(read(self.data), state_at(self.root))
+        state = state_at(self.root)
+        for key, record in list(state.jobs.items()):
+            state.jobs[key] = record.model_copy(update={"parts": None})
+        changed = copy.deepcopy(self.data)
+        changed["jobs"][0]["commands"][0]["command"].append(["x"])
+        self.assertEqual(plan(read(changed), state)[0].reason, "job fingerprint changed")
+
+    def test_a_stranded_output_is_named_when_the_path_rules_change(self):
+        (self.root / "source.txt").write_text("hello")
+        run(read(self.data), state_at(self.root))
+        after = read(moved(copy.deepcopy(self.data), lambda path: path if path == "source.txt" else "derivatives/" + path))
+        reason = plan(after, state_at(self.root))[0].reason
+        self.assertEqual(reason, "output missing; an earlier run left it at work/upper.txt")
+
     def test_scheduling_checks_and_origin_do_not_change_the_fingerprint(self):
         base = read(self.data).jobs[0].fingerprint
         other = copy.deepcopy(self.data)

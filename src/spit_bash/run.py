@@ -447,7 +447,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             input_hashes, output_hashes = _hash_both(dag, job)
         else:
             input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
-        record = RunRecord(fingerprint=job.fingerprint, inputs=job.keyed(ran.after), outputs=job.keyed(ran.outputs), checks=job.checks_key,
+        record = RunRecord(fingerprint=job.fingerprint, parts=job.parts, inputs=job.keyed(ran.after), outputs=job.keyed(ran.outputs), checks=job.checks_key,
                            input_hashes=input_hashes, output_hashes=output_hashes, seconds=round(ran.seconds, 3),
                            output_paths=job.output_paths)
         state.record(job_key(job), record)

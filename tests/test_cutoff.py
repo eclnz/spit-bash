@@ -70,7 +70,7 @@ class CutoffTests(unittest.TestCase):
         self.data["jobs"][2]["commands"][0]["command"].append(["extra"])
         decisions = plan(read(self.data), state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.RUN])
-        self.assertEqual(decisions[2].reason, "job fingerprint changed")
+        self.assertEqual(decisions[2].reason, "command changed")
 
     def test_without_hashing_a_job_below_a_rerun_runs(self):
         self.edit_source("Hello")
