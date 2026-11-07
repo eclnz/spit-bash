@@ -65,7 +65,8 @@ def _parser() -> argparse.ArgumentParser:
                             help="jobs in this stage, or a stage inside it, such as preprocess/combine")
         command.add_argument("--state", help="state file (default: ROOT/.spit-bash/state.jsonl)")
         if action is not Action.ADOPT:
-            command.add_argument("--force", action="store_true", help="rerun command jobs even if current")
+            command.add_argument("--force", action="store_true",
+                                 help="rerun selected command jobs even if current")
         if action is not Action.ADOPT:
             command.add_argument("--stat-only", action="store_true",
                                  help="judge files by size and modification time alone, never by content")
@@ -229,7 +230,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{adoption.job.id}] {adoption.status.value:7} {adoption.job.operation}: {adoption.reason}")
             return 0
 
-        decisions = plan(dag, state, args.force, not args.stat_only)
+        forced = selected.matched_ids if args.force else False
+        decisions = plan(dag, state, forced, not args.stat_only)
         if args.action is Action.RUN:
             apply_refreshes(decisions, state)
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)

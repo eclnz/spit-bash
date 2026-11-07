@@ -341,7 +341,7 @@ def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
     return Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
 
 
-def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> tuple[Decision, ...]:
+def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: bool = True) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
     seen: Stamps = {}
@@ -349,6 +349,7 @@ def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> t
     missing_programs = _missing_programs(dag)
 
     def decide(job: Job) -> Decision:
+        forced = force is True or (not isinstance(force, bool) and job.id in force)
         missing = [path for path in job.inputs if path in missing_external]
         if missing:
             return Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
@@ -358,8 +359,8 @@ def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> t
         if not job.commands:
             return _without_command(dag, job, by_id, seen)
         if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
-            return _below_rerun(dag, job, state, force, hashing, seen)
-        return judge(dag, job, state, force, hashing, seen)
+            return _below_rerun(dag, job, state, forced, hashing, seen)
+        return judge(dag, job, state, forced, hashing, seen)
 
     for job in dag.jobs:
         decision = _with_programs(decide(job), missing_programs)

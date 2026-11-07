@@ -93,12 +93,14 @@ class Selected:
     dag: Dag
     matched: int
     needed: int
+    matched_ids: frozenset[int]
 
 
 def select(dag: Dag, selection: Selection) -> Selected:
     """Keep the matching jobs and the jobs upstream of them; drop everything downstream."""
     if not selection:
-        return Selected(dag, len(dag.jobs), 0)
+        ids = frozenset(job.id for job in dag.jobs)
+        return Selected(dag, len(dag.jobs), 0, ids)
     _check_names(dag, selection)
     matched = {job.id for job in dag.jobs if _matches(job, selection)}
     if not matched:
@@ -112,4 +114,4 @@ def select(dag: Dag, selection: Selection) -> Selected:
                 chosen.add(dependency)
                 stack.append(dependency)
     jobs = tuple(job for job in dag.jobs if job.id in chosen)
-    return Selected(replace(dag, jobs=jobs), len(matched), len(chosen) - len(matched))
+    return Selected(replace(dag, jobs=jobs), len(matched), len(chosen) - len(matched), frozenset(matched))
