@@ -200,9 +200,10 @@ def _fingerprint(item: SpitJob) -> str:
         if isinstance(value, PathPart):
             return ["path", of(value.path)]
         if isinstance(value, DirPart):
-            return ["dir", of(value.of_path)]
+            # The tool is given this text, so a change to it is a change to the work.
+            return ["dir", value.dir, of(value.of_path)]
         if isinstance(value, StemPart):
-            return ["stem", of(value.of_path)]
+            return ["stem", value.stem, of(value.of_path)]
         return ["here", value.here]
 
     def command(arguments: Command) -> list:
