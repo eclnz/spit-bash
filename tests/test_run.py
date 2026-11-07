@@ -144,7 +144,7 @@ class RunTests(unittest.TestCase):
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "final.txt").read_text(), "CHANGED!")
 
-            data["jobs"][0]["operation"] = "changed"
+            data["jobs"][0]["commands"][0]["command"].append(["extra"])
             decisions = plan(read(data), state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE])
             self.assertEqual(decisions[0].reason, "job fingerprint changed")
@@ -243,7 +243,7 @@ class RunTests(unittest.TestCase):
             (root / "source.txt").write_text("hello")
             data = sample(root)
             run(read(data), state_at(root))
-            data["jobs"][0]["operation"] = "changed"
+            data["jobs"][0]["commands"][0]["command"].append(["extra"])
             data["jobs"][0]["verify"] = [command("import sys; sys.exit(3)")]
             _, results = run(read(data), state_at(root))
             self.assertEqual(results[0].error, "verify 1 exited with status 3")

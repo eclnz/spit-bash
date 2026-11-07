@@ -53,6 +53,26 @@ class IdentityTests(unittest.TestCase):
         renamed["jobs"][0]["inputs"]["input"][0]["entities"] = {"sub": "01"}
         self.assertNotEqual(base, read(renamed).jobs[0].fingerprint)
 
+    def test_renaming_an_operation_or_a_port_keeps_the_fingerprint(self):
+        base = read(self.data).jobs[0].fingerprint
+        other = copy.deepcopy(self.data)
+        job_data = other["jobs"][0]
+        job_data["operation"] = "renamed"
+        job_data["inputs"] = {"renamed_port": v for v in job_data["inputs"].values()}
+        job_data["outputs"] = {"renamed_out": v for v in job_data["outputs"].values()}
+        self.assertEqual(base, read(other).jobs[0].fingerprint)
+
+    def test_moving_a_checked_file_keeps_the_checks_key(self):
+        data = copy.deepcopy(self.data)
+        item = data["jobs"][0]
+        target = next(iter(item["outputs"].values()))["path"]
+        item["checks"] = [{"when": "after", "check": "nonempty", "port": next(iter(item["outputs"])), "path": target,
+                           "command": [["test", "-s", {"path": target}]]}]
+        before = read(data).jobs[0].checks_key
+        after = read(moved(copy.deepcopy(data), lambda path: "derivatives/" + path)).jobs[0].checks_key
+        self.assertIsNotNone(before)
+        self.assertEqual(before, after)
+
     def test_scheduling_checks_and_origin_do_not_change_the_fingerprint(self):
         base = read(self.data).jobs[0].fingerprint
         other = copy.deepcopy(self.data)

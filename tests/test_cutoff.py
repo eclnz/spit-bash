@@ -67,7 +67,7 @@ class CutoffTests(unittest.TestCase):
 
     def test_a_job_with_a_reason_of_its_own_still_runs(self):
         self.edit_source("Hello")
-        self.data["jobs"][2]["operation"] = "changed"
+        self.data["jobs"][2]["commands"][0]["command"].append(["extra"])
         decisions = plan(read(self.data), state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.RUN])
         self.assertEqual(decisions[2].reason, "job fingerprint changed")
