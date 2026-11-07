@@ -87,6 +87,20 @@ SPIT writes the absolute dataset `root` into a DAG when it knows it. If `root` i
 
 `plan` reports `run`, `check`, `skip`, `maybe` or `blocked` for each job, and exits 1 if any job is blocked. A `maybe` job is current as it stands, but a job it reads from will run, so whether it must is not known until that job has finished: see [Stopping at an unchanged output](#stopping-at-an-unchanged-output). `plan --json` prints the same as JSON. `run` makes the same plan, but prints it as counts (`3 run, 1270 skip`) and a line for each job that will do something, the first 20 of them, since a rerun of a large DAG would otherwise print a line for every current job; `plan` and `run --verbose` list them all. It runs every job that is not current or blocked. It runs each job's input checks and `verify` commands in order, then its [commands](#several-commands), then its output checks, and only starts a dependent after its producers finish successfully. Independent jobs run together, as many as the run's cores and memory hold: see [Cores and memory](#cores-and-memory). When more jobs are ready than can start, the one at the head of the longest chain of work still to come starts first: each job is ranked by its own expected time, as in [the estimate](#output-and-logs), plus the longest of the ranks of the jobs that depend on it, a job with no time counting as the median of the times the state holds, or 1 second when it holds none. Jobs of equal rank start in DAG order. So a long chain, such as a subject's preprocessing followed by its model fit, starts early, rather than finishing alone at the end of the run while the other cores sit idle. Commands are passed as argument arrays directly to the operating system; no shell parses them. Output parent directories are created when a job starts. A command must create every declared output file, or [folder](#folders), to count as successful. A declared output is never optional: a job whose commands exit 0 but leave one missing fails, records no success, runs no output checks and holds back its dependents, and the failure names each missing output's port and path, as `command succeeded but did not create output meta derivatives/image/sub=01.json`. A tool run with a flag that turns a file off, such as `dcm2niix -b n` and its `.json`, needs an operation that does not declare that file.
 
+`plan --job ID` explains one job's decision from the same plan: the status and reason, the job's recorded and current fingerprint and checks, the input and output files that differ from the record with their recorded and current sizes and times (a folder's total size, file count and latest time), whether a file whose stamp differs has the same content, different content, or no recorded hash to compare, and the upstream jobs that will or may rewrite its inputs. It runs nothing and writes nothing, not even to a state log with a truncated last line. An unknown job id is an error.
+
+```text
+Job 1: op1
+  decision: run, input changed
+  fingerprint: same (recorded 620b9a143dd25648, now 620b9a143dd25648)
+  checks: same (recorded none, now none)
+  inputs that differ from the record:
+    source.txt
+      recorded: 5 bytes, mtime_ns 1794032177977430844
+      now:      8 bytes, mtime_ns 1794032178028297347
+      content differs
+```
+
 A command that names a script kept beside the pipeline with `{@here}` gets the pipeline's absolute folder from the DAG's `pipeline_folder`, so such a DAG runs on the machine whose folder it names; run it elsewhere by planning from the recipe there. A blocked job blocks the jobs that depend on it, but not the rest of the plan: `run` still runs every other job, then exits 1. A job is blocked when an external input is missing, when the program its command, a `verify` command or a check starts with cannot be found, or when a job it depends on is blocked. Programs are looked up on `PATH`, from SPIT's `executables` list; a program named by a path, such as `bin/check`, is looked up from the root.
 
 ## Folders

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
 from .display import id_width, labels, name
+from .explain import explain
 from .migrate import apply, find
 from .plan import State, Status, adopt, apply_refreshes, plan, stamp
 from .run import Result, execute, log_tail
@@ -78,6 +79,9 @@ def _parser() -> argparse.ArgumentParser:
                                       "instead of rerunning their jobs; `plan` lists the moves. A tool that writes its own\n"
                                       "paths into its output is not rerun, so use this only if yours do not")
         if action is Action.PLAN:
+            command.add_argument("--job", type=int, metavar="ID",
+                                 help="explain one job's decision: recorded and current fingerprint and checks,\n"
+                                      "the files that differ from the record, and the upstream jobs that will rewrite its inputs")
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
             command.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1, metavar="CORES",
@@ -230,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         if selection:
             needed = f", and {selected.needed} they need" if selected.needed else ""
             print(f"chose {selected.matched} of {total} jobs{needed}", file=sys.stderr)
-        state = State(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl")
+        state = State(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl",
+                      args.action is not Action.PLAN)
         if args.action is not Action.PLAN:
             state.lock()
         if dag.left_out:
@@ -272,6 +277,9 @@ def main(argv: list[str] | None = None) -> int:
             apply_refreshes(decisions, state)
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
         work, width = labels(dag.jobs), id_width(dag.jobs)
+        if args.action is Action.PLAN and args.job is not None:
+            print("\n".join(explain(dag, state, decisions, args.job, not args.stat_only)))
+            return 1 if any(d.job.id == args.job and d.status is Status.BLOCKED for d in decisions) else 0
         if args.action is Action.PLAN and args.json:
             json.dump({
                 "left_out": list(dag.left_out),
