@@ -102,6 +102,9 @@ class RunRecord(BaseModel):
     # How long the job took, from its first check to its last, for estimating
     # how long a run will take; None for an adopted job, and before version 5.
     seconds: float | None = None
+    # Where each output was made, by identity, so `--migrate` can find files
+    # that a change of path rules left behind; None before the runner kept it.
+    output_paths: dict[str, str] | None = None
 
 
 class StateHeader(BaseModel):
@@ -303,8 +306,8 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: St
     if not _unchanged(dag, out_paths, now_out, record.outputs, record.output_hashes, hashing):
         return Decision(job, Status.RUN, "output changed")
     # Touched files hold what they held: keep the new stamps.
-    refresh = None if (now_in, now_out) == (record.inputs, record.outputs) else record.model_copy(
-        update={"inputs": now_in, "outputs": now_out})
+    refresh = None if (now_in, now_out, out_paths) == (record.inputs, record.outputs, record.output_paths) else record.model_copy(
+        update={"inputs": now_in, "outputs": now_out, "output_paths": out_paths})
     if record.checks != job.checks_key:
         reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
         return Decision(job, Status.CHECK, reason, refresh)
@@ -419,7 +422,8 @@ def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
             adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
         else:
             state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=job.keyed(inputs),
-                                                    outputs=job.keyed(outputs)))
+                                                    outputs=job.keyed(outputs),
+                                                    output_paths=job.output_paths))
             adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
         adoptions.append(adoption)
     return tuple(adoptions)

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spit_bash import migrate
 from spit_bash.plan import Status, job_key, plan
 from support import read, run, sample, state_at
 
@@ -81,6 +82,43 @@ class ReuseAfterPathChangeTests(unittest.TestCase):
         self.copy_outputs()
         (self.root / "source.txt").write_text("changed")
         self.assertEqual(self.statuses()[0], Status.RUN)
+
+
+class MigrateTests(unittest.TestCase):
+    setUp_base = ReuseAfterPathChangeTests.setUp
+    copy_outputs = ReuseAfterPathChangeTests.copy_outputs
+
+    def setUp(self):
+        self.setUp_base()
+        self.dag = read(self.relocated)
+        self.state = state_at(self.root)
+
+    def test_copies_recorded_outputs_to_the_new_paths_and_leaves_the_old(self):
+        migrations = migrate.find(self.dag, self.state)
+        self.assertEqual([m.reason for m in migrations], ["outputs recorded at other paths"] * 2)
+        migrate.apply(self.dag, migrations)
+        self.assertEqual((self.root / "derivatives/final.txt").read_text(), "HELLO!")
+        self.assertTrue((self.root / "final.txt").exists())
+        self.assertEqual([d.status for d in plan(self.dag, state_at(self.root))], [Status.SKIP, Status.SKIP])
+
+    def test_an_existing_destination_is_never_overwritten(self):
+        target = self.root / "derivatives/work/upper.txt"
+        target.parent.mkdir(parents=True)
+        target.write_text("someone else's")
+        migrations = {m.job.id: m for m in migrate.find(self.dag, self.state)}
+        self.assertEqual(migrations[1].copies, ())
+        self.assertIn("already exists", migrations[1].reason)
+        migrate.apply(self.dag, tuple(migrations.values()))
+        self.assertEqual(target.read_text(), "someone else's")
+
+    def test_an_output_changed_since_the_run_is_not_copied(self):
+        (self.root / "final.txt").write_text("edited by hand")
+        migrations = {m.job.id: m for m in migrate.find(self.dag, self.state)}
+        self.assertEqual(migrations[2].copies, ())
+        self.assertIn("missing or changed", migrations[2].reason)
+
+    def test_nothing_to_migrate_when_paths_are_unchanged(self):
+        self.assertEqual(migrate.find(read(self.data), self.state), ())
 
 
 if __name__ == "__main__":

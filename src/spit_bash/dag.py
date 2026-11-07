@@ -90,6 +90,11 @@ class Job:
         return {self.identities[path]: value for path, value in by_path.items()}
 
     @property
+    def output_paths(self) -> dict[str, str]:
+        """Each output's path by identity."""
+        return {self.identities[path]: path for path in self.outputs}
+
+    @property
     def outputs(self) -> tuple[str, ...]:
         """Output paths in DAG order, for planning and state records."""
         return tuple(output.path for output in self.produced)
