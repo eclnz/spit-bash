@@ -1,6 +1,7 @@
 """A job's fingerprint and state key follow what it makes and runs, not where its files are."""
 
 import contextlib
+import errno
 import copy
 import io
 import json
@@ -181,6 +182,15 @@ class MigrateTests(unittest.TestCase):
         self.assertTrue((self.root / "final.txt").exists())
         self.assertFalse((self.root / "derivatives/work/upper.txt").exists())
 
+    def test_a_move_across_filesystems_is_not_made_and_the_job_stays_put(self):
+        def cross(source, target):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+        with unittest.mock.patch("os.rename", cross):
+            done = migrate.apply(self.dag, self.state, tuple(self.find().values()))
+        self.assertTrue(all(m.moves == () and "not moved" in m.reason for m in done))
+        self.assertTrue((self.root / "final.txt").exists() and (self.root / "work/upper.txt").exists())
+
     def test_nothing_to_move_when_paths_are_unchanged(self):
         self.assertEqual(migrate.find(read(self.data), self.state), ())
 
@@ -261,7 +271,7 @@ class CommandLineTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_plan_lists_the_moves_and_changes_nothing(self):
-        code, out, _ = self.main("plan")
+        code, out, _ = self.main("plan", "--move-files")
         self.assertIn("would move final.txt -> derivatives/final.txt", out)
         self.assertTrue((self.root / "final.txt").exists())
         self.assertFalse((self.root / "derivatives").exists())
@@ -271,19 +281,19 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("2 job(s) reuse outputs", _)
 
     def test_run_moves_the_files_and_executes_no_job(self):
-        code, out, err = self.main("run")
+        code, out, err = self.main("run", "--move-files")
         self.assertEqual(code, 0, err)
         self.assertIn("moved final.txt -> derivatives/final.txt", out)
         self.assertIn("a tool that wrote those paths", err)
         self.assertFalse((self.root / "final.txt").exists())
         self.assertEqual((self.root / "derivatives/final.txt").stat().st_mtime_ns, self.before)
         self.assertNotIn("start op", out)
-        code, out, _ = self.main("plan")
+        code, out, _ = self.main("plan", "--move-files")
         self.assertNotIn("would move", out)
         self.assertNotIn("run", [line.split()[1] for line in out.splitlines() if len(line.split()) > 1])
 
-    def test_no_migrate_runs_the_jobs_instead(self):
-        code, out, err = self.main("run", "--no-migrate")
+    def test_without_migrate_the_jobs_run_and_nothing_is_moved(self):
+        code, out, err = self.main("run")
         self.assertEqual(code, 0, err)
         self.assertNotIn("moved", out)
         self.assertTrue((self.root / "final.txt").exists())

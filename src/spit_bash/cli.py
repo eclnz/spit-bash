@@ -72,9 +72,10 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--stat-only", action="store_true",
                                  help="judge files by size and modification time alone, never by content")
         if action is not Action.ADOPT:
-            command.add_argument("--no-migrate", dest="migrate", action="store_false",
-                                 help="rerun a job whose outputs are at other paths than its pipeline now gives,\n"
-                                      "instead of moving them to the new paths")
+            command.add_argument("--move-files", action="store_true",
+                                 help="move outputs the state records at other paths to the paths the pipeline now gives,\n"
+                                      "instead of rerunning their jobs; `plan` lists the moves. A tool that writes its own\n"
+                                      "paths into its output is not rerun, so use this only if yours do not")
         if action is Action.PLAN:
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
@@ -237,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
 
         forced = selected.matched_ids if args.force else False
         decisions = plan(dag, state, forced, not args.stat_only)
-        if args.migrate and not args.force:
+        if args.move_files and not args.force:
             # A job that is current as it stands has nothing to move; `find` leaves out one whose
             # inputs changed, which a moved output would not save from running.
             migrations = find(dag, state, {d.job.id for d in decisions if d.status in (Status.RUN, Status.MAYBE)})

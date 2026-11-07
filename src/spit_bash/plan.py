@@ -360,7 +360,7 @@ def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
 
 def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: bool = True,
          seen: Stamps | None = None) -> tuple[Decision, ...]:
-    """Decide every job. `seen` may hold stamps to take as the files' own; `plan --migrate`'s
+    """Decide every job. `seen` may hold stamps to take as the files' own; `plan --move-files`'s
     listing gives the stamps the files would have once moved."""
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
