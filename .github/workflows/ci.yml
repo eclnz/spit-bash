@@ -26,10 +26,8 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   examples:
-    # Builds SPIT from `dev`, the branch its work merges into, and runs the
-    # examples end to end. A change made in both repositories has one branch
-    # name in each, so a branch that SPIT also has builds SPIT's branch
-    # instead, and the two are tested together.
+    # Release changes test the DAG 7 compiler; scheduled runs test both repositories' dev.
+    # Matching feature branches test changes in both repositories together.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,9 +37,13 @@ jobs:
         id: spit
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
+          EVENT: ${{ github.event_name }}
         run: |
-          ref=dev
-          if [ "$BRANCH" != main ] && [ "$BRANCH" != dev ] &&
+          ref=82f6f0bdf63cb92dccc5a206ea9a764845fd5a74
+          if [ "$EVENT" = schedule ] || [ "$BRANCH" = dev ]; then
+            ref=dev
+          fi
+          if [ "$EVENT" != schedule ] && [ "$BRANCH" != main ] && [ "$BRANCH" != dev ] &&
               git ls-remote --exit-code --heads https://github.com/eclnz/spit "refs/heads/$BRANCH" > /dev/null; then
             ref=$BRANCH
           fi

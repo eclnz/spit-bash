@@ -1,7 +1,7 @@
 """Run the examples with a real `spit`, so a change to SPIT's DAG format fails here.
 
-Set SPIT to the binary, or put `spit` on PATH; CI builds it from SPIT's dev branch,
-or from SPIT's branch of the same name as this one when there is one.
+Set SPIT to the binary, or put `spit` on PATH; CI chooses the matching DAG format,
+dev, or feature branch for the change being tested.
 """
 
 import os
@@ -29,7 +29,8 @@ class ExampleTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.examples = Path(directory.name) / "examples"
-        shutil.copytree(EXAMPLES, self.examples)
+        shutil.copytree(EXAMPLES, self.examples,
+                        ignore=shutil.ignore_patterns("output", ".spit-bash", "*.spitdag", ".DS_Store"))
 
     def dag_json(self, recipe):
         return subprocess.run([SPIT, "dag", str(self.examples / recipe), "--json"],
