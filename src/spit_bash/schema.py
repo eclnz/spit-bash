@@ -1,4 +1,4 @@
-"""The version 10 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 11 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 # The one version of the format spit-bash reads.
-VERSION = 10
+VERSION = 11
 
 
 class SchemaModel(BaseModel):
@@ -151,7 +151,6 @@ class SpitJob(SchemaModel):
     id: JobId
     operation: NonEmpty
     stage: list[str]
-    fingerprint: Annotated[str, Field(pattern=r"^[0-9a-f]{16}$")]
     inputs: dict[NonEmpty, list[Artifact]]
     outputs: Annotated[dict[NonEmpty, Artifact], Field(min_length=1)]
     depends_on: list[JobId]

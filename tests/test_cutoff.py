@@ -17,7 +17,7 @@ def chain(root):
     """source.txt -> work/upper.txt -> final.txt -> last.txt"""
     data = sample(root)
     data["jobs"][1]["dependents"] = [3]
-    data["jobs"].append(job(3, ["final.txt"], "last.txt", EXCLAIM, depends_on=[2], fingerprint="c" * 16))
+    data["jobs"].append(job(3, ["final.txt"], "last.txt", EXCLAIM, depends_on=[2]))
     return data
 
 
@@ -67,7 +67,7 @@ class CutoffTests(unittest.TestCase):
 
     def test_a_job_with_a_reason_of_its_own_still_runs(self):
         self.edit_source("Hello")
-        self.data["jobs"][2]["fingerprint"] = "d" * 16
+        self.data["jobs"][2]["operation"] = "changed"
         decisions = plan(read(self.data), state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.RUN])
         self.assertEqual(decisions[2].reason, "job fingerprint changed")

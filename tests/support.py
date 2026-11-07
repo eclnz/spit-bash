@@ -21,9 +21,9 @@ def command(script, *paths):
     return [[sys.executable], ["-c"], [script], *[[{"path": path}] for path in paths]]
 
 
-def job(id, inputs, output, script, depends_on=(), dependents=(), fingerprint=None):
+def job(id, inputs, output, script, depends_on=(), dependents=()):
     return {
-        "id": id, "operation": f"op{id}", "fingerprint": fingerprint or f"{id:016x}",
+        "id": id, "operation": f"op{id}",
         "stage": [], "dependents": list(dependents),
         "inputs": {"input": [artifact(path) for path in inputs]},
         "outputs": {"output": artifact(output)},
@@ -35,7 +35,7 @@ def job(id, inputs, output, script, depends_on=(), dependents=(), fingerprint=No
 
 def document(root, jobs, external_inputs):
     return {
-        "version": 10,
+        "version": 11,
         "generator": {"name": "spit", "version": "0.2.1"},
         "root": None if root is None else str(root),
         "external_inputs": [artifact(path) for path in external_inputs],
@@ -60,8 +60,6 @@ def sample(root):
         job(1, ["source.txt"], "work/upper.txt", UPPER, dependents=[2]),
         job(2, ["work/upper.txt"], "final.txt", EXCLAIM, depends_on=[1]),
     ], ["source.txt"])
-    data["jobs"][0]["fingerprint"] = "a" * 16
-    data["jobs"][1]["fingerprint"] = "b" * 16
     return data
 
 

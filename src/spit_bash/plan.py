@@ -20,9 +20,11 @@ from .dag import Dag, DagError, Job
 
 
 def job_key(job: Job) -> str:
-    # Job IDs may change when SPIT resolves a different inventory. Paths are
-    # relative to the root, so a dataset keeps its state when it moves.
-    return json.dumps(sorted(job.outputs), separators=(",", ":"))
+    # Job IDs may change when SPIT resolves a different inventory, and paths
+    # change when the pipeline's path rules do. What a job makes is its outputs'
+    # products and entities, which neither changes.
+    identities = sorted([output.product, output.entities] for output in job.produced)
+    return json.dumps(identities, separators=(",", ":"))
 
 
 def stamp(path: Path, folder: bool = False) -> list[int] | None:
@@ -108,7 +110,9 @@ class StateHeader(BaseModel):
     # Version 3 records the checks each job passed; a version 2 record has none.
     # Version 4 records the hash of each file; an older record has none.
     # Version 5 records how long each job took; an older record has no time.
-    version: Literal[2, 3, 4, 5]
+    # Version 6 keys a record by the identity of what the job makes, not its
+    # output paths. A state from an earlier version is not read.
+    version: Literal[6]
 
 
 class StateEntry(BaseModel):
@@ -152,7 +156,8 @@ class State:
                 else:
                     self.jobs[entry.key] = entry.record
         except ValidationError as exc:
-            raise DagError(f"cannot read state at {path}: {exc}") from exc
+            raise DagError(f"cannot read state at {path}: {exc}. If it was written by an older "
+                           f"spit-bash, delete it to start from fresh records.") from exc
         if partial and complete:
             self.compact()
 
@@ -188,7 +193,7 @@ class State:
             self._log.close()
             self._log = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [StateHeader(version=5).model_dump_json()]
+        lines = [StateHeader(version=6).model_dump_json()]
         lines.extend(StateEntry(key=key, record=record).model_dump_json() for key, record in sorted(self.jobs.items()))
         fd, temporary = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:
