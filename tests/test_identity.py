@@ -1,6 +1,7 @@
 """A job's fingerprint and state key follow what it makes and runs, not where its files are."""
 
 import contextlib
+import errno
 import copy
 import io
 import json
@@ -14,7 +15,11 @@ from pathlib import Path
 from spit_bash import cli, migrate
 from spit_bash.migrate import Migration
 from spit_bash.plan import Status, job_key, plan
-from support import read, run, sample, state_at
+from support import command, job, document, read, run, sample, state_at
+
+
+def artifact_of(path):
+    return {"product": path, "entities": {}, "type": None, "path": path, "kind": "file"}
 
 
 def moved(node, rename):
@@ -177,8 +182,75 @@ class MigrateTests(unittest.TestCase):
         self.assertTrue((self.root / "final.txt").exists())
         self.assertFalse((self.root / "derivatives/work/upper.txt").exists())
 
+    def test_a_move_across_filesystems_is_not_made_and_the_job_stays_put(self):
+        def cross(source, target):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+        with unittest.mock.patch("os.rename", cross):
+            done = migrate.apply(self.dag, self.state, tuple(self.find().values()))
+        self.assertTrue(all(m.moves == () and "not moved" in m.reason for m in done))
+        self.assertTrue((self.root / "final.txt").exists() and (self.root / "work/upper.txt").exists())
+
     def test_nothing_to_move_when_paths_are_unchanged(self):
         self.assertEqual(migrate.find(read(self.data), self.state), ())
+
+
+class OutputShapeTests(unittest.TestCase):
+    """Jobs with several outputs, and with a folder as an output."""
+
+    TWO = ("from pathlib import Path; import sys; t = Path(sys.argv[1]).read_text();"
+           " Path(sys.argv[2]).write_text(t + 'a'); Path(sys.argv[3]).write_text(t + 'b')")
+    FOLDER = ("from pathlib import Path; import sys; d = Path(sys.argv[2]);"
+              " (d / 'one.txt').write_text(Path(sys.argv[1]).read_text())")
+
+    def build(self, script, outputs, kind):
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / "source.txt").write_text("hello")
+        item = job(1, ["source.txt"], outputs[0], script)
+        item["outputs"] = {f"o{i}": dict(artifact_of(path), kind=kind) for i, path in enumerate(outputs)}
+        item["commands"][0]["command"] = command(script, "source.txt", *outputs)
+        data = document(self.root, [item], ["source.txt"])
+        run(read(data), state_at(self.root))
+        self.data = data
+        relocated = moved(copy.deepcopy(data), lambda p: p if p == "source.txt" else "new/" + p)
+        self.dag = read(relocated)
+        self.state = state_at(self.root)
+
+    def test_every_output_of_a_job_moves_together(self):
+        self.build(self.TWO, ["out/a.txt", "out/b.txt"], "file")
+        found = migrate.find(self.dag, self.state)
+        self.assertEqual(len(found[0].moves), 2)
+        migrate.apply(self.dag, self.state, found)
+        self.assertEqual((self.root / "new/out/a.txt").read_text(), "helloa")
+        self.assertEqual((self.root / "new/out/b.txt").read_text(), "hellob")
+        self.assertFalse((self.root / "out/a.txt").exists() or (self.root / "out/b.txt").exists())
+        self.assertEqual([d.status for d in plan(self.dag, state_at(self.root))], [Status.SKIP])
+
+    def test_one_blocked_output_keeps_all_of_them_where_they_are(self):
+        self.build(self.TWO, ["out/a.txt", "out/b.txt"], "file")
+        (self.root / "new/out").mkdir(parents=True)
+        (self.root / "new/out/b.txt").write_text("not ours")
+        found = migrate.find(self.dag, self.state)
+        self.assertEqual(found[0].moves, ())
+        migrate.apply(self.dag, self.state, found)
+        self.assertTrue((self.root / "out/a.txt").exists() and (self.root / "out/b.txt").exists())
+        self.assertFalse((self.root / "new/out/a.txt").exists())
+
+    def test_a_folder_output_moves_whole(self):
+        self.build(self.FOLDER, ["out/dir"], "folder")
+        found = migrate.find(self.dag, self.state)
+        self.assertEqual(found[0].moves, (("out/dir", "new/out/dir"),))
+        migrate.apply(self.dag, self.state, found)
+        self.assertEqual((self.root / "new/out/dir/one.txt").read_text(), "hello")
+        self.assertFalse((self.root / "out/dir").exists())
+        self.assertEqual([d.status for d in plan(self.dag, state_at(self.root))], [Status.SKIP])
+
+    def test_a_folder_changed_since_the_run_is_not_moved(self):
+        self.build(self.FOLDER, ["out/dir"], "folder")
+        (self.root / "out/dir/extra.txt").write_text("added later")
+        found = migrate.find(self.dag, self.state)
+        self.assertEqual(found[0].moves, ())
+        self.assertIn("missing or changed", found[0].reason)
 
 
 class CommandLineTests(unittest.TestCase):
@@ -199,25 +271,29 @@ class CommandLineTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_plan_lists_the_moves_and_changes_nothing(self):
-        code, out, _ = self.main("plan")
+        code, out, _ = self.main("plan", "--move-files")
         self.assertIn("would move final.txt -> derivatives/final.txt", out)
         self.assertTrue((self.root / "final.txt").exists())
         self.assertFalse((self.root / "derivatives").exists())
+        # The listing judges the jobs as if the files were already moved.
+        self.assertEqual([line.split()[1] for line in out.splitlines() if line.startswith("[")
+                          and "would move" not in line], ["skip", "skip"])
+        self.assertIn("2 job(s) reuse outputs", _)
 
     def test_run_moves_the_files_and_executes_no_job(self):
-        code, out, err = self.main("run")
+        code, out, err = self.main("run", "--move-files")
         self.assertEqual(code, 0, err)
         self.assertIn("moved final.txt -> derivatives/final.txt", out)
         self.assertIn("a tool that wrote those paths", err)
         self.assertFalse((self.root / "final.txt").exists())
         self.assertEqual((self.root / "derivatives/final.txt").stat().st_mtime_ns, self.before)
         self.assertNotIn("start op", out)
-        code, out, _ = self.main("plan")
+        code, out, _ = self.main("plan", "--move-files")
         self.assertNotIn("would move", out)
         self.assertNotIn("run", [line.split()[1] for line in out.splitlines() if len(line.split()) > 1])
 
-    def test_no_migrate_runs_the_jobs_instead(self):
-        code, out, err = self.main("run", "--no-migrate")
+    def test_without_migrate_the_jobs_run_and_nothing_is_moved(self):
+        code, out, err = self.main("run")
         self.assertEqual(code, 0, err)
         self.assertNotIn("moved", out)
         self.assertTrue((self.root / "final.txt").exists())

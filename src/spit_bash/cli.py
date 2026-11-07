@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
 from .migrate import apply, find
-from .plan import State, Status, adopt, apply_refreshes, plan
+from .plan import State, Status, adopt, apply_refreshes, plan, stamp
 from .run import Result, execute, log_tail
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
@@ -72,9 +72,10 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--stat-only", action="store_true",
                                  help="judge files by size and modification time alone, never by content")
         if action is not Action.ADOPT:
-            command.add_argument("--no-migrate", dest="migrate", action="store_false",
-                                 help="rerun a job whose outputs are at other paths than its pipeline now gives,\n"
-                                      "instead of moving them to the new paths")
+            command.add_argument("--move-files", action="store_true",
+                                 help="move outputs the state records at other paths to the paths the pipeline now gives,\n"
+                                      "instead of rerunning their jobs; `plan` lists the moves. A tool that writes its own\n"
+                                      "paths into its output is not rerun, so use this only if yours do not")
         if action is Action.PLAN:
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
@@ -237,17 +238,26 @@ def main(argv: list[str] | None = None) -> int:
 
         forced = selected.matched_ids if args.force else False
         decisions = plan(dag, state, forced, not args.stat_only)
-        if args.migrate and not args.force:
+        if args.move_files and not args.force:
             # A job that is current as it stands has nothing to move; `find` leaves out one whose
             # inputs changed, which a moved output would not save from running.
             migrations = find(dag, state, {d.job.id for d in decisions if d.status in (Status.RUN, Status.MAYBE)})
             if args.action is Action.RUN:
                 migrations = apply(dag, state, migrations)
+            else:
+                # Judge the jobs as if the files were already where the pipeline wants them.
+                pending = {new: stamp(dag.checked(old), new in dag.folders)
+                           for m in migrations for old, new in m.moves}
+                if pending:
+                    decisions = plan(dag, state, forced, not args.stat_only, pending)
             for migration in migrations:
                 for old, new in migration.moves:
                     print(f"[{migration.job.id}] {'moved' if args.action is Action.RUN else 'would move'} {old} -> {new}")
                 if not migration.moves:
                     print(f"[{migration.job.id}] not moved: {migration.reason}")
+            moved = sum(1 for m in migrations if m.moves)
+            if moved:
+                print(f"{moved} job(s) reuse outputs by moving them to their new paths", file=sys.stderr)
             if args.action is Action.RUN and any(m.moves for m in migrations):
                 print("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
                       "into its output is not rerun", file=sys.stderr)
