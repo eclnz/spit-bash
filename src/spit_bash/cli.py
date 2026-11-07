@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
 from .migrate import apply, find
-from .plan import State, Status, adopt, apply_refreshes, plan
+from .plan import State, Status, adopt, apply_refreshes, plan, stamp
 from .run import Result, execute, log_tail
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
@@ -243,11 +243,20 @@ def main(argv: list[str] | None = None) -> int:
             migrations = find(dag, state, {d.job.id for d in decisions if d.status in (Status.RUN, Status.MAYBE)})
             if args.action is Action.RUN:
                 migrations = apply(dag, state, migrations)
+            else:
+                # Judge the jobs as if the files were already where the pipeline wants them.
+                pending = {new: stamp(dag.checked(old), new in dag.folders)
+                           for m in migrations for old, new in m.moves}
+                if pending:
+                    decisions = plan(dag, state, forced, not args.stat_only, pending)
             for migration in migrations:
                 for old, new in migration.moves:
                     print(f"[{migration.job.id}] {'moved' if args.action is Action.RUN else 'would move'} {old} -> {new}")
                 if not migration.moves:
                     print(f"[{migration.job.id}] not moved: {migration.reason}")
+            moved = sum(1 for m in migrations if m.moves)
+            if moved:
+                print(f"{moved} job(s) reuse outputs by moving them to their new paths", file=sys.stderr)
             if args.action is Action.RUN and any(m.moves for m in migrations):
                 print("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
                       "into its output is not rerun", file=sys.stderr)

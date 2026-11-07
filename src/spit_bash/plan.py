@@ -358,10 +358,13 @@ def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
     return Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
 
 
-def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: bool = True) -> tuple[Decision, ...]:
+def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: bool = True,
+         seen: Stamps | None = None) -> tuple[Decision, ...]:
+    """Decide every job. `seen` may hold stamps to take as the files' own; `plan --migrate`'s
+    listing gives the stamps the files would have once moved."""
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
-    seen: Stamps = {}
+    seen = {} if seen is None else seen
     missing_external = {path for path, value in stamps(dag, dag.external_inputs, seen).items() if value is None}
     missing_programs = _missing_programs(dag)
 
