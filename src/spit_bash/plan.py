@@ -133,7 +133,7 @@ class State:
     rewriting the file. `compact` rewrites the file with one line per job.
     """
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, write: bool = True):
         self.path = path
         self.jobs: dict[str, RunRecord] = {}
         self._log: IO[str] | None = None
@@ -161,7 +161,8 @@ class State:
         except ValidationError as exc:
             raise DagError(f"cannot read state at {path}: {exc}. If it was written by an older "
                            f"spit-bash, delete it to start from fresh records.") from exc
-        if partial and complete:
+        # Reading a state to plan never rewrites it; a run tidies a truncated log.
+        if write and partial and complete:
             self.compact()
 
     def lock(self) -> None:

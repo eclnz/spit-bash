@@ -222,7 +222,7 @@ class RunOrderTests(unittest.TestCase):
                 with contextlib.redirect_stdout(out):
                     _, results = run(read(data), state_at(root), cores=cores, force=True)
                 self.assertFalse(any(result.error for result in results))
-                return [line.split()[1] for line in out.getvalue().splitlines() if line.startswith("[")]
+                return [line.split()[1] for line in out.getvalue().splitlines() if line.lstrip().startswith("[") and "Plan" not in line]
 
             # Three cores hold one two-core job at a time; four hold both.
             self.assertEqual(events(3), ["start", "done", "start", "done"])

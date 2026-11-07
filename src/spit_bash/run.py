@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import IO
 
 from .dag import Check, Dag, Job
+from .display import id_width, labels, name
+from .logs import StampedLog, drain, open_log, pump
 from .memory import group_memory
 from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
 from .progress import Progress, about, duration
@@ -68,7 +70,7 @@ def partial(dag: Dag, stdout: str) -> Path:
     return path.with_name(f".{path.name}.spit-bash-partial")
 
 
-async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
+async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes] | StampedLog,
                    stdin: str | None = None, stdout: str | None = None, limit: int | None = None) -> str | None:
     """Run one of a job's commands; `kind` names it in an error, as `verify 1`, `command` or `command 2`.
 
@@ -87,14 +89,31 @@ async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
     with ExitStack() as files:
         try:
             source = asyncio.subprocess.DEVNULL if stdin is None else files.enter_context(dag.checked(stdin).open("rb"))
-            target = log if stdout is None else files.enter_context(partial(dag, stdout).open("wb"))
+            stamped = isinstance(log, StampedLog)
+            # A stamped log is written by the runner, so the command's output passes through pipes to it.
+            piped = asyncio.subprocess.PIPE
+            target = (piped if stamped else log) if stdout is None else files.enter_context(partial(dag, stdout).open("wb"))
             # A session of its own lets a cancelled job's whole process group be
             # stopped, and keeps a terminal's Ctrl-C from reaching it directly.
             process = await asyncio.create_subprocess_exec(
-                *args, cwd=dag.root, stdin=source, stdout=target, stderr=log, start_new_session=True,
+                *args, cwd=dag.root, stdin=source, stdout=target, stderr=piped if stamped else log,
+                start_new_session=True,
             )
         except OSError as exc:
             return f"{kind} could not start: {exc}"
+    pumps = [asyncio.ensure_future(pump(stream, log)) for stream in (process.stdout, process.stderr)
+             if stream is not None and isinstance(log, StampedLog)]
+    try:
+        return await _finish(process, pumps, kind, limit)
+    except asyncio.CancelledError:
+        for task in pumps:
+            task.cancel()
+        raise
+
+
+async def _finish(process: asyncio.subprocess.Process, pumps: list[asyncio.Task[None]], kind: str,
+                  limit: int | None) -> str | None:
+    """Wait for a started command, and for its output to reach the log, and say how it ended."""
     try:
         if limit is None:
             code = await process.wait()
@@ -102,11 +121,13 @@ async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes],
             used = await _within(process, limit)
             if used is not None:
                 await _kill(process)
+                await drain(pumps)
                 return f"{kind} used {size(used)} of memory, more than the {size(limit)} its job declares, and was killed"
             code = process.returncode
     except asyncio.CancelledError:
         await _stop(process)
         raise
+    await drain(pumps)
     if code == -signal.SIGKILL:
         declared = f", declared memory={size(limit)}" if limit is not None else ""
         return f"{kind} killed by signal 9 (SIGKILL), possibly out of memory{declared}"
@@ -203,7 +224,7 @@ async def _stop(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
-async def _checks(dag: Dag, checks: tuple[Check, ...], log: IO[bytes]) -> str | None:
+async def _checks(dag: Dag, checks: tuple[Check, ...], log: IO[bytes] | StampedLog) -> str | None:
     """Run checks in order, stopping at the first that fails."""
     for check in checks:
         if check.when == "before" and stamps(dag, (check.path,))[check.path] is None:
@@ -229,7 +250,7 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _remove_outputs(dag: Dag, job: Job, log: IO[bytes], keep: bool = False) -> None:
+def _remove_outputs(dag: Dag, job: Job, log: IO[bytes] | StampedLog, keep: bool = False) -> None:
     """Remove what a failed or cancelled command left at the job's outputs, and say so in its log.
 
     Called only once the command's process group has stopped, so nothing is
@@ -269,7 +290,7 @@ def _aside(path: Path) -> Path:
     return path.with_name(f".{path.name}.spit-bash-previous")
 
 
-def _set_aside(dag: Dag, job: Job, log: IO[bytes]) -> list[tuple[str, Path, Path]]:
+def _set_aside(dag: Dag, job: Job, log: IO[bytes] | StampedLog) -> list[tuple[str, Path, Path]]:
     """Move what an earlier run left at each of the job's outputs out of the way, so the job starts
     from the state a first run does. Some tools refuse to write over a file that exists.
 
@@ -291,7 +312,7 @@ def _set_aside(dag: Dag, job: Job, log: IO[bytes]) -> list[tuple[str, Path, Path
     return moved
 
 
-def _settle_aside(moved: list[tuple[str, Path, Path]], log: IO[bytes], restore: bool) -> None:
+def _settle_aside(moved: list[tuple[str, Path, Path]], log: IO[bytes] | StampedLog, restore: bool) -> None:
     """Delete the earlier versions after a success, or put them back after a failure.
 
     Call after `_remove_outputs`, so that nothing is at the paths a version goes back to.
@@ -309,7 +330,7 @@ def _settle_aside(moved: list[tuple[str, Path, Path]], log: IO[bytes], restore: 
     log.flush()
 
 
-async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO[bytes],
+async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO[bytes] | StampedLog,
                 limit: int | None, folder_entries: dict[str, tuple[tuple[str, int, int], ...]],
                 ) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
     """Run a job's commands in order, then its output checks; give an error, or its inputs' and outputs' stamps.
@@ -355,16 +376,23 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores: int, logs: Path,
                   hashing: bool = True, memory: int | None = None,
-                  keep_failed: bool = False, enforce_memory: bool = True) -> tuple[Result, ...]:
+                  keep_failed: bool = False, enforce_memory: bool = True,
+                  timestamp_logs: bool = False) -> tuple[Result, ...]:
     """Run every job planned to run, within `cores` and `memory` bytes; stop them all if the process gets SIGTERM.
 
     `memory` None sets no limit on memory. A job that declares memory has each
     of its `verify` commands and commands killed when it holds more, unless
     `enforce_memory` is off. A job that fails once its first command has started
-    loses its outputs, unless `keep_failed` keeps them for debugging.
+    loses its outputs, unless `keep_failed` keeps them for debugging. With
+    `timestamp_logs`, each line of a job's log starts with the time it was received.
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
+    work, width = labels(dag.jobs), id_width(dag.jobs)
+
+    def say(job: Job, word: str, rest: str = "") -> None:
+        """One progress line: the job's id, what happened, and what it works on, under the `Running` heading."""
+        print(f"  [{job.id:>{width}}] {word:7} {name(job, work[job.id])}{rest}", flush=True)
 
     async def failed_dependency(job: Job) -> int | None:
         """Wait for the jobs this one needs, and name the first that failed."""
@@ -395,7 +423,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         if settled.status is Status.SKIP:
             if settled.refresh is not None:
                 state.record(job_key(job), settled.refresh)
-            print(f"[{job.id}] skip {job.operation}: upstream output unchanged", flush=True)
+            say(job, "skip", ": upstream output unchanged")
             return Result(job, None, None, Status.SKIP)
         result = await perform(settled)
         return replace(result, settled=settled.status)
@@ -424,7 +452,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
                            output_paths=job.output_paths)
         state.record(job_key(job), record)
         progress.finished(job, ran.seconds)
-        print(f"[{job.id}] done in {duration(ran.seconds)}; {progress.report()}", flush=True)
+        say(job, "done", f" in {duration(ran.seconds)}; {progress.report()}")
         return Result(job, None, ran.log)
 
     async def attempt(job: Job) -> Result | _Ran:
@@ -436,11 +464,11 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             return Result(job, "job has no command")
         folder_entries = _folder_inputs(dag, job)
         path = log_path(logs, job)
-        print(f"[{job.id}] start {job.operation}", flush=True)
+        say(job, "start")
         started = time.monotonic()
         state.forget(job_key(job))
         limit = job.memory if enforce_memory else None
-        with path.open("wb") as log:
+        with open_log(path, timestamp_logs) as log:
             error = await _checks(dag, job.before, log)
             if error:
                 return Result(job, error, path)
@@ -478,10 +506,10 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
     async def check_one(job: Job) -> Result:
         """Run a current job's checks alone, on the files it already has."""
         path = log_path(logs, job)
-        print(f"[{job.id}] check {job.operation}", flush=True)
+        say(job, "check")
         key = job_key(job)
         record = state.jobs.get(key)
-        with path.open("wb") as log:
+        with open_log(path, timestamp_logs) as log:
             error = await _checks(dag, job.checks, log)
         if error:
             # The files fail the checks, so the job is no longer current.
@@ -492,7 +520,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             outputs, inputs = job.keyed(stamps(dag, job.outputs)), job.keyed(stamps(dag, job.inputs))
             if outputs == record.outputs and inputs == record.inputs:
                 state.record(key, record.model_copy(update={"checks": job.checks_key}))
-        print(f"[{job.id}] checked", flush=True)
+        say(job, "checked")
         return Result(job, None, path)
 
     # A job planned `maybe` counts as one that runs until it is skipped, so the
@@ -517,7 +545,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         maybe = sum(1 for decision in decisions if decision.status is Status.MAYBE)
         more = f", and {maybe} more that may" if maybe else ""
         runs = len(to_run) - maybe
-        print(f"{runs} job{'' if runs == 1 else 's'} to run{more}{estimate}", flush=True)
+        print(f"\nRunning {runs} job{'' if runs == 1 else 's'}{more}{estimate}", flush=True)
 
     loop = asyncio.get_running_loop()
     main = asyncio.current_task()

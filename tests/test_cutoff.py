@@ -113,9 +113,9 @@ class CutoffTests(unittest.TestCase):
         code, out, err = call("run", str(path))
         self.assertEqual(code, 0, err)
         # Every job has a time from the first run, so there is an estimate at once.
-        self.assertRegex(out, r"(?m)^1 job to run, and 2 more that may, (about|under) ")
-        self.assertRegex(out, r"\[1\] done in [^;]+; 2 left, (about|under) ")
-        self.assertIn("[2] skip op2: upstream output unchanged\n[3] skip op3: upstream output unchanged\n", out)
+        self.assertRegex(out, r"(?m)^Running 1 job, and 2 more that may, (about|under) ")
+        self.assertRegex(out, r"\[1\] done +op1 in [^;]+; 2 left, (about|under) ")
+        self.assertRegex(out, r"\[2\] skip +op2: upstream output unchanged\n +\[3\] skip +op3: upstream output unchanged\n")
 
     def test_a_failed_job_stops_the_maybes_below_it(self):
         self.edit_source("Hello")

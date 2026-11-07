@@ -46,7 +46,7 @@ class CliTests(unittest.TestCase):
         call("run", self.write())
         code, out, _ = call("run", str(self.dag))
         self.assertEqual(code, 0)
-        self.assertEqual(out.splitlines()[0], "2 skip")
+        self.assertEqual(out.splitlines()[:2], ["Plan", "  2 skip"])
         self.assertNotIn("op1", out)
         _, out, _ = call("run", str(self.dag), "--verbose")
         self.assertIn("[1] skip    op1", out)
@@ -54,7 +54,7 @@ class CliTests(unittest.TestCase):
 
     def test_run_lists_the_jobs_that_will_do_something_up_to_a_limit(self):
         code, out, _ = call("run", self.write())
-        self.assertEqual(out.splitlines()[0], "2 run")
+        self.assertEqual(out.splitlines()[:2], ["Plan", "  2 run"])
         self.assertIn("[1] run     op1: output missing", out)
 
     def test_a_partial_run_says_which_jobs_it_left_out_of_date(self):

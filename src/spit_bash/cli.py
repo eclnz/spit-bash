@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
+from .display import id_width, labels, name
+from .explain import explain
 from .migrate import apply, find
 from .plan import State, Status, adopt, apply_refreshes, plan, stamp
 from .run import Result, execute, log_tail
@@ -77,6 +79,9 @@ def _parser() -> argparse.ArgumentParser:
                                       "instead of rerunning their jobs; `plan` lists the moves. A tool that writes its own\n"
                                       "paths into its output is not rerun, so use this only if yours do not")
         if action is Action.PLAN:
+            command.add_argument("--job", type=int, metavar="ID",
+                                 help="explain one job's decision: recorded and current fingerprint and checks,\n"
+                                      "the files that differ from the record, and the upstream jobs that will rewrite its inputs")
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
             command.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1, metavar="CORES",
@@ -91,6 +96,9 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
                                  help="let a job hold more memory than it declares, and run a job\n"
                                       "declaring more than --memory alone, rather than refusing it")
+            command.add_argument("--timestamp-logs", action="store_true",
+                                 help="start each line of a job's log with the date, time and UTC offset at which\n"
+                                      "the runner received it; a tool that buffers its output may have written it earlier")
             command.add_argument("--keep-failed", action="store_true",
                                  help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
@@ -158,11 +166,12 @@ def _selection(args: argparse.Namespace) -> Selection:
 LISTED_JOBS = 20
 
 
-def _line(decision: Decision) -> str:
-    return f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}"
+def _line(decision: Decision, work: dict[int, str], width: int, indent: str = "") -> str:
+    job = decision.job
+    return f"{indent}[{job.id:>{width}}] {decision.status.value:7} {name(job, work[job.id])}: {decision.reason}"
 
 
-def _summarize(decisions: tuple[Decision, ...]) -> None:
+def _summarize(decisions: tuple[Decision, ...], work: dict[int, str], width: int) -> None:
     """Print the plan for `run` as counts, then a line for each job that will do something, up to a limit.
 
     Current jobs are only counted: `plan` and `run --verbose` list them.
@@ -171,12 +180,13 @@ def _summarize(decisions: tuple[Decision, ...]) -> None:
     for decision in decisions:
         count[decision.status] += 1
     order = (Status.RUN, Status.MAYBE, Status.CHECK, Status.BLOCKED, Status.SKIP)
-    print(", ".join(f"{count[status]} {status.value}" for status in order if count[status]) or "no jobs")
+    print("Plan")
+    print("  " + (", ".join(f"{count[status]} {status.value}" for status in order if count[status]) or "no jobs"))
     active = [decision for decision in decisions if decision.status is not Status.SKIP]
     for decision in active[:LISTED_JOBS]:
-        print(_line(decision))
+        print(_line(decision, work, width, "  "))
     if len(active) > LISTED_JOBS:
-        print(f"... and {len(active) - LISTED_JOBS} more; `plan` or `run --verbose` lists every job")
+        print(f"  ... and {len(active) - LISTED_JOBS} more; `plan` or `run --verbose` lists every job")
 
 
 def _stale(everything: Dag, chosen: Dag, decisions: tuple[Decision, ...], results: tuple[Result, ...]) -> int:
@@ -224,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         if selection:
             needed = f", and {selected.needed} they need" if selected.needed else ""
             print(f"chose {selected.matched} of {total} jobs{needed}", file=sys.stderr)
-        state = State(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl")
+        state = State(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl",
+                      args.action is not Action.PLAN)
         if args.action is not Action.PLAN:
             state.lock()
         if dag.left_out:
@@ -265,6 +276,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.RUN:
             apply_refreshes(decisions, state)
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
+        work, width = labels(dag.jobs), id_width(dag.jobs)
+        if args.action is Action.PLAN and args.job is not None:
+            print("\n".join(explain(dag, state, decisions, args.job, not args.stat_only)))
+            return 1 if any(d.job.id == args.job and d.status is Status.BLOCKED for d in decisions) else 0
         if args.action is Action.PLAN and args.json:
             json.dump({
                 "left_out": list(dag.left_out),
@@ -275,10 +290,12 @@ def main(argv: list[str] | None = None) -> int:
             }, sys.stdout, indent=2)
             print()
         elif args.action is Action.RUN and not args.verbose:
-            _summarize(decisions)
+            _summarize(decisions, work, width)
         else:
+            if args.action is Action.RUN:
+                print("Plan")
             for decision in decisions:
-                print(_line(decision))
+                print(_line(decision, work, width, "  " if args.action is Action.RUN else ""))
         maybe = sum(decision.status is Status.MAYBE for decision in decisions)
         if maybe:
             certain = sum(decision.status is Status.RUN for decision in decisions)
@@ -299,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
             results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only, args.memory,
-                                          args.keep_failed, args.enforce_memory))
+                                          args.keep_failed, args.enforce_memory, args.timestamp_logs))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM

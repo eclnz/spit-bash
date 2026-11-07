@@ -65,8 +65,8 @@ class ExampleTests(unittest.TestCase):
 
         result = spit_bash("plan", str(lines / "lines.spit"), "--root", str(lines), "--product", "merged")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[5] skip    merge: current", result.stdout)
-        self.assertIn("[4] run     merge: dependency will run", result.stdout)
+        self.assertIn("[5] skip    merge group=beta: current", result.stdout)
+        self.assertIn("[4] run     merge group=alpha: dependency will run", result.stdout)
 
         inventory = subprocess.run([SPIT, "inputs", str(lines / "lines.spitin")],
                                    check=True, capture_output=True, text=True).stdout
@@ -152,9 +152,9 @@ class ExampleTests(unittest.TestCase):
         pipeline = self.examples / "checks/notes.spit"
         pipeline.write_text(pipeline.read_text().replace("contains(today)", "contains(for)"))
         result = spit_bash("plan", recipe)
-        self.assertIn("[1] check   copy: checks changed", result.stdout)
+        self.assertIn("[1] check   copy day=monday: checks changed", result.stdout)
         # The failed job's record was dropped, so it runs again.
-        self.assertIn("[2] run     copy: no successful run recorded", result.stdout)
+        self.assertIn("[2] run     copy day=tuesday: no successful run recorded", result.stdout)
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 1)
         self.assertIn("0 done, 1 checked, 1 failed", result.stderr)
@@ -216,8 +216,8 @@ class ExampleTests(unittest.TestCase):
         (self.examples / "folders/input/alpha/day1/morning.txt").write_text("harbour at dawn\n")
         result = spit_bash("plan", recipe)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[1] run     copy: input changed", result.stdout)
-        self.assertIn("[2] skip    copy: current", result.stdout)
+        self.assertIn("[1] run     copy trip=alpha: input changed", result.stdout)
+        self.assertIn("[2] skip    copy trip=beta: current", result.stdout)
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((album / "day1/morning.txt").read_text(), "harbour at dawn\n")
