@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import IO
 
 from .dag import Check, Dag, Job
+from .display import id_width, labels, name
 from .logs import StampedLog, drain, open_log, pump
 from .memory import group_memory
 from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
@@ -387,6 +388,11 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
+    work, width = labels(dag.jobs), id_width(dag.jobs)
+
+    def say(job: Job, word: str, rest: str = "") -> None:
+        """One progress line: the job's id, what happened, and what it works on, under the `Running` heading."""
+        print(f"  [{job.id:>{width}}] {word:7} {name(job, work[job.id])}{rest}", flush=True)
 
     async def failed_dependency(job: Job) -> int | None:
         """Wait for the jobs this one needs, and name the first that failed."""
@@ -417,7 +423,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         if settled.status is Status.SKIP:
             if settled.refresh is not None:
                 state.record(job_key(job), settled.refresh)
-            print(f"[{job.id}] skip {job.operation}: upstream output unchanged", flush=True)
+            say(job, "skip", ": upstream output unchanged")
             return Result(job, None, None, Status.SKIP)
         result = await perform(settled)
         return replace(result, settled=settled.status)
@@ -446,7 +452,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
                            output_paths=job.output_paths)
         state.record(job_key(job), record)
         progress.finished(job, ran.seconds)
-        print(f"[{job.id}] done in {duration(ran.seconds)}; {progress.report()}", flush=True)
+        say(job, "done", f" in {duration(ran.seconds)}; {progress.report()}")
         return Result(job, None, ran.log)
 
     async def attempt(job: Job) -> Result | _Ran:
@@ -458,7 +464,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             return Result(job, "job has no command")
         folder_entries = _folder_inputs(dag, job)
         path = log_path(logs, job)
-        print(f"[{job.id}] start {job.operation}", flush=True)
+        say(job, "start")
         started = time.monotonic()
         state.forget(job_key(job))
         limit = job.memory if enforce_memory else None
@@ -500,7 +506,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
     async def check_one(job: Job) -> Result:
         """Run a current job's checks alone, on the files it already has."""
         path = log_path(logs, job)
-        print(f"[{job.id}] check {job.operation}", flush=True)
+        say(job, "check")
         key = job_key(job)
         record = state.jobs.get(key)
         with open_log(path, timestamp_logs) as log:
@@ -514,7 +520,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             outputs, inputs = job.keyed(stamps(dag, job.outputs)), job.keyed(stamps(dag, job.inputs))
             if outputs == record.outputs and inputs == record.inputs:
                 state.record(key, record.model_copy(update={"checks": job.checks_key}))
-        print(f"[{job.id}] checked", flush=True)
+        say(job, "checked")
         return Result(job, None, path)
 
     # A job planned `maybe` counts as one that runs until it is skipped, so the
@@ -539,7 +545,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         maybe = sum(1 for decision in decisions if decision.status is Status.MAYBE)
         more = f", and {maybe} more that may" if maybe else ""
         runs = len(to_run) - maybe
-        print(f"{runs} job{'' if runs == 1 else 's'} to run{more}{estimate}", flush=True)
+        print(f"\nRunning {runs} job{'' if runs == 1 else 's'}{more}{estimate}", flush=True)
 
     loop = asyncio.get_running_loop()
     main = asyncio.current_task()

@@ -14,6 +14,7 @@ from enum import Enum
 from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
+from .display import id_width, labels, name
 from .migrate import apply, find
 from .plan import State, Status, adopt, apply_refreshes, plan, stamp
 from .run import Result, execute, log_tail
@@ -161,11 +162,12 @@ def _selection(args: argparse.Namespace) -> Selection:
 LISTED_JOBS = 20
 
 
-def _line(decision: Decision) -> str:
-    return f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}"
+def _line(decision: Decision, work: dict[int, str], width: int, indent: str = "") -> str:
+    job = decision.job
+    return f"{indent}[{job.id:>{width}}] {decision.status.value:7} {name(job, work[job.id])}: {decision.reason}"
 
 
-def _summarize(decisions: tuple[Decision, ...]) -> None:
+def _summarize(decisions: tuple[Decision, ...], work: dict[int, str], width: int) -> None:
     """Print the plan for `run` as counts, then a line for each job that will do something, up to a limit.
 
     Current jobs are only counted: `plan` and `run --verbose` list them.
@@ -174,12 +176,13 @@ def _summarize(decisions: tuple[Decision, ...]) -> None:
     for decision in decisions:
         count[decision.status] += 1
     order = (Status.RUN, Status.MAYBE, Status.CHECK, Status.BLOCKED, Status.SKIP)
-    print(", ".join(f"{count[status]} {status.value}" for status in order if count[status]) or "no jobs")
+    print("Plan")
+    print("  " + (", ".join(f"{count[status]} {status.value}" for status in order if count[status]) or "no jobs"))
     active = [decision for decision in decisions if decision.status is not Status.SKIP]
     for decision in active[:LISTED_JOBS]:
-        print(_line(decision))
+        print(_line(decision, work, width, "  "))
     if len(active) > LISTED_JOBS:
-        print(f"... and {len(active) - LISTED_JOBS} more; `plan` or `run --verbose` lists every job")
+        print(f"  ... and {len(active) - LISTED_JOBS} more; `plan` or `run --verbose` lists every job")
 
 
 def _stale(everything: Dag, chosen: Dag, decisions: tuple[Decision, ...], results: tuple[Result, ...]) -> int:
@@ -268,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.RUN:
             apply_refreshes(decisions, state)
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
+        work, width = labels(dag.jobs), id_width(dag.jobs)
         if args.action is Action.PLAN and args.json:
             json.dump({
                 "left_out": list(dag.left_out),
@@ -278,10 +282,12 @@ def main(argv: list[str] | None = None) -> int:
             }, sys.stdout, indent=2)
             print()
         elif args.action is Action.RUN and not args.verbose:
-            _summarize(decisions)
+            _summarize(decisions, work, width)
         else:
+            if args.action is Action.RUN:
+                print("Plan")
             for decision in decisions:
-                print(_line(decision))
+                print(_line(decision, work, width, "  " if args.action is Action.RUN else ""))
         maybe = sum(decision.status is Status.MAYBE for decision in decisions)
         if maybe:
             certain = sum(decision.status is Status.RUN for decision in decisions)

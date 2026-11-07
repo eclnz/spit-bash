@@ -197,14 +197,22 @@ Each job's output, from its checks, its `verify` commands and its commands, goes
 spit-bash run pipeline.spit --timestamp-logs
 ```
 
-`run` also says how long it expects to take, and as each job finishes, how long it took and how many jobs are left:
+`run` prints its plan under `Plan`, then a blank line and `Running`, with how many jobs will run and how long it expects to take, then a line as each job starts and finishes, how long it took and how many jobs are left. A job is named by its operation and by what it works on: the entities of its first output, such as `sub=02 task=rest run=01`, in name order, or the group a group job makes. Where those leave two jobs of one operation looking alike, as for jobs with no entities, the product is shown too, and a long value is cut short with `…`. The job id stays the reference to its log and to a failure.
 
 ```text
-6 jobs to run, about 4s
-[1] start slow
-[2] start slow
-[1] done in 2s; 5 left, about 2s
+Plan
+  12 run
+  [ 1] run     anat sub=01: output missing
+  [ 4] run     motion run=01 sub=01 task=rest: output missing
+  ...
+
+Running 12 jobs, about 4s
+  [ 1] start   anat sub=01
+  [ 4] start   motion run=01 sub=01 task=rest
+  [ 1] done    anat sub=01 in 2s; 11 left, about 2s
 ```
+
+Lines come in the order the scheduler starts and finishes jobs, not by id. `plan` prints the same job lines without the headings, and `plan --json` is unchanged.
 
 A job is expected to take as long as its last successful run did, which the state records. A job that has not run before is expected to take the mean time of its operation's other jobs, from earlier runs and from this one. Until every job left has an estimate, `run` gives the count alone. A `maybe` job counts as one that runs until it is skipped, so the estimate is the longest the run can take. The estimate is the longer of two times the run cannot beat: the work left, each job's time multiplied by its cores, divided among the `-j` cores, and the longest chain of jobs left that each wait for the one before, such as a group template made after every subject and then a statistic made from it, which more cores do not shorten. A running job counts for the time it has left. The longest chain is worked out again at most every 5 seconds, as times come in. Neither allows for how the jobs will actually fit together on the cores, nor for jobs waiting for memory, so the run may take longer than either.
 
