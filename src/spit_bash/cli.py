@@ -72,9 +72,9 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--stat-only", action="store_true",
                                  help="judge files by size and modification time alone, never by content")
         if action is not Action.ADOPT:
-            command.add_argument("--migrate", action="store_true",
-                                 help="copy outputs recorded at other paths to the paths the pipeline now gives them;\n"
-                                      "with `plan`, only list the copies. Nothing is moved, deleted or overwritten")
+            command.add_argument("--no-migrate", dest="migrate", action="store_false",
+                                 help="rerun a job whose outputs are at other paths than its pipeline now gives,\n"
+                                      "instead of moving them to the new paths")
         if action is Action.PLAN:
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
@@ -235,18 +235,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{adoption.job.id}] {adoption.status.value:7} {adoption.job.operation}: {adoption.reason}")
             return 0
 
-        if args.migrate:
-            migrations = find(dag, state)
-            for migration in migrations:
-                for old, new in migration.copies:
-                    print(f"[{migration.job.id}] {'copy' if args.action is Action.RUN else 'would copy'} {old} -> {new}")
-                if not migration.copies:
-                    print(f"[{migration.job.id}] not migrated: {migration.reason}")
-            if args.action is Action.RUN:
-                apply(dag, migrations)
-
         forced = selected.matched_ids if args.force else False
         decisions = plan(dag, state, forced, not args.stat_only)
+        if args.migrate and not args.force:
+            # A job that is current as it stands has nothing to move; `find` leaves out one whose
+            # inputs changed, which a moved output would not save from running.
+            migrations = find(dag, state, {d.job.id for d in decisions if d.status in (Status.RUN, Status.MAYBE)})
+            if args.action is Action.RUN:
+                migrations = apply(dag, state, migrations)
+            for migration in migrations:
+                for old, new in migration.moves:
+                    print(f"[{migration.job.id}] {'moved' if args.action is Action.RUN else 'would move'} {old} -> {new}")
+                if not migration.moves:
+                    print(f"[{migration.job.id}] not moved: {migration.reason}")
+            if args.action is Action.RUN and any(m.moves for m in migrations):
+                print("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
+                      "into its output is not rerun", file=sys.stderr)
+                decisions = plan(dag, state, forced, not args.stat_only)
         if args.action is Action.RUN:
             apply_refreshes(decisions, state)
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
