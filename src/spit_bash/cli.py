@@ -91,6 +91,9 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
                                  help="let a job hold more memory than it declares, and run a job\n"
                                       "declaring more than --memory alone, rather than refusing it")
+            command.add_argument("--timestamp-logs", action="store_true",
+                                 help="start each line of a job's log with the date, time and UTC offset at which\n"
+                                      "the runner received it; a tool that buffers its output may have written it earlier")
             command.add_argument("--keep-failed", action="store_true",
                                  help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
@@ -299,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
             results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only, args.memory,
-                                          args.keep_failed, args.enforce_memory))
+                                          args.keep_failed, args.enforce_memory, args.timestamp_logs))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM

@@ -191,6 +191,12 @@ A job that fails before its first command starts, at a missing input, an input c
 
 Each job's output, from its checks, its `verify` commands and its commands, goes to `ROOT/.spit-bash/logs/ID-OPERATION.log`, except a command's standard output when it is [one of the job's outputs](#standard-input-and-output), which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
 
+`--timestamp-logs` starts every line of a job's log with the date, time and UTC offset at which the runner received it, to the millisecond, such as `2026-11-07T15:12:03.142+13:00 $ bet ...`. The runner's own `$` command lines, its notes, and every line of a command's output are stamped; a command's output written to a declared artifact is not touched. A tool that buffers its output may have written a line earlier than its stamp, and lines that arrive in one read share a time. A last line with no newline is ended with one. Without the flag the logs are as before.
+
+```sh
+spit-bash run pipeline.spit --timestamp-logs
+```
+
 `run` also says how long it expects to take, and as each job finishes, how long it took and how many jobs are left:
 
 ```text
