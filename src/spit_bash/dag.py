@@ -10,7 +10,7 @@ from typing import Iterator, TextIO
 
 from pydantic import ValidationError
 
-from .schema import Artifact, Command, DirPart, HerePart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
+from .schema import Artifact, Command, CommandPart, DirPart, HerePart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
 
 
 class DagError(ValueError):
@@ -162,6 +162,52 @@ def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
     return tuple(arguments)
 
 
+def _identity(artifact: Artifact) -> list:
+    """What an artifact is apart from where it is stored: product, entities and kind."""
+    return [artifact.product, sorted(artifact.entities.items()), artifact.kind]
+
+
+def _fingerprint(item: SpitJob) -> str:
+    """The job's work as the runner identifies it: its operation, the artifacts it
+    reads and writes, and its commands, with every path replaced by the identity of
+    the artifact it names. Storage paths, checks, scheduling and where the job came
+    from are left out, so moving the outputs changes nothing here."""
+    named = {artifact.path: artifact for port in item.inputs.values() for artifact in port}
+    named.update((artifact.path, artifact) for artifact in item.outputs.values())
+
+    def of(path: str) -> list | str:
+        artifact = named.get(path)
+        return path if artifact is None else _identity(artifact)
+
+    def part(value: CommandPart) -> list | str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, PathPart):
+            return ["path", of(value.path)]
+        if isinstance(value, DirPart):
+            # The tool is given this text, so a change to it is a change to the work.
+            return ["dir", value.dir, of(value.of_path)]
+        if isinstance(value, StemPart):
+            return ["stem", value.stem, of(value.of_path)]
+        return ["here", value.here]
+
+    def command(arguments: Command) -> list:
+        return [[part(value) for value in argument] for argument in arguments]
+
+    work = {
+        "operation": item.operation,
+        "inputs": {port: [_identity(a) for a in artifacts] for port, artifacts in item.inputs.items()},
+        "outputs": {port: _identity(a) for port, a in item.outputs.items()},
+        "commands": [
+            [command(c.command), None if c.stdin is None else of(c.stdin), None if c.stdout is None else of(c.stdout)]
+            for c in item.commands
+        ],
+        "verify": [command(c) for c in item.verify],
+    }
+    text = json.dumps(work, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
 def _artifacts(document: SpitDag) -> Iterator[Artifact]:
     """Every artifact the document names, wherever it appears."""
     yield from document.external_inputs
@@ -278,7 +324,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             id=item.id,
             operation=item.operation,
             stage=tuple(item.stage),
-            fingerprint=item.fingerprint,
+            fingerprint=_fingerprint(item),
             inputs=inputs,
             produced=produced,
             depends_on=tuple(item.depends_on),

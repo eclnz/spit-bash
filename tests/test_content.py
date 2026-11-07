@@ -95,7 +95,7 @@ class ContentTests(unittest.TestCase):
                       "Path(sys.argv[1]).write_text(t); Path(sys.argv[2]).write_text(t.upper())")
             data = sample(root)
             data["jobs"] = [{
-                "id": 1, "operation": "both", "fingerprint": "1" * 16, "stage": [], "dependents": [], "depends_on": [],
+                "id": 1, "operation": "both", "stage": [], "dependents": [], "depends_on": [],
                 "inputs": {"items": [artifact(f"{n}.txt") for n in "abc"]}, "verify": [],
                 "checks": [], "origin": None, "cores": 1, "memory": None,
                 "outputs": {"first": artifact("one.txt"), "second": artifact("two.txt")},
@@ -136,18 +136,11 @@ class ContentTests(unittest.TestCase):
             self.assertIsNone(content.content_hash(str(folder)))
             self.assertIsNone(content.content_hash(str(folder / "missing")))
 
-    def test_reads_an_older_state_whose_records_hold_no_hashes(self):
+    def test_an_older_state_is_refused_with_advice_to_delete_it(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.jsonl"
-            record = '{"fingerprint": "%s", "inputs": {"a": [1, 2]}, "outputs": {"b": [3, 4]}, "checks": null}' % ("a" * 16)
-            path.write_text('{"version": 3}\n{"key": "k", "record": %s}\n' % record)
-            state = State(path)
-            self.assertIsNone(state.jobs["k"].input_hashes)
-            state.compact()
-            self.assertTrue(path.read_text().startswith('{"version":5}'))
-            self.assertIsInstance(state.jobs["k"], RunRecord)
-            with self.assertRaises(DagError):
-                path.write_text('{"version": 6}\n')
+            path.write_text('{"version": 5}\n')
+            with self.assertRaisesRegex(DagError, "delete it to start from fresh records"):
                 State(path)
 
 
