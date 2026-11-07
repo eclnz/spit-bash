@@ -102,6 +102,9 @@ class RunRecord(BaseModel):
     # How long the job took, from its first check to its last, for estimating
     # how long a run will take; None for an adopted job, and before version 5.
     seconds: float | None = None
+    # Where each output was made, by identity, so a run can find files
+    # that a change of path rules left behind; None before the runner kept it.
+    output_paths: dict[str, str] | None = None
 
 
 class StateHeader(BaseModel):
@@ -239,16 +242,20 @@ def hashes(dag: Dag, paths: tuple[str, ...]) -> dict[str, str]:
     return {path: h for path in paths if (h := content_hash(str(dag.path(path)), path in dag.folders)) is not None}
 
 
-def _unchanged(dag: Dag, paths: tuple[str, ...], now: dict[str, list[int] | None],
+def _unchanged(dag: Dag, paths: dict[str, str], now: dict[str, list[int] | None],
                recorded: dict[str, list[int]], recorded_hashes: dict[str, str] | None, hashing: bool) -> bool:
-    """Whether these files are as the record has them: by stamp, else, where they differ, by content."""
-    differing = [path for path in paths if now[path] != recorded.get(path)]
+    """Whether these files are as the record has them: by stamp, else, where they differ, by content.
+
+    `paths` gives each artifact's current path by identity, as do `now` and the record.
+    """
+    differing = [key for key in paths if now[key] != recorded.get(key)]
     if not differing:
         return True
     if not hashing or not recorded_hashes:
         return False
-    return all(path in recorded_hashes and recorded_hashes[path] == content_hash(str(dag.path(path)), path in dag.folders)
-               for path in differing)
+    return all(key in recorded_hashes
+               and recorded_hashes[key] == content_hash(str(dag.path(paths[key])), paths[key] in dag.folders)
+               for key in differing)
 
 
 def _missing_programs(dag: Dag) -> set[str]:
@@ -289,13 +296,18 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: St
         return Decision(job, Status.RUN, "no successful run recorded")
     if record.fingerprint != job.fingerprint:
         return Decision(job, Status.RUN, "job fingerprint changed")
-    if not _unchanged(dag, job.inputs, now_in, record.inputs, record.input_hashes, hashing):
+    # A record holds its files by identity, so files moved to new paths are
+    # the same files when their stamps or contents match.
+    in_paths = {job.identities[path]: path for path in job.inputs}
+    out_paths = {job.identities[path]: path for path in job.outputs}
+    now_in, now_out = job.keyed(now_in), job.keyed(now_out)
+    if not _unchanged(dag, in_paths, now_in, record.inputs, record.input_hashes, hashing):
         return Decision(job, Status.RUN, "input changed")
-    if not _unchanged(dag, job.outputs, now_out, record.outputs, record.output_hashes, hashing):
+    if not _unchanged(dag, out_paths, now_out, record.outputs, record.output_hashes, hashing):
         return Decision(job, Status.RUN, "output changed")
     # Touched files hold what they held: keep the new stamps.
-    refresh = None if (now_in, now_out) == (record.inputs, record.outputs) else record.model_copy(
-        update={"inputs": now_in, "outputs": now_out})
+    refresh = None if (now_in, now_out, out_paths) == (record.inputs, record.outputs, record.output_paths) else record.model_copy(
+        update={"inputs": now_in, "outputs": now_out, "output_paths": out_paths})
     if record.checks != job.checks_key:
         reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
         return Decision(job, Status.CHECK, reason, refresh)
@@ -409,7 +421,9 @@ def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
         elif any(value is None for value in inputs.values()):
             adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
         else:
-            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=inputs, outputs=outputs))
+            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=job.keyed(inputs),
+                                                    outputs=job.keyed(outputs),
+                                                    output_paths=job.output_paths))
             adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
         adoptions.append(adoption)
     return tuple(adoptions)
