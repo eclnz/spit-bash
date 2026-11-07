@@ -9,6 +9,12 @@ on:
     # `main`, which holds the last release and lags behind SPIT's `dev`.
     - cron: '17 6 * * 1'
 
+# Cancel superseded checks for the same branch across push and pull_request events.
+# Keep unrelated branches and scheduled runs independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -29,7 +35,9 @@ jobs:
     # Builds SPIT from `dev`, the branch its work merges into, and runs the
     # examples end to end. A change made in both repositories has one branch
     # name in each, so a branch that SPIT also has builds SPIT's branch
-    # instead, and the two are tested together.
+    # instead, and the two are tested together. A SPIT branch already merged
+    # into `dev` adds nothing to it and falls behind as `dev` moves, so it
+    # builds `dev`.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +51,13 @@ jobs:
           ref=dev
           if [ "$BRANCH" != main ] && [ "$BRANCH" != dev ] &&
               git ls-remote --exit-code --heads https://github.com/eclnz/spit "refs/heads/$BRANCH" > /dev/null; then
-            ref=$BRANCH
+            refs="$RUNNER_TEMP/spit-refs"
+            git init -q "$refs"
+            git -C "$refs" fetch -q --filter=blob:none https://github.com/eclnz/spit \
+                "refs/heads/dev:refs/heads/dev" "refs/heads/$BRANCH:refs/heads/branch"
+            if ! git -C "$refs" merge-base --is-ancestor branch dev; then
+              ref=$BRANCH
+            fi
           fi
           echo "Building SPIT from $ref"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -53,14 +67,17 @@ jobs:
           ref: ${{ steps.spit.outputs.ref }}
           path: spit
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --manifest-path spit/Cargo.toml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spit -> target
+      - run: cargo build --manifest-path spit/Cargo.toml
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
       - run: python -m pip install .
       - run: python -m unittest tests/test_examples.py -v
         env:
-          SPIT: ${{ github.workspace }}/spit/target/release/spit
+          SPIT: ${{ github.workspace }}/spit/target/debug/spit
           SPIT_REPOSITORY: ${{ github.workspace }}/spit
 
   messie:
@@ -74,3 +91,4 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install '.[dev]'
       - run: messie -af .
+
