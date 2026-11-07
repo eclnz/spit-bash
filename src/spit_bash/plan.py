@@ -102,7 +102,7 @@ class RunRecord(BaseModel):
     # How long the job took, from its first check to its last, for estimating
     # how long a run will take; None for an adopted job, and before version 5.
     seconds: float | None = None
-    # Where each output was made, by identity, so `--migrate` can find files
+    # Where each output was made, by identity, so a run can find files
     # that a change of path rules left behind; None before the runner kept it.
     output_paths: dict[str, str] | None = None
 
