@@ -84,6 +84,8 @@ class Job:
     # Each input and output path's artifact identity, which a state record keys
     # its stamps and hashes by, so a record survives a change of path.
     identities: dict[str, str] = field(default_factory=dict, compare=False)
+    # `fingerprint`'s parts, each hashed on its own, by name.
+    parts: dict[str, str] = field(default_factory=dict, compare=False)
 
     def keyed(self, by_path: dict[str, T]) -> dict[str, T]:
         """Values read by path, re-keyed by artifact identity."""
@@ -184,7 +186,7 @@ def _identity(artifact: Artifact) -> list:
     return [artifact.product, sorted(artifact.entities.items()), artifact.kind]
 
 
-def _fingerprint(item: SpitJob) -> str:
+def _fingerprint(item: SpitJob) -> tuple[str, dict[str, str]]:
     """The job's work as the runner identifies it: the artifacts it reads and
     writes, and its commands, with every path replaced by the identity of
     the artifact it names. Storage paths, checks, scheduling and where the job came
@@ -221,8 +223,11 @@ def _fingerprint(item: SpitJob) -> str:
         ],
         "verify": [command(c) for c in item.verify],
     }
-    text = json.dumps(work, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+    def digest(value: object) -> str:
+        return hashlib.sha256(json.dumps(value, separators=(",", ":"), sort_keys=True).encode()).hexdigest()[:16]
+
+    # The parts are hashed apart so that a record can say which of them changed.
+    return digest(work), {name: digest(value) for name, value in work.items()}
 
 
 def _artifacts(document: SpitDag) -> Iterator[Artifact]:
@@ -337,11 +342,13 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             if path in producers or path in external_set:
                 raise DagError(f"multiple jobs or sources claim path: {path}")
             producers[path] = item.id
+        fingerprint, parts = _fingerprint(item)
         jobs.append(Job(
             id=item.id,
             operation=item.operation,
             stage=tuple(item.stage),
-            fingerprint=_fingerprint(item),
+            fingerprint=fingerprint,
+            parts=parts,
             inputs=inputs,
             produced=produced,
             depends_on=tuple(item.depends_on),

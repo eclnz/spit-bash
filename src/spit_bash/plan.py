@@ -90,6 +90,9 @@ class RunRecord(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     fingerprint: str
+    # The fingerprint's parts as `Job.parts` gives them, to say which changed;
+    # None for a record made before they were kept.
+    parts: dict[str, str] | None = None
     inputs: dict[str, FileStamp]
     outputs: dict[str, FileStamp]
     # The checks the job passed with on these files, as `Job.checks_key`
@@ -278,6 +281,33 @@ def _missing_programs(dag: Dag) -> set[str]:
 UPSTREAM = (Status.RUN, Status.MAYBE)
 
 
+PART_NAMES = {"commands": "command", "verify": "verify commands",
+              "inputs": "the artifacts it reads", "outputs": "the artifacts it makes"}
+
+
+def changed_parts(record: RunRecord, job: Job) -> str:
+    """Why a job's fingerprint differs from its record's, naming the parts that changed when it can."""
+    if record.parts is None:
+        return "job fingerprint changed"
+    names = [text for part, text in PART_NAMES.items() if record.parts.get(part) != job.parts.get(part)]
+    return "; ".join(names) + " changed" if names else "job fingerprint changed"
+
+
+def _missing(dag: Dag, job: Job, state: State) -> str:
+    """'output missing', and where an earlier run left the file if a change of path rules stranded it."""
+    record = state.jobs.get(job_key(job))
+    here = {job.identities[path]: path for path in job.outputs}
+    for key, old in sorted((record.output_paths or {}).items() if record else ()):
+        if key in here and old != here[key] and old not in job.outputs:
+            try:
+                present = dag.checked(old).exists()
+            except DagError:
+                continue
+            if present:
+                return f"output missing; an earlier run left it at {old}"
+    return "output missing"
+
+
 def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: Stamps | None = None) -> Decision:
     """Whether a command job is current on the files it has now, ignoring the jobs upstream.
 
@@ -287,7 +317,7 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: St
     """
     now_in, now_out = stamps(dag, job.inputs, seen), stamps(dag, job.outputs, seen)
     if any(value is None for value in now_out.values()):
-        return Decision(job, Status.RUN, "output missing")
+        return Decision(job, Status.RUN, _missing(dag, job, state))
     if any(value is None for value in now_in.values()):
         return Decision(job, Status.BLOCKED, "input is missing")
     if force:
@@ -296,7 +326,7 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: St
     if record is None:
         return Decision(job, Status.RUN, "no successful run recorded")
     if record.fingerprint != job.fingerprint:
-        return Decision(job, Status.RUN, "job fingerprint changed")
+        return Decision(job, Status.RUN, changed_parts(record, job))
     # A record holds its files by identity, so files moved to new paths are
     # the same files when their stamps or contents match.
     in_paths = {job.identities[path]: path for path in job.inputs}
@@ -425,7 +455,7 @@ def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
         elif any(value is None for value in inputs.values()):
             adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
         else:
-            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, inputs=job.keyed(inputs),
+            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, parts=job.parts, inputs=job.keyed(inputs),
                                                     outputs=job.keyed(outputs),
                                                     output_paths=job.output_paths))
             adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")

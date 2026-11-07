@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 
 from .dag import Dag, DagError, Job
-from .plan import State, _unchanged, job_key, stamp, stamps
+from .plan import State, changed_parts, _unchanged, job_key, stamp, stamps
 
 
 @dataclass(frozen=True)
@@ -20,11 +20,13 @@ class Migration:
 def _plan_job(dag: Dag, job: Job, state: State, claimed: set[str], moving: set[str]) -> Migration | None:
     """The moves that bring a job's recorded outputs to its current paths, or None when it has nothing to move."""
     record = state.jobs.get(job_key(job))
-    if record is None or record.output_paths is None or record.fingerprint != job.fingerprint:
+    if record is None or record.output_paths is None:
         return None
     current = {job.identities[path]: path for path in job.outputs}
     if all(record.output_paths.get(key, path) == path for key, path in current.items()):
         return None
+    if record.fingerprint != job.fingerprint:
+        return Migration(job, (), f"the job changed since the run ({changed_parts(record, job)}), so its outputs are stale")
     # A moved output is reused only if the job would be current but for the move.
     # An input an earlier job is moving arrives with the stamps it has, so it counts as present.
     in_paths = {job.identities[path]: path for path in job.inputs if path not in moving}
