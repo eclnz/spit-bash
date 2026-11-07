@@ -1,11 +1,14 @@
-"""The version 4 to 7 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 10 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+
+# The one version of the format spit-bash reads.
+VERSION = 10
 
 
 class SchemaModel(BaseModel):
@@ -40,8 +43,7 @@ class Artifact(SchemaModel):
     entities: dict[NonEmpty, str]
     artifact_type: NamedType | VariableType | None = Field(alias="type")
     path: RelativePath
-    # Version 5 added `kind`; every artifact of a version 4 DAG is a file.
-    kind: Literal["file", "folder"] = "file"
+    kind: Literal["file", "folder"]
 
 
 class PathPart(SchemaModel):
@@ -58,7 +60,13 @@ class StemPart(SchemaModel):
     of_path: RelativePath = Field(alias="of")
 
 
-CommandPart = str | PathPart | DirPart | StemPart
+class HerePart(SchemaModel):
+    """The folder of the file declaring the job's operation, relative to the pipeline's folder; "" is that folder."""
+
+    here: str
+
+
+CommandPart = str | PathPart | DirPart | StemPart | HerePart
 Argument = Annotated[list[CommandPart], Field(min_length=1)]
 Command = Annotated[list[Argument], Field(min_length=1)]
 
@@ -119,10 +127,24 @@ class Call(SchemaModel):
 
 
 class Origin(SchemaModel):
-    """The call whose body made a job, and the line of the body's step."""
+    """Where the step that made a job is written: the line of a file, and the call whose body holds it.
 
-    call: Index
+    A step written in the pipeline has no call.
+    """
+
+    call: Index | None
+    file: Index | None
     line: Line
+
+
+class JobCommand(SchemaModel):
+    """One of a job's commands, which run in order, and the files its streams are connected to."""
+
+    command: Command
+    # The input file the command reads on its standard input, and the output
+    # file its standard output is written to; null when it does not redirect.
+    stdin: RelativePath | None
+    stdout: RelativePath | None
 
 
 class SpitJob(SchemaModel):
@@ -134,16 +156,20 @@ class SpitJob(SchemaModel):
     outputs: Annotated[dict[NonEmpty, Artifact], Field(min_length=1)]
     depends_on: list[JobId]
     dependents: list[JobId]
-    command: Command | None
+    # Empty for an operation with no command.
+    commands: list[JobCommand]
     verify: list[Command]
-    # Version 6 added `checks`; a version 4 or 5 DAG has none.
-    checks: list[Check] | None = None
-    # Version 7 added `origin`; null for a step written in the pipeline.
-    origin: Origin | None = None
+    checks: list[Check]
+    # Null for a step SPIT did not read from a file.
+    origin: Origin | None
+    # What the job needs while its commands run: cores, 1 when its operation
+    # declares none, and memory in bytes, null when it claims none.
+    cores: Annotated[int, Field(ge=1)]
+    memory: Annotated[int, Field(ge=0, le=2**53)] | None
 
 
 class SpitDag(SchemaModel):
-    version: Literal[4, 5, 6, 7]
+    version: int
     generator: Generator
     root: str | None
     external_inputs: list[Artifact]
@@ -151,7 +177,18 @@ class SpitDag(SchemaModel):
     executables: list[str]
     removed: list[Removal]
     left_out: list[LeftOut]
-    # Version 7 added `pipeline_files` and `calls`.
-    pipeline_files: list[PipelineFile] | None = None
-    calls: list[Call] | None = None
+    # The absolute folder of the pipeline's own file, null when SPIT read the pipeline from no file.
+    pipeline_folder: NonEmpty | None
+    pipeline_files: list[PipelineFile]
+    calls: list[Call]
     jobs: list[SpitJob]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _version(cls, data: object) -> object:
+        """Name the version first, since a DAG of another one fails on fields it lacks or adds."""
+        version = data.get("version") if isinstance(data, dict) else None
+        if version != VERSION:
+            raise ValueError(f"spit-bash reads version {VERSION} of the DAG format, not {version}; "
+                             f"use a spit and spit-bash that match")
+        return data

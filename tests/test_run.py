@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -9,9 +11,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from spit_bash.dag import load_dag
-from spit_bash.plan import Status, plan
+from spit_bash.plan import State, Status, plan
+from spit_bash import run as run_module
 from spit_bash.run import execute
 from support import FIXTURE, artifact, command, document, job, read, run, sample, state_at
 
@@ -25,6 +29,99 @@ MEET = (
     "while not Path(other).exists() and time.time() < deadline: time.sleep(0.01)\n"
     "Path(sys.argv[2]).write_text(str(Path(other).exists()))\n"
 )
+
+
+class InputChangeDiagnosticTests(unittest.TestCase):
+    def test_names_changed_file_and_stamps(self):
+        error = run_module._input_changes(
+            {"source.txt": [10, 100], "stable.txt": [2, 30]},
+            {"source.txt": [12, 150], "stable.txt": [2, 30]},
+            set(),
+        )
+        self.assertEqual(
+            error,
+            "input changed during execution: source.txt: size 10 -> 12, mtime_ns 100 -> 150",
+        )
+
+    def test_names_folder_mtime_and_file_count(self):
+        error = run_module._input_changes(
+            {"templates": [1024, 100, 4]},
+            {"templates": [1024, 200, 5]},
+            {"templates"},
+        )
+        self.assertEqual(
+            error,
+            "input changed during execution: templates: latest mtime_ns 100 -> 200, file count 4 -> 5",
+        )
+
+    def test_names_missing_input(self):
+        error = run_module._input_changes(
+            {"source.txt": [12, 100]},
+            {"source.txt": None},
+            set(),
+        )
+        self.assertEqual(
+            error, "input changed during execution: source.txt: [12, 100] -> None",
+        )
+
+
+class DirectoryTimestampTests(unittest.TestCase):
+    def test_touching_directory_metadata_during_job_does_not_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "input"
+            folder.mkdir()
+            (folder / "a.txt").write_text("hello")
+            data = sample(root)
+            data["external_inputs"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["inputs"]["input"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["commands"][0]["command"] = command(
+                "from pathlib import Path; import os, sys; "
+                "folder = Path(sys.argv[1]); old = folder.stat().st_mtime_ns; "
+                "os.utime(folder, ns=(old + 1000000000, old + 1000000000)); "
+                "Path(sys.argv[2]).write_text('ok')",
+                "input", "work/upper.txt",
+            )
+            _, results = run(read(data), state_at(root))
+            self.assertEqual([result.error for result in results], [None, None])
+
+    def test_renaming_file_inside_directory_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "input"
+            folder.mkdir()
+            (folder / "a.txt").write_text("hello")
+            data = sample(root)
+            data["external_inputs"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["inputs"]["input"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["commands"][0]["command"] = command(
+                "from pathlib import Path; import sys; "
+                "folder = Path(sys.argv[1]); (folder / 'a.txt').rename(folder / 'b.txt'); "
+                "Path(sys.argv[2]).write_text('ok')",
+                "input", "work/upper.txt",
+            )
+            _, results = run(read(data), state_at(root))
+            self.assertIn("input changed during execution", results[0].error)
+
+    def test_touching_a_file_inside_directory_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "input"
+            folder.mkdir()
+            file = folder / "a.txt"
+            file.write_text("hello")
+            data = sample(root)
+            data["external_inputs"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["inputs"]["input"] = [dict(artifact("input"), kind="folder")]
+            data["jobs"][0]["commands"][0]["command"] = command(
+                "from pathlib import Path; import os, sys; "
+                "file = Path(sys.argv[1]) / 'a.txt'; old = file.stat().st_mtime_ns; "
+                "os.utime(file, ns=(old + 1000000000, old + 1000000000)); "
+                "Path(sys.argv[2]).write_text('ok')",
+                "input", "work/upper.txt",
+            )
+            _, results = run(read(data), state_at(root))
+            self.assertIn("input changed during execution", results[0].error)
 
 
 class RunTests(unittest.TestCase):
@@ -103,14 +200,62 @@ class RunTests(unittest.TestCase):
                 "command succeeded but did not create output meta work/upper.json, "
                 "output log work/conversion.log",
             )
-            self.assertTrue((root / "work/upper.txt").exists())
+            # The output the command did write is removed with the failure.
+            self.assertFalse((root / "work/upper.txt").exists())
+            self.assertIn("removed failed output work/upper.txt", results[0].log.read_text())
+
+    def test_a_failed_command_leaves_no_partial_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            data["jobs"][0]["commands"][0]["command"][2] = [
+                "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
+            ]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(results[0].error, "command exited with status 4")
+            self.assertFalse((root / "work/upper.txt").exists())
+            log = results[0].log.read_text()
+            self.assertTrue(log.endswith("spit-bash: removed failed output work/upper.txt\n"), log)
+
+    def test_keep_failed_leaves_a_failed_commands_outputs_and_reruns_the_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            data["jobs"][0]["commands"][0]["command"][2] = [
+                "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
+            ]
+            dag = read(data)
+            _, results = run(dag, state_at(root), keep_failed=True)
+            self.assertEqual(results[0].error, "command exited with status 4")
+            self.assertEqual((root / "work/upper.txt").read_text(), "HAL")
+            log = results[0].log.read_text()
+            self.assertTrue(log.endswith("spit-bash: kept failed output work/upper.txt\n"), log)
+            # The kept output is not a finished one, so the next run runs the job again.
+            decisions, _ = run(dag, state_at(root))
+            self.assertEqual(decisions[0].status, Status.RUN)
+
+    def test_a_failure_before_the_command_keeps_an_earlier_runs_outputs(self):
+        # The command never ran, so the files are still the last run's, whole.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            data = sample(root)
+            run(read(data), state_at(root))
+            data["jobs"][0]["fingerprint"] = "c" * 16
+            data["jobs"][0]["verify"] = [command("import sys; sys.exit(3)")]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(results[0].error, "verify 1 exited with status 3")
+            self.assertEqual((root / "work/upper.txt").read_text(), "HELLO")
+            self.assertNotIn("removed", results[0].log.read_text())
 
     def test_job_output_goes_to_its_log(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "source.txt").write_text("hello")
             data = sample(root)
-            data["jobs"][0]["command"][2] = ["import sys; print('to stdout'); print('to stderr', file=sys.stderr); " + data["jobs"][0]["command"][2][0]]
+            data["jobs"][0]["commands"][0]["command"][2] = ["import sys; print('to stdout'); print('to stderr', file=sys.stderr); " + data["jobs"][0]["commands"][0]["command"][2][0]]
             _, results = run(read(data), state_at(root))
             log = (root / ".spit-bash/logs/1-op1.log").read_text()
             self.assertEqual(results[0].log, root / ".spit-bash/logs/1-op1.log")
@@ -123,9 +268,9 @@ class RunTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("")
             jobs = [job(1, ["source.txt"], "a.txt", MEET), job(2, ["source.txt"], "b.txt", MEET)]
-            jobs[0]["command"].append(["b.txt.here"])
-            jobs[1]["command"].append(["a.txt.here"])
-            _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), workers=2)
+            jobs[0]["commands"][0]["command"].append(["b.txt.here"])
+            jobs[1]["commands"][0]["command"].append(["a.txt.here"])
+            _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), cores=2)
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "a.txt").read_text(), "True")
             self.assertEqual((root / "b.txt").read_text(), "True")
@@ -134,7 +279,12 @@ class RunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "source.txt").write_text("")
-            script = "import os, sys, time; open(sys.argv[2] + '.pid', 'w').write(str(os.getpid())); time.sleep(60)"
+            script = (
+                "import os, sys, time\n"
+                "open(sys.argv[2], 'w').write('half')\n"
+                "open(sys.argv[2] + '.pid', 'w').write(str(os.getpid()))\n"
+                "time.sleep(60)\n"
+            )
             dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
             state = state_at(root)
             pid_file = root / "out.txt.pid"
@@ -152,9 +302,55 @@ class RunTests(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(int(pid_file.read_text()), 0)
             self.assertEqual(state_at(root).jobs, {})
+            # The half-written output went with the stopped command.
+            self.assertFalse((root / "out.txt").exists())
+            self.assertIn("removed failed output out.txt", (root / "logs/1-op1.log").read_text())
+
+    def test_cancelling_kills_a_command_that_ignores_sigterm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("")
+            # The command and a child it starts both ignore SIGTERM, which the
+            # child inherits, so only SIGKILL stops either.
+            script = (
+                "import os, signal, subprocess, sys, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "open(sys.argv[2] + '.pid', 'w').write(f'{os.getpid()} {child.pid}')\n"
+                "time.sleep(60)\n"
+            )
+            dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
+            state = state_at(root)
+            pid_file = root / "out.txt.pid"
+
+            async def cancel_once_started():
+                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, 1, root / "logs"))
+                while not pid_file.exists() or not pid_file.read_text():
+                    await asyncio.sleep(0.01)
+                started = time.monotonic()
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                return time.monotonic() - started
+
+            with mock.patch.object(run_module, "STOP_GRACE_SECONDS", 0.2):
+                elapsed = asyncio.run(cancel_once_started())
+            state.close()
+            self.assertLess(elapsed, 5)
+            for pid in pid_file.read_text().split():
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    try:
+                        os.kill(int(pid), 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.01)
+                else:
+                    self.fail(f"process {pid} outlived the cancelled run")
+            self.assertEqual(state_at(root).jobs, {})
 
     @unittest.skipUnless(shutil.which("sort"), "requires sort")
-    def test_runs_real_spit_version_four_fixture(self):
+    def test_runs_real_spit_fixture(self):
         with tempfile.TemporaryDirectory() as directory, FIXTURE.open(encoding="utf-8") as source:
             root = Path(directory)
             for path, content in {
@@ -166,7 +362,7 @@ class RunTests(unittest.TestCase):
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(content)
             dag = load_dag(source, directory)
-            decisions, results = run(dag, state_at(root), workers=3)
+            decisions, results = run(dag, state_at(root), cores=3)
             self.assertEqual([d.status for d in decisions], [Status.RUN] * 5)
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "merged/group=alpha.txt").read_text(), "a\nb\nz\n")
@@ -207,3 +403,44 @@ class SignalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EarlierOutputTests(unittest.TestCase):
+    """A job starts with nothing at its outputs, and a failure puts the earlier version back."""
+
+    REFUSE = ("from pathlib import Path; import sys; out = Path(sys.argv[2]); "
+              "assert not out.exists(), 'exists'; out.write_text('new')")
+    FAIL = ("from pathlib import Path; import sys; Path(sys.argv[2]).write_text('half'); sys.exit(1)")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "in.txt").write_text("x")
+        (self.root / "out.txt").write_text("earlier")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_job(self, script, keep_failed=False):
+        dag = load_dag(io.StringIO(json.dumps(document(self.root, [job(1, ["in.txt"], "out.txt", script)], ["in.txt"]))), None)
+        state = State(self.root / "state.jsonl")
+        decisions = plan(dag, state, False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            return asyncio.run(execute(dag, decisions, state, 1, self.root / "logs", keep_failed=keep_failed))
+
+    def test_a_tool_that_refuses_to_overwrite_runs_again(self):
+        (result,) = self.run_job(self.REFUSE)
+        self.assertIsNone(result.error)
+        self.assertEqual((self.root / "out.txt").read_text(), "new")
+        self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())
+
+    def test_a_failure_puts_the_earlier_output_back(self):
+        (result,) = self.run_job(self.FAIL)
+        self.assertIsNotNone(result.error)
+        self.assertEqual((self.root / "out.txt").read_text(), "earlier")
+        self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())
+
+    def test_keep_failed_keeps_the_failed_output_instead(self):
+        self.run_job(self.FAIL, keep_failed=True)
+        self.assertEqual((self.root / "out.txt").read_text(), "half")
+        self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())

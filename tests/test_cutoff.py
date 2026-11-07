@@ -79,7 +79,7 @@ class CutoffTests(unittest.TestCase):
         self.assertEqual(decisions[1].reason, "dependency will run")
 
     def test_a_job_with_no_command_below_a_maybe_is_blocked(self):
-        self.data["jobs"][2]["command"] = None
+        self.data["jobs"][2]["commands"] = []
         self.edit_source("Hello")
         decisions = plan(read(self.data), state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.BLOCKED])
@@ -119,7 +119,7 @@ class CutoffTests(unittest.TestCase):
 
     def test_a_failed_job_stops_the_maybes_below_it(self):
         self.edit_source("Hello")
-        self.data["jobs"][0]["command"][2] = ["import sys; sys.exit(3)"]
+        self.data["jobs"][0]["commands"][0]["command"][2] = ["import sys; sys.exit(3)"]
         _, results = run(read(self.data), state_at(self.root))
         self.assertEqual([bool(r.error) for r in results], [True, True, True])
         self.assertEqual(results[1].error, "dependency 1 failed")

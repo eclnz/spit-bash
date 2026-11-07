@@ -41,7 +41,7 @@ class PlanTests(unittest.TestCase):
             data = sample(root)
             data["jobs"] = [data["jobs"][0]]
             data["jobs"][0]["dependents"] = []
-            data["jobs"][0]["command"] = None
+            data["jobs"][0]["commands"] = []
             dag = read(data)
             state = state_at(root)
             self.assertEqual(plan(dag, state)[0].status, Status.BLOCKED)
@@ -62,7 +62,7 @@ class PlanTests(unittest.TestCase):
             data = sample(root)
             data["jobs"].append(job(3, ["source.txt"], "other.txt", UPPER))
             data["executables"] = ["spit-bash-no-such-program"]
-            data["jobs"][0]["command"][0] = ["spit-bash-no-such-program"]
+            data["jobs"][0]["commands"][0]["command"][0] = ["spit-bash-no-such-program"]
             data["jobs"][1]["verify"] = [[["bin/missing-check"]]]
             decisions = plan(read(data), state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.BLOCKED, Status.BLOCKED, Status.RUN])

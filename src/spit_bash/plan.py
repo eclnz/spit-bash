@@ -29,10 +29,9 @@ def stamp(path: Path, folder: bool = False) -> list[int] | None:
     """A file's size and modification time, or None when it is not a file.
 
     A folder's stamp is the total size of the files under it, the latest
-    modification time of any of them or of any folder under it, and how many
-    files it holds, or None when it is not a folder. A folder's own time
-    changes only when an entry directly in it is added, removed or renamed, so
-    a change deeper down shows only in what is under it.
+    modification time of any file under it, and how many files it holds, or
+    None when it is not a folder. Directory mtimes are deliberately excluded:
+    syncing software can touch them without changing the input files.
     """
     if folder:
         return _folder_stamp(path)
@@ -46,13 +45,8 @@ def stamp(path: Path, folder: bool = False) -> list[int] | None:
 def _folder_stamp(path: Path) -> list[int] | None:
     if not path.is_dir():
         return None
-    size, latest, count = 0, path.stat().st_mtime_ns, 0
+    size, latest, count = 0, 0, 0
     for directory, folders, files in os.walk(path):
-        for name in folders:
-            try:
-                latest = max(latest, os.stat(os.path.join(directory, name)).st_mtime_ns)
-            except FileNotFoundError:
-                pass
         for name in files:
             try:
                 info = os.stat(os.path.join(directory, name))
@@ -256,10 +250,11 @@ def _missing_programs(dag: Dag) -> set[str]:
     """Programs that commands start with but that cannot be run."""
     missing = {name for name in dag.executables if shutil.which(name) is None}
     for job in dag.jobs:
-        for command in (job.command, *job.verify, *(check.command for check in job.checks)):
+        runs = (run.arguments for run in job.commands)
+        for command in (*runs, *job.verify, *(check.command for check in job.checks)):
             # SPIT leaves a program named by a path out of `executables`. It is
             # run from the root, so check it there.
-            if command is not None and "/" in command[0] and command[0] not in missing:
+            if "/" in command[0] and command[0] not in missing:
                 program = dag.root / command[0]
                 if not (program.is_file() and os.access(program, os.X_OK)):
                     missing.add(command[0])
@@ -339,8 +334,8 @@ def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
     job = decision.job
     commands = [check.command for check in job.checks]
     if decision.status is not Status.CHECK:
-        commands += [job.command, *job.verify]
-    programs = sorted({command[0] for command in commands if command is not None} & missing_programs)
+        commands += [*(run.arguments for run in job.commands), *job.verify]
+    programs = sorted({command[0] for command in commands} & missing_programs)
     if not programs:
         return decision
     return Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
@@ -360,7 +355,7 @@ def plan(dag: Dag, state: State, force: bool = False, hashing: bool = True) -> t
         blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
         if blocked:
             return Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
-        if job.command is None:
+        if not job.commands:
             return _without_command(dag, job, by_id, seen)
         if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
             return _below_rerun(dag, job, state, force, hashing, seen)
@@ -401,7 +396,7 @@ def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
     for job in dag.jobs:
         inputs = stamps(dag, job.inputs)
         outputs = stamps(dag, job.outputs)
-        if job.command is None:
+        if not job.commands:
             adoption = Adoption(job, AdoptStatus.LEFT, "no command")
         elif any(value is None for value in outputs.values()):
             adoption = Adoption(job, AdoptStatus.LEFT, "output missing")

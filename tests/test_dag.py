@@ -38,9 +38,28 @@ class LoadTests(unittest.TestCase):
             with self.assertRaisesRegex(DagError, "int_type"):
                 read(data)
             data = sample(Path(directory))
-            data["jobs"][0]["command"][0] = [{"unknown": "program"}]
+            data["jobs"][0]["commands"][0]["command"][0] = [{"unknown": "program"}]
             with self.assertRaisesRegex(DagError, "unknown"):
                 read(data)
+
+    def test_reads_cores_and_memory_and_rejects_bad_ones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = sample(Path(directory))
+            data["jobs"][1]["cores"], data["jobs"][1]["memory"] = 8, 16 * 2**30
+            dag = read(data)
+            self.assertEqual([(job.cores, job.memory) for job in dag.jobs], [(1, None), (8, 16 * 2**30)])
+            for field, value, message in (("cores", 0, "greater_than_equal"), ("cores", True, "int_type"),
+                                          ("cores", None, "int_type"), ("memory", -1, "greater_than_equal"),
+                                          ("memory", 2**53 + 1, "less_than_equal"), ("memory", "16G", "int_type")):
+                data = sample(Path(directory))
+                data["jobs"][0][field] = value
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(DagError, message):
+                    read(data)
+            for field in ("cores", "memory"):
+                data = sample(Path(directory))
+                del data["jobs"][0][field]
+                with self.subTest(missing=field), self.assertRaisesRegex(DagError, field):
+                    read(data)
 
     def test_requires_a_root(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -50,14 +69,45 @@ class LoadTests(unittest.TestCase):
                 read(data)
             self.assertEqual(read(data, directory).root, Path(directory).resolve())
 
-    def test_reads_real_spit_version_four_fixture(self):
+    def test_reads_real_spit_fixture(self):
         with tempfile.TemporaryDirectory() as directory, FIXTURE.open(encoding="utf-8") as source:
             dag = load_dag(source, directory)
             self.assertEqual(len(dag.jobs), 5)
             self.assertEqual(dag.jobs[3].depends_on, (1, 2))
-            self.assertEqual(dag.jobs[3].command[4], "merged/group=alpha.txt")
+            self.assertEqual(dag.jobs[3].commands[0].arguments[4], "merged/group=alpha.txt")
             self.assertEqual(dag.executables, ("sort",))
+            self.assertEqual({(job.cores, job.memory) for job in dag.jobs}, {(1, None)})
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HereTests(unittest.TestCase):
+    """`{@here}` arrives as a part under the pipeline's folder."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "source.txt").write_text("hello")
+
+    def data(self, here):
+        data = sample(self.root)
+        data["pipeline_folder"] = "/home/lab/study"
+        data["jobs"][0]["commands"][0]["command"][2] = ["print(1)", {"here": here}, "/run.sh"]
+        return data
+
+    def test_a_here_part_is_the_pipelines_folder_with_the_relative_folder_under_it(self):
+        self.assertEqual(read(self.data(""), self.root).jobs[0].commands[0].arguments[2], "print(1)/home/lab/study/run.sh")
+        self.assertEqual(read(self.data("libs/sub"), self.root).jobs[0].commands[0].arguments[2],
+                         "print(1)/home/lab/study/libs/sub/run.sh")
+
+    def test_a_here_part_needs_the_folder_and_stays_under_it(self):
+        data = self.data("libs")
+        data["pipeline_folder"] = None
+        with self.assertRaisesRegex(DagError, "pipeline_folder"):
+            read(data, self.root)
+        for bad in ("../x", "/etc"):
+            with self.assertRaisesRegex(DagError, "not a folder under"):
+                read(self.data(bad), self.root)

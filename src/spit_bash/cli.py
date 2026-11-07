@@ -15,10 +15,13 @@ from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
 from .plan import State, Status, adopt, apply_refreshes, plan
-from .run import execute, log_tail
+from .run import Result, execute, log_tail
+from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
 
 SPIT_SUFFIXES = (".spitin", ".spit", ".spitout")
+# The units of --memory, as SPIT's `resources` line takes them.
+UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 
 FILES_HELP = """\
 what to run: a .spitdag (or - for one on stdin), or what `spit dag` takes,
@@ -69,10 +72,39 @@ def _parser() -> argparse.ArgumentParser:
         if action is Action.PLAN:
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
-            command.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1,
-                                 help="maximum concurrent jobs (default: the number of CPUs)")
+            command.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1, metavar="CORES",
+                                 help="cores to use: run jobs at once while the cores\n"
+                                      "they declare fit (default: the number of CPUs)")
+            command.add_argument("--memory", type=_memory, default=_machine_memory(), metavar="SIZE",
+                                 help="memory to use, as 512M or 32G: run jobs at once while\n"
+                                      "the memory they declare fits (default: the machine's)")
+            command.add_argument("--verbose", action="store_true",
+                                 help="list every job before running, current ones too (default: counts, and the jobs that will do something)")
             command.add_argument("--logs", help="folder for job logs (default: ROOT/.spit-bash/logs)")
+            command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
+                                 help="let a job hold more memory than it declares, and run a job\n"
+                                      "declaring more than --memory alone, rather than refusing it")
+            command.add_argument("--keep-failed", action="store_true",
+                                 help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
+
+
+def _memory(text: str) -> int:
+    """A size as `--memory` takes it: a whole number, and a unit K, M, G or T, each 1024 times the one before."""
+    unit = text[-1:].upper()
+    number, scale = (text[:-1], UNITS[unit]) if unit in UNITS else (text, 1)
+    if not (number.isascii() and number.isdigit()) or int(number) < 1:
+        raise argparse.ArgumentTypeError(f"expected a size such as 512M or 32G, not {text!r}")
+    return int(number) * scale
+
+
+def _machine_memory() -> int | None:
+    """The machine's physical memory in bytes, or None where the system does not say."""
+    try:
+        memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return None
+    return memory if memory > 0 else None
 
 
 def _load(args: argparse.Namespace) -> Dag:
@@ -115,6 +147,45 @@ def _selection(args: argparse.Namespace) -> Selection:
         raise DagError(str(exc)) from exc
 
 
+# How many jobs `run` lists before it counts the rest.
+LISTED_JOBS = 20
+
+
+def _line(decision: Decision) -> str:
+    return f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}"
+
+
+def _summarize(decisions: tuple[Decision, ...]) -> None:
+    """Print the plan for `run` as counts, then a line for each job that will do something, up to a limit.
+
+    Current jobs are only counted: `plan` and `run --verbose` list them.
+    """
+    count = {status: 0 for status in Status}
+    for decision in decisions:
+        count[decision.status] += 1
+    order = (Status.RUN, Status.MAYBE, Status.CHECK, Status.BLOCKED, Status.SKIP)
+    print(", ".join(f"{count[status]} {status.value}" for status in order if count[status]) or "no jobs")
+    active = [decision for decision in decisions if decision.status is not Status.SKIP]
+    for decision in active[:LISTED_JOBS]:
+        print(_line(decision))
+    if len(active) > LISTED_JOBS:
+        print(f"... and {len(active) - LISTED_JOBS} more; `plan` or `run --verbose` lists every job")
+
+
+def _stale(everything: Dag, chosen: Dag, decisions: tuple[Decision, ...], results: tuple[Result, ...]) -> int:
+    """The jobs left out of a partial run that read an output the run rewrote."""
+    settled = {result.job.id: result.settled for result in results if result.error is None}
+    rewritten = set()
+    for decision in decisions:
+        if decision.job.id not in settled:
+            continue
+        status = settled[decision.job.id] or decision.status
+        if status is Status.RUN:
+            rewritten.update(decision.job.outputs)
+    kept = {job.id for job in chosen.jobs}
+    return sum(1 for job in everything.jobs if job.id not in kept and rewritten.intersection(job.inputs))
+
+
 def _report_failure(job: Job, error: str, log: Path | None) -> None:
     job_id = job.id
     print(f"[{job_id}] failed: {error}", file=sys.stderr)
@@ -139,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         selection = _selection(args)
         dag = _load(args)
+        everything = dag
         total = len(dag.jobs)
         selected = select(dag, selection)
         dag = selected.dag
@@ -170,9 +242,11 @@ def main(argv: list[str] | None = None) -> int:
                 ],
             }, sys.stdout, indent=2)
             print()
+        elif args.action is Action.RUN and not args.verbose:
+            _summarize(decisions)
         else:
             for decision in decisions:
-                print(f"[{decision.job.id}] {decision.status.value:7} {decision.job.operation}: {decision.reason}")
+                print(_line(decision))
         maybe = sum(decision.status is Status.MAYBE for decision in decisions)
         if maybe:
             certain = sum(decision.status is Status.RUN for decision in decisions)
@@ -180,9 +254,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.PLAN:
             return 1 if blocked else 0
 
+        if args.enforce_memory:
+            running = [d.job for d in decisions if d.status in (Status.RUN, Status.MAYBE)]
+            over = over_memory(running, args.memory)
+            if over:
+                for line in over:
+                    print(line, file=sys.stderr)
+                print("lower the job's `resources` line, give more with --memory, "
+                      "or pass --no-enforce-memory to run it alone", file=sys.stderr)
+                return 2
+
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only))
+            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only, args.memory,
+                                          args.keep_failed, args.enforce_memory))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM
@@ -210,6 +295,10 @@ def main(argv: list[str] | None = None) -> int:
         if cutoff:
             summary += f", {cutoff} of the current ones not rerun because upstream output was unchanged"
         print(summary, file=sys.stderr)
+        stale = _stale(everything, dag, decisions, results) if selection else 0
+        if stale:
+            print(f"{stale} job{'' if stale == 1 else 's'} outside the selection read outputs this run changed; "
+                  "run without the selection to bring them up to date", file=sys.stderr)
         return 1 if failed or blocked else 0
     except (DagError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

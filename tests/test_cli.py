@@ -42,6 +42,31 @@ class CliTests(unittest.TestCase):
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
         self.assertEqual(call("plan", str(self.dag))[1].count("skip"), 2)
 
+    def test_run_counts_current_jobs_and_lists_them_only_when_asked(self):
+        call("run", self.write())
+        code, out, _ = call("run", str(self.dag))
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines()[0], "2 skip")
+        self.assertNotIn("op1", out)
+        _, out, _ = call("run", str(self.dag), "--verbose")
+        self.assertIn("[1] skip    op1", out)
+        self.assertIn("[2] skip    op2", out)
+
+    def test_run_lists_the_jobs_that_will_do_something_up_to_a_limit(self):
+        code, out, _ = call("run", self.write())
+        self.assertEqual(out.splitlines()[0], "2 run")
+        self.assertIn("[1] run     op1: output missing", out)
+
+    def test_a_partial_run_says_which_jobs_it_left_out_of_date(self):
+        call("run", self.write())
+        (self.root / "source.txt").write_text("changed")
+        code, _, err = call("run", str(self.dag), "--product", "work/upper.txt")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 job outside the selection read outputs this run changed", err)
+        self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
+        code, _, err = call("run", str(self.dag))
+        self.assertNotIn("outside the selection", err)
+
     def test_reads_stdin_and_needs_root_when_dag_has_none(self):
         self.data["root"] = None
         code, _, err = call("plan", "-", stdin=json.dumps(self.data))
@@ -61,7 +86,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("2 done, 0 checked, 0 failed, 0 current, 1 blocked", err)
 
     def test_failure_prints_the_end_of_the_log(self):
-        self.data["jobs"][0]["command"][2] = ["import sys; print('something broke'); sys.exit(4)"]
+        self.data["jobs"][0]["commands"][0]["command"][2] = ["import sys; print('something broke'); sys.exit(4)"]
         code, _, err = call("run", self.write())
         self.assertEqual(code, 1)
         self.assertIn("[1] failed: command exited with status 4", err)
@@ -118,6 +143,36 @@ class CliTests(unittest.TestCase):
         self.assertIn("cannot read state", err)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             main(["run", str(self.dag), "-j", "0"])
+
+    def test_a_job_needing_more_cores_than_the_run_has_runs_alone_with_a_note(self):
+        self.data["jobs"][0]["cores"] = 4
+        code, out, err = call("run", self.write(), "-j", "2")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[1] needs 4 cores where the run has 2; it will run alone", out)
+        self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
+
+    def test_a_job_declaring_more_memory_than_the_run_has_is_refused(self):
+        self.data["jobs"][1]["memory"] = 64 * 2**20
+        code, out, err = call("run", self.write(), "--memory", "32M")
+        self.assertEqual(code, 2)
+        self.assertIn("[2] op2 needs 64M of memory where the run has 32M", err)
+        self.assertIn("pass --no-enforce-memory to run it alone", err)
+        self.assertNotIn("start", out)
+        self.assertFalse((self.root / "work/upper.txt").exists())
+        # Without enforcement it runs alone, as a job needing more cores does.
+        code, out, err = call("run", self.write(), "--memory", "32M", "--no-enforce-memory")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[2] needs 64M of memory where the run has 32M; it will run alone", out)
+        self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
+
+    def test_memory_takes_a_size_with_a_unit(self):
+        for bad in ("lots", "1.5G", "0", "-2G"):
+            with self.subTest(bad=bad), contextlib.redirect_stderr(io.StringIO()) as err, \
+                    self.assertRaises(SystemExit):
+                main(["run", self.write(), f"--memory={bad}"])
+            self.assertIn("expected a size such as 512M or 32G", err.getvalue())
+        code, _, err = call("run", self.write(), "--memory", "64m")
+        self.assertEqual(code, 0, err)
 
 
 if __name__ == "__main__":

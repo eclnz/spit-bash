@@ -1,4 +1,4 @@
-"""Where jobs come from, from DAG version 7: the pipeline's files, its calls, and each job's origin."""
+"""Where jobs come from: the pipeline's files, its calls, and each job's origin."""
 
 import json
 import tempfile
@@ -13,19 +13,15 @@ BLOB = "8f17cbea466ed03fdf66555a6d1de4d645e1d04c"
 
 
 def called(root):
-    """The sample DAG as version 7, with both jobs made by a call nested in another."""
+    """The sample DAG, with both jobs made by a call nested in another."""
     data = sample(root)
-    data["version"] = 7
     data["pipeline_files"] = [{"path": "main.spit", "blob": BLOB}, {"path": "libs/lib.spit", "blob": "0" * 40}]
     data["calls"] = [
         {"operation": "L::summarise", "instance": "m", "parent": None, "file": 1, "at": {"file": 0, "line": 8}},
         {"operation": "L::tidy", "instance": "m::cleaned", "parent": 0, "file": 1,
          "at": {"file": 1, "line": 13}},
     ]
-    for item in data["jobs"]:
-        item["checks"] = []
-        item["origin"] = None
-    data["jobs"][0]["origin"] = {"call": 1, "line": 10}
+    data["jobs"][0]["origin"] = {"call": 1, "file": 1, "line": 10}
     return data
 
 
@@ -45,9 +41,18 @@ class OriginTests(unittest.TestCase):
         ))
         self.assertEqual(dag.jobs[1].origin, ())
 
+    def test_a_step_written_in_the_pipeline_names_its_line(self):
+        data = called(self.root)
+        data["jobs"][1]["origin"] = {"call": None, "file": 0, "line": 14}
+        dag = read(data)
+        self.assertEqual(dag.jobs[1].origin, ("step at main.spit line 14",))
+        data["jobs"][1]["origin"] = {"call": None, "file": 2, "line": 14}
+        with self.assertRaisesRegex(DagError, "names a file"):
+            read(data)
+
     def test_a_failed_job_says_where_it_comes_from(self):
         data = called(self.root)
-        data["jobs"][0]["command"][2] = ["import sys; sys.exit(3)"]
+        data["jobs"][0]["commands"][0]["command"][2] = ["import sys; sys.exit(3)"]
         path = self.root / "jobs.spitdag"
         path.write_text(json.dumps(data))
         code, _, err = call("run", str(path))
@@ -60,14 +65,10 @@ class OriginTests(unittest.TestCase):
             err,
         )
 
-    def test_files_and_calls_must_match_the_version_and_each_other(self):
+    def test_files_and_calls_must_be_given_and_match_each_other(self):
         data = called(self.root)
         del data["calls"]
-        with self.assertRaisesRegex(DagError, "came with version 7"):
-            read(data)
-        data = called(self.root)
-        data["version"] = 6
-        with self.assertRaisesRegex(DagError, "came with version 7"):
+        with self.assertRaisesRegex(DagError, "calls"):
             read(data)
         data = called(self.root)
         data["calls"][0]["at"]["file"] = 2
@@ -78,7 +79,7 @@ class OriginTests(unittest.TestCase):
         with self.assertRaisesRegex(DagError, "not an earlier call"):
             read(data)
         data = called(self.root)
-        data["jobs"][1]["origin"] = {"call": 2, "line": 1}
+        data["jobs"][1]["origin"] = {"call": 2, "file": 1, "line": 1}
         with self.assertRaisesRegex(DagError, "names a call"):
             read(data)
         data = called(self.root)
