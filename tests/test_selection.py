@@ -51,6 +51,7 @@ class SelectionTests(unittest.TestCase):
         selected = select(self.dag, Selection(only=(parse_only("sub=01"),)))
         self.assertEqual([job.id for job in selected.dag.jobs], [1, 2, 4, 5])
         self.assertEqual((selected.matched, selected.needed), (3, 1))
+        self.assertEqual(selected.matched_ids, frozenset({2, 4, 5}))
         self.assertEqual(self.ids(only=(parse_only("sub=01"), parse_only("sub=02"))), [1, 2, 3, 4, 5, 6])
 
     def test_product_and_stage_combine_with_entities(self):

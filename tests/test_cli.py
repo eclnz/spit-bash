@@ -124,6 +124,51 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("expected DIMENSION=VALUE", err)
 
+    def test_force_only_reruns_the_matching_job_and_leaves_current_prerequisites_alone(self):
+        self.data["jobs"][1]["outputs"]["output"]["entities"] = {"id": "final"}
+        self.assertEqual(call("run", self.write())[0], 0)
+        upstream = self.root / "work/upper.txt"
+        upstream_stamp = upstream.stat().st_mtime_ns
+
+        code, out, err = call("run", str(self.dag), "--only", "id=final", "--force")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 run, 1 skip", out)
+        self.assertEqual(upstream.stat().st_mtime_ns, upstream_stamp)
+        self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
+
+    def test_force_selected_job_still_runs_when_a_prerequisite_is_stale(self):
+        self.data["jobs"][1]["outputs"]["output"]["entities"] = {"id": "final"}
+        self.assertEqual(call("run", self.write())[0], 0)
+        (self.root / "source.txt").write_text("goodbye")
+
+        code, out, err = call("run", str(self.dag), "--only", "id=final", "--force")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 run", out)
+        self.assertEqual((self.root / "work/upper.txt").read_text(), "GOODBYE")
+        self.assertEqual((self.root / "final.txt").read_text(), "GOODBYE!")
+
+    def test_force_without_a_selection_still_reruns_every_command_job(self):
+        self.assertEqual(call("run", self.write())[0], 0)
+
+        code, out, err = call("run", str(self.dag), "--force")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 run", out)
+
+    def test_force_with_product_or_stage_only_forces_matching_jobs(self):
+        self.data["jobs"][1]["outputs"]["output"]["product"] = "final"
+        self.data["jobs"][0]["stage"] = ["prepare"]
+        self.data["jobs"][1]["stage"] = ["finish"]
+        self.assertEqual(call("run", self.write())[0], 0)
+
+        for selection in (("--product", "final"), ("--stage", "finish")):
+            with self.subTest(selection=selection):
+                code, out, err = call("run", str(self.dag), *selection, "--force")
+                self.assertEqual(code, 0, err)
+                self.assertIn("1 run, 1 skip", out)
+
     def test_options_for_spit_need_a_recipe_or_pipeline(self):
         code, _, err = call("plan", self.write(), "--partial")
         self.assertEqual(code, 2)

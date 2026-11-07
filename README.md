@@ -53,6 +53,34 @@ Repeat an option to match any of its values, as in `--only sub=01 --only sub=02`
 
 Choosing jobs does not change how a job is planned: a chosen job is still skipped when it is current, and the state records it as any run does. Jobs outside the choice are not run, so one that reads an output a chosen job rewrote is out of date afterwards. `run` counts them in a line after its summary, as `10 jobs outside the selection read outputs this run changed; run without the selection to bring them up to date`.
 
+`--force` with a selection reruns only the jobs whose outputs matched it. Their prerequisites still run when stale and skip when current:
+
+```sh
+spit-bash run analysis.spitin --only sub=01 --force
+```
+
+Without `--only`, `--product` or `--stage`, `--force` reruns every command job. A downstream job that reads an output rewritten by a forced job is outside a partial selection, and the usual stale-job count reports it.
+
+## Scripts as inputs
+
+SPIT fingerprints command text, and the DAG lists files a job declares as inputs. To make edits to a script invalidate just the operation that reads it, declare the script as a source and pass that source to the operation:
+
+```spit
+source script : Script .py
+source lines : Lines .txt
+
+default path: out/{@product}
+path script: scripts/transform.py
+path lines: input.txt
+
+operation transform(script: Script, lines: Lines) -> Lines .txt
+command transform: python3 {script} {lines} > {@output}
+
+result = transform(script, lines)
+```
+
+With `scripts/transform.py` and `input.txt` under the dataset root, run the pipeline with `spit-bash run analysis.spit --root DATASET`. The compiler puts `scripts/transform.py` in the job's input list. When it changes, that operation reruns; a command argument that is not declared as an input is not inferred as one.
+
 ## Planning and running
 
 SPIT writes the absolute dataset `root` into a DAG when it knows it. If `root` is `null`, pass `--root /path/to/dataset`. Relative paths in artifacts and commands are interpreted from this root.
@@ -186,7 +214,7 @@ Ctrl-C (SIGINT) or SIGTERM, as a cluster scheduler sends at a time limit, stops 
 
 ## Existing paths and reruns
 
-The runner records successful jobs in `ROOT/.spit-bash/state.jsonl`, keyed by their output paths relative to the root, so a dataset keeps its state when it moves. A job runs if an output is missing, its SPIT fingerprint changed, an input or output file changed, or a producer will run. It skips only when its recorded fingerprint still matches and its files are as recorded: the same size and modification time, or, where those differ, the same content. A `touch`, a `git checkout` or a copy that leaves the bytes alone does not rerun a job. `--force` reruns all jobs that have commands.
+The runner records successful jobs in `ROOT/.spit-bash/state.jsonl`, keyed by their output paths relative to the root, so a dataset keeps its state when it moves. A job runs if an output is missing, its SPIT fingerprint changed, an input or output file changed, or a producer will run. It skips only when its recorded fingerprint still matches and its files are as recorded: the same size and modification time, or, where those differ, the same content. A `touch`, a `git checkout` or a copy that leaves the bytes alone does not rerun a job. `--force` reruns every command job, or only the jobs matched by `--only`, `--product` or `--stage` when a selection is given; see [Choosing jobs](#choosing-jobs).
 
 Existing outputs with no successful record are run again; use `plan` to inspect this before `run`. For a dataset whose outputs were made before spit-bash was used, `spit-bash adopt` records every job whose inputs and outputs all exist as current, without running it. It trusts the files as they are, so adopt only outputs you know were made by the commands in the DAG.
 

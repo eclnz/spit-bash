@@ -78,6 +78,47 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("`spit dag` exited with status 1", result.stderr)
 
+    def test_a_declared_script_source_invalidates_its_operation(self):
+        folder = self.examples / "declared-script"
+        folder.mkdir()
+        (folder / "scripts").mkdir()
+        (folder / "scripts/transform.py").write_text(
+            "import sys\nfrom pathlib import Path\n"
+            "print(Path(sys.argv[1]).read_text().upper(), end='')\n"
+        )
+        (folder / "input.txt").write_text("Hello\n")
+        pipeline = folder / "analysis.spit"
+        pipeline.write_text(
+            "source script : Script .py\n"
+            "source lines : Lines .txt\n\n"
+            "default path: out/{@product}\n"
+            "path script: scripts/transform.py\n"
+            "path lines: input.txt\n\n"
+            "operation prepare(lines: Lines) -> Lines .txt\n"
+            "command prepare: cp {lines} {@output}\n\n"
+            "operation process(script: Script, lines: Lines) -> Lines .txt\n"
+            "command process: python3 {script} {lines} > {@output}\n\n"
+            "prepared = prepare(lines)\n"
+            "result = process(script, prepared)\n"
+        )
+
+        result = spit_bash("run", str(pipeline), "--root", str(folder))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((folder / "out/result.txt").read_text(), "HELLO\n")
+        result = spit_bash("plan", str(pipeline), "--root", str(folder))
+        self.assertIn("[1] skip    prepare: current", result.stdout)
+        self.assertIn("[2] skip    process: current", result.stdout)
+
+        script = folder / "scripts/transform.py"
+        script.write_text(script.read_text().replace(".upper()", ".lower()"))
+        result = spit_bash("plan", str(pipeline), "--root", str(folder))
+        self.assertIn("[1] skip    prepare: current", result.stdout)
+        self.assertIn("[2] run     process: input changed", result.stdout)
+        result = spit_bash("run", str(pipeline), "--root", str(folder))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((folder / "out/result.txt").read_text(), "hello\n")
+
     def test_verify(self):
         dag = self.examples / "verify/checked_copy.spitdag"
         subprocess.run([SPIT, "dag", str(self.examples / "verify/checked_copy.spitin"), "-o", str(dag)],
