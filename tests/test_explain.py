@@ -63,7 +63,7 @@ class ExplainTests(unittest.TestCase):
 
     def test_a_changed_fingerprint_and_changed_checks_are_shown(self):
         data = copy.deepcopy(self.data)
-        data["jobs"][0]["operation"] = "renamed"
+        data["jobs"][0]["commands"][0]["command"].append(["extra"])
         self.assertIn("fingerprint: changed", self.explain(1, data)[1])
         data = checked(self.root, [check("before", "input", "source.txt", "hello")])
         self.assertIn("checks: differ (recorded none", self.explain(1, data)[1])

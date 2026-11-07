@@ -117,8 +117,10 @@ class Job:
         """What a successful run records of the checks it passed; None without checks."""
         if not self.checks:
             return None
-        text = json.dumps([[c.when, c.name, c.port, c.path, list(c.command)] for c in self.checks],
-                          separators=(",", ":"))
+        # The tested artifact stands as its identity and its path in the command as a
+        # placeholder, so moving the file does not change what was checked.
+        text = json.dumps([[c.when, c.name, self.identities[c.path], [a.replace(c.path, "{@path}") for a in c.command]]
+                           for c in self.checks], separators=(",", ":"))
         return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
@@ -183,8 +185,8 @@ def _identity(artifact: Artifact) -> list:
 
 
 def _fingerprint(item: SpitJob) -> str:
-    """The job's work as the runner identifies it: its operation, the artifacts it
-    reads and writes, and its commands, with every path replaced by the identity of
+    """The job's work as the runner identifies it: the artifacts it reads and
+    writes, and its commands, with every path replaced by the identity of
     the artifact it names. Storage paths, checks, scheduling and where the job came
     from are left out, so moving the outputs changes nothing here."""
     named = {artifact.path: artifact for port in item.inputs.values() for artifact in port}
@@ -209,10 +211,10 @@ def _fingerprint(item: SpitJob) -> str:
     def command(arguments: Command) -> list:
         return [[part(value) for value in argument] for argument in arguments]
 
+    # Ports are listed in order, without their names: a renamed operation or port is the same work.
     work = {
-        "operation": item.operation,
-        "inputs": {port: [_identity(a) for a in artifacts] for port, artifacts in item.inputs.items()},
-        "outputs": {port: _identity(a) for port, a in item.outputs.items()},
+        "inputs": [[_identity(a) for a in artifacts] for artifacts in item.inputs.values()],
+        "outputs": [_identity(a) for a in item.outputs.values()],
         "commands": [
             [command(c.command), None if c.stdin is None else of(c.stdin), None if c.stdout is None else of(c.stdout)]
             for c in item.commands
