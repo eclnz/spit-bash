@@ -1,12 +1,13 @@
 """A job's fingerprint and state key follow what it makes and runs, not where its files are."""
 
 import copy
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.plan import job_key
-from support import read, sample
+from spit_bash.plan import Status, job_key, plan
+from support import read, run, sample, state_at
 
 
 def moved(node, rename):
@@ -45,6 +46,41 @@ class IdentityTests(unittest.TestCase):
         other = copy.deepcopy(self.data)
         other["jobs"][0].update(cores=4, memory=1024, id=1, stage=["s"])
         self.assertEqual(base, read(other).jobs[0].fingerprint)
+
+
+class ReuseAfterPathChangeTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / "source.txt").write_text("hello")
+        self.data = sample(self.root)
+        run(read(self.data), state_at(self.root))
+        self.relocated = moved(copy.deepcopy(self.data), lambda p: p if p == "source.txt" else "derivatives/" + p)
+
+    def copy_outputs(self):
+        for name in ("work/upper.txt", "final.txt"):
+            target = self.root / "derivatives" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(self.root / name, target)
+
+    def statuses(self):
+        return [d.status for d in plan(read(self.relocated), state_at(self.root))]
+
+    def test_identical_files_at_the_new_paths_are_reused(self):
+        self.copy_outputs()
+        self.assertEqual(self.statuses(), [Status.SKIP, Status.SKIP])
+
+    def test_missing_files_at_the_new_paths_still_run(self):
+        self.assertEqual(self.statuses()[0], Status.RUN)
+
+    def test_files_that_differ_at_the_new_paths_run(self):
+        self.copy_outputs()
+        (self.root / "derivatives" / "final.txt").write_text("different")
+        self.assertEqual(self.statuses(), [Status.SKIP, Status.RUN])
+
+    def test_a_changed_input_still_runs_after_a_path_change(self):
+        self.copy_outputs()
+        (self.root / "source.txt").write_text("changed")
+        self.assertEqual(self.statuses()[0], Status.RUN)
 
 
 if __name__ == "__main__":

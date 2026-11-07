@@ -6,11 +6,14 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Iterator, TextIO
+from typing import Iterator, TextIO, TypeVar
 
 from pydantic import ValidationError
 
 from .schema import Artifact, Command, CommandPart, DirPart, HerePart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
+
+
+T = TypeVar("T")
 
 
 class DagError(ValueError):
@@ -78,6 +81,13 @@ class Job:
     # None when it claims none.
     cores: int = 1
     memory: int | None = None
+    # Each input and output path's artifact identity, which a state record keys
+    # its stamps and hashes by, so a record survives a change of path.
+    identities: dict[str, str] = field(default_factory=dict, compare=False)
+
+    def keyed(self, by_path: dict[str, T]) -> dict[str, T]:
+        """Values read by path, re-keyed by artifact identity."""
+        return {self.identities[path]: value for path, value in by_path.items()}
 
     @property
     def outputs(self) -> tuple[str, ...]:
@@ -334,6 +344,8 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
                 for check in item.checks
             ),
             origin=_origin(document, item),
+            identities={artifact.path: json.dumps(_identity(artifact)[:2], separators=(",", ":"), sort_keys=True)
+                        for artifact in (*(a for port in item.inputs.values() for a in port), *item.outputs.values())},
             cores=item.cores,
             memory=item.memory,
         ))

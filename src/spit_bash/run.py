@@ -350,7 +350,7 @@ async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO
 
 
 def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
-    return hashes(dag, job.inputs), hashes(dag, job.outputs)
+    return job.keyed(hashes(dag, job.inputs)), job.keyed(hashes(dag, job.outputs))
 
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores: int, logs: Path,
@@ -419,7 +419,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             input_hashes, output_hashes = _hash_both(dag, job)
         else:
             input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
-        record = RunRecord(fingerprint=job.fingerprint, inputs=ran.after, outputs=ran.outputs, checks=job.checks_key,
+        record = RunRecord(fingerprint=job.fingerprint, inputs=job.keyed(ran.after), outputs=job.keyed(ran.outputs), checks=job.checks_key,
                            input_hashes=input_hashes, output_hashes=output_hashes, seconds=round(ran.seconds, 3))
         state.record(job_key(job), record)
         progress.finished(job, ran.seconds)
@@ -488,7 +488,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             return Result(job, error, path)
         if record is not None:
             # A command could change a file under a check; record the stamps it passed on.
-            outputs, inputs = stamps(dag, job.outputs), stamps(dag, job.inputs)
+            outputs, inputs = job.keyed(stamps(dag, job.outputs)), job.keyed(stamps(dag, job.inputs))
             if outputs == record.outputs and inputs == record.inputs:
                 state.record(key, record.model_copy(update={"checks": job.checks_key}))
         print(f"[{job.id}] checked", flush=True)
