@@ -6,7 +6,8 @@ from pathlib import Path
 
 from spit_bash import files
 from spit_bash.model import DagError
-from spit_bash.plan import Status, apply_refreshes, plan
+from spit_bash.plan import Status, plan, writes
+from spit_bash.reuse.evidence import Compare
 from spit_bash.state.store import Store
 from spit_bash.run import execute
 from support import artifact, command, read, run, sample, state_at
@@ -36,10 +37,10 @@ class ContentTests(unittest.TestCase):
             self.assertEqual(self.statuses(dag, root), [Status.SKIP, Status.SKIP])
             state = state_at(root)
             state.lock()
-            apply_refreshes(plan(dag, state), state)
+            state.apply(writes(plan(dag, state)))
             state.close()
             # The stored stamp now matches, so it holds even without hashing.
-            self.assertEqual(self.statuses(dag, root, hashing=False), [Status.SKIP, Status.SKIP])
+            self.assertEqual(self.statuses(dag, root, compare=Compare.STAT), [Status.SKIP, Status.SKIP])
 
     def test_changed_input_runs_its_job_and_may_run_the_one_after_it(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -62,7 +63,7 @@ class ContentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, dag = self.ran(directory)
             touch(root / "source.txt")
-            self.assertEqual(self.statuses(dag, root, hashing=False), [Status.RUN, Status.RUN])
+            self.assertEqual(self.statuses(dag, root, compare=Compare.STAT), [Status.RUN, Status.RUN])
 
     def test_comparing_in_full_catches_a_change_that_kept_the_stamp(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -73,7 +74,7 @@ class ContentTests(unittest.TestCase):
             os.utime(source, ns=(before, before))
             # Same size and time: only reading the bytes tells.
             self.assertEqual(self.statuses(dag, root), [Status.SKIP, Status.SKIP])
-            self.assertEqual(self.statuses(dag, root, verify=True), [Status.RUN, Status.MAYBE])
+            self.assertEqual(self.statuses(dag, root, compare=Compare.FULL), [Status.RUN, Status.MAYBE])
 
     def test_comparing_in_full_reruns_a_job_whose_record_holds_no_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -81,10 +82,10 @@ class ContentTests(unittest.TestCase):
             (root / "source.txt").write_text("hello")
             dag = read(sample(root))
             state = state_at(root)
-            asyncio.run(execute(dag, plan(dag, state), state, 2, root / ".spit-bash/logs", hashing=False))
+            asyncio.run(execute(dag, plan(dag, state), state, 2, root / ".spit-bash/logs", compare=Compare.STAT))
             state.close()
             self.assertEqual(self.statuses(dag, root), [Status.SKIP, Status.SKIP])
-            self.assertEqual(self.statuses(dag, root, verify=True), [Status.RUN, Status.RUN])
+            self.assertEqual(self.statuses(dag, root, compare=Compare.FULL), [Status.RUN, Status.RUN])
 
     def test_a_run_without_hashing_records_none_and_a_touch_then_runs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -92,7 +93,7 @@ class ContentTests(unittest.TestCase):
             (root / "source.txt").write_text("hello")
             dag = read(sample(root))
             state = state_at(root)
-            asyncio.run(execute(dag, plan(dag, state), state, 2, root / ".spit-bash/logs", hashing=False))
+            asyncio.run(execute(dag, plan(dag, state), state, 2, root / ".spit-bash/logs", compare=Compare.STAT))
             state.close()
             self.assertTrue(all(r.input_hashes is None for r in state_at(root).jobs.values()))
             touch(root / "source.txt")

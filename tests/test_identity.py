@@ -12,9 +12,10 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from spit_bash import cli, migrate
-from spit_bash.migrate import Migration
-from spit_bash.plan import Status, job_key, plan
+from spit_bash import cli
+from spit_bash.plan import Status, plan
+from spit_bash.reuse import relocate
+from spit_bash.reuse.relocate import Migration
 from support import command, job_entry, document, read, run, sample, state_at
 
 
@@ -40,27 +41,27 @@ class IdentityTests(unittest.TestCase):
     def test_changing_only_storage_paths_keeps_fingerprints_and_keys(self):
         before = read(self.data).jobs
         after = read(moved(copy.deepcopy(self.data), lambda path: "derivatives/" + path)).jobs
-        self.assertEqual([j.fingerprint for j in before], [j.fingerprint for j in after])
-        self.assertEqual([job_key(j) for j in before], [job_key(j) for j in after])
+        self.assertEqual([j.work.fingerprint for j in before], [j.work.fingerprint for j in after])
+        self.assertEqual([j.work.key for j in before], [j.work.key for j in after])
         self.assertNotEqual(before[0].output_paths, after[0].output_paths)
 
     def test_a_changed_command_changes_the_fingerprint_but_a_renamed_artifact_does_not(self):
-        base = read(self.data).jobs[0].fingerprint
+        base = read(self.data).jobs[0].work.fingerprint
         changed = copy.deepcopy(self.data)
         changed["jobs"][0]["commands"][0]["command"][2] = ["print('other')"]
-        self.assertNotEqual(base, read(changed).jobs[0].fingerprint)
+        self.assertNotEqual(base, read(changed).jobs[0].work.fingerprint)
         renamed = copy.deepcopy(self.data)
         renamed["jobs"][0]["inputs"]["input"][0].update(product="other", entities={"sub": "01"})
-        self.assertEqual(base, read(renamed).jobs[0].fingerprint)
+        self.assertEqual(base, read(renamed).jobs[0].work.fingerprint)
 
     def test_renaming_an_operation_or_a_port_keeps_the_fingerprint(self):
-        base = read(self.data).jobs[0].fingerprint
+        base = read(self.data).jobs[0].work.fingerprint
         other = copy.deepcopy(self.data)
         job_data = other["jobs"][0]
         job_data["operation"] = "renamed"
         job_data["inputs"] = {"renamed_port": v for v in job_data["inputs"].values()}
         job_data["outputs"] = {"renamed_out": v for v in job_data["outputs"].values()}
-        self.assertEqual(base, read(other).jobs[0].fingerprint)
+        self.assertEqual(base, read(other).jobs[0].work.fingerprint)
 
     def test_moving_a_checked_file_keeps_the_checks_key(self):
         data = copy.deepcopy(self.data)
@@ -68,8 +69,8 @@ class IdentityTests(unittest.TestCase):
         target = next(iter(item["outputs"].values()))["path"]
         item["checks"] = [{"when": "after", "check": "nonempty", "port": next(iter(item["outputs"])), "path": target,
                            "command": [["test", "-s", {"path": target}]]}]
-        before = read(data).jobs[0].checks_key
-        after = read(moved(copy.deepcopy(data), lambda path: "derivatives/" + path)).jobs[0].checks_key
+        before = read(data).jobs[0].work.checks_key
+        after = read(moved(copy.deepcopy(data), lambda path: "derivatives/" + path)).jobs[0].work.checks_key
         self.assertIsNotNone(before)
         self.assertEqual(before, after)
 
@@ -103,10 +104,10 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(reason, "output missing; an earlier run left it at work/upper.txt")
 
     def test_scheduling_checks_and_origin_do_not_change_the_fingerprint(self):
-        base = read(self.data).jobs[0].fingerprint
+        base = read(self.data).jobs[0].work.fingerprint
         other = copy.deepcopy(self.data)
         other["jobs"][0].update(cores=4, memory=1024, id=1, stage=["s"])
-        self.assertEqual(base, read(other).jobs[0].fingerprint)
+        self.assertEqual(base, read(other).jobs[0].work.fingerprint)
 
 
 class ReuseAfterPathChangeTests(unittest.TestCase):
@@ -155,13 +156,13 @@ class MigrateTests(unittest.TestCase):
         self.state = state_at(self.root)
 
     def find(self):
-        return {m.job.id: m for m in migrate.find(self.dag, self.state)}
+        return {m.job.id: m for m in relocate.find(self.dag, self.state.jobs)}
 
     def test_moves_a_chain_in_one_pass_and_the_jobs_are_then_current(self):
         found = self.find()
         self.assertEqual({i: m.reason for i, m in found.items()}, {1: "outputs recorded at other paths"} | {
             2: "outputs recorded at other paths"})
-        done = migrate.apply(self.dag, self.state, tuple(found.values()))
+        done = relocate.apply(self.dag, tuple(found.values()), self.state.apply)
         self.assertTrue(all(m.moves for m in done))
         self.assertEqual((self.root / "derivatives/final.txt").read_text(), "HELLO!")
         self.assertFalse((self.root / "final.txt").exists())
@@ -169,12 +170,12 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual([d.status for d in plan(self.dag, state_at(self.root))], [Status.SKIP, Status.SKIP])
 
     def test_reverting_the_path_rule_moves_the_files_back(self):
-        migrate.apply(self.dag, self.state, tuple(self.find().values()))
+        relocate.apply(self.dag, tuple(self.find().values()), self.state.apply)
         self.state.close()
         original = read(self.data)
-        back = migrate.find(original, state_at(self.root), {1, 2})
+        back = relocate.find(original, state_at(self.root).jobs, {1, 2})
         self.assertEqual([bool(m.moves) for m in back], [True, True])
-        migrate.apply(original, state_at(self.root), back)
+        relocate.apply(original, back, state_at(self.root).apply)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
         self.assertEqual([d.status for d in plan(original, state_at(self.root))], [Status.SKIP, Status.SKIP])
 
@@ -185,7 +186,7 @@ class MigrateTests(unittest.TestCase):
         found = self.find()
         self.assertEqual(found[1].moves, ())
         self.assertIn("already exists", found[1].reason)
-        migrate.apply(self.dag, self.state, tuple(found.values()))
+        relocate.apply(self.dag, tuple(found.values()), self.state.apply)
         self.assertEqual(target.read_text(), "someone else's")
         self.assertTrue((self.root / "work/upper.txt").exists())
 
@@ -221,10 +222,10 @@ class MigrateTests(unittest.TestCase):
                 raise OSError("disk says no")
             real(source, target)
 
-        found = {m.job.id: m for m in migrate.find(self.dag, self.state)}
-        two = Migration(found[1].job, found[1].moves + found[2].moves, found[1].reason)
+        found = {m.job.id: m for m in relocate.find(self.dag, self.state.jobs)}
+        two = Migration(found[1].job, found[1].moves + found[2].moves, found[1].reason, found[1].record)
         with unittest.mock.patch("os.rename", flaky):
-            done = migrate.apply(self.dag, self.state, (two,))
+            done = relocate.apply(self.dag, (two,), self.state.apply)
         self.assertEqual(done[0].moves, ())
         self.assertIn("disk says no", done[0].reason)
         self.assertTrue((self.root / "work/upper.txt").exists())
@@ -236,12 +237,12 @@ class MigrateTests(unittest.TestCase):
             raise OSError(errno.EXDEV, "Invalid cross-device link")
 
         with unittest.mock.patch("os.rename", cross):
-            done = migrate.apply(self.dag, self.state, tuple(self.find().values()))
+            done = relocate.apply(self.dag, tuple(self.find().values()), self.state.apply)
         self.assertTrue(all(m.moves == () and "not moved" in m.reason for m in done))
         self.assertTrue((self.root / "final.txt").exists() and (self.root / "work/upper.txt").exists())
 
     def test_nothing_to_move_when_paths_are_unchanged(self):
-        self.assertEqual(migrate.find(read(self.data), self.state), ())
+        self.assertEqual(relocate.find(read(self.data), self.state.jobs), ())
 
 
 class OutputShapeTests(unittest.TestCase):
@@ -267,9 +268,9 @@ class OutputShapeTests(unittest.TestCase):
 
     def test_every_output_of_a_job_moves_together(self):
         self.build(self.TWO, ["out/a.txt", "out/b.txt"], "file")
-        found = migrate.find(self.dag, self.state)
+        found = relocate.find(self.dag, self.state.jobs)
         self.assertEqual(len(found[0].moves), 2)
-        migrate.apply(self.dag, self.state, found)
+        relocate.apply(self.dag, found, self.state.apply)
         self.assertEqual((self.root / "new/out/a.txt").read_text(), "helloa")
         self.assertEqual((self.root / "new/out/b.txt").read_text(), "hellob")
         self.assertFalse((self.root / "out/a.txt").exists() or (self.root / "out/b.txt").exists())
@@ -279,17 +280,17 @@ class OutputShapeTests(unittest.TestCase):
         self.build(self.TWO, ["out/a.txt", "out/b.txt"], "file")
         (self.root / "new/out").mkdir(parents=True)
         (self.root / "new/out/b.txt").write_text("not ours")
-        found = migrate.find(self.dag, self.state)
+        found = relocate.find(self.dag, self.state.jobs)
         self.assertEqual(found[0].moves, ())
-        migrate.apply(self.dag, self.state, found)
+        relocate.apply(self.dag, found, self.state.apply)
         self.assertTrue((self.root / "out/a.txt").exists() and (self.root / "out/b.txt").exists())
         self.assertFalse((self.root / "new/out/a.txt").exists())
 
     def test_a_folder_output_moves_whole(self):
         self.build(self.FOLDER, ["out/dir"], "folder")
-        found = migrate.find(self.dag, self.state)
+        found = relocate.find(self.dag, self.state.jobs)
         self.assertEqual(found[0].moves, (("out/dir", "new/out/dir"),))
-        migrate.apply(self.dag, self.state, found)
+        relocate.apply(self.dag, found, self.state.apply)
         self.assertEqual((self.root / "new/out/dir/one.txt").read_text(), "hello")
         self.assertFalse((self.root / "out/dir").exists())
         self.assertEqual([d.status for d in plan(self.dag, state_at(self.root))], [Status.SKIP])
@@ -297,7 +298,7 @@ class OutputShapeTests(unittest.TestCase):
     def test_a_folder_changed_since_the_run_is_not_moved(self):
         self.build(self.FOLDER, ["out/dir"], "folder")
         (self.root / "out/dir/extra.txt").write_text("added later")
-        found = migrate.find(self.dag, self.state)
+        found = relocate.find(self.dag, self.state.jobs)
         self.assertEqual(found[0].moves, ())
         self.assertIn("missing or changed", found[0].reason)
 

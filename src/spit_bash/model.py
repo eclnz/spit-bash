@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import cached_property
@@ -88,11 +86,26 @@ class Run:
 
 
 @dataclass(frozen=True)
+class Work:
+    """What a job's state record is matched against, as `reuse.identity` computes it at load."""
+
+    # The work itself: the shape of what the job reads and writes, and its
+    # commands, with paths as slots.
+    fingerprint: str
+    # `fingerprint`'s parts, each hashed on its own, by name, so a record can say which changed.
+    parts: dict[str, str] = field(compare=False)
+    # What a successful run records of the checks it passed; None without checks.
+    checks_key: str | None
+    # The state file's key for the job's record: what it makes, by product and entities.
+    key: str
+
+
+@dataclass(frozen=True)
 class Job:
     id: int
     operation: str
     stage: tuple[str, ...]
-    fingerprint: str
+    work: Work
     inputs: tuple[Port, ...]
     outputs: tuple[Port, ...]
     depends_on: tuple[int, ...]
@@ -108,8 +121,6 @@ class Job:
     # None when it claims none.
     cores: int = 1
     memory: int | None = None
-    # `fingerprint`'s parts, each hashed on its own, by name.
-    parts: dict[str, str] = field(default_factory=dict, compare=False)
 
     @cached_property
     def input_artifacts(self) -> tuple[Artifact, ...]:
@@ -160,17 +171,6 @@ class Job:
     @property
     def after(self) -> tuple[Check, ...]:
         return tuple(check for check in self.checks if check.side is Side.AFTER)
-
-    @property
-    def checks_key(self) -> str | None:
-        """What a successful run records of the checks it passed; None without checks."""
-        if not self.checks:
-            return None
-        # The tested artifact stands as its slot and its path in the command as a
-        # placeholder, so moving the file does not change what was checked.
-        text = json.dumps([[c.side.value, c.name, self.identities[c.path], [a.replace(c.path, "{@path}") for a in c.command]]
-                           for c in self.checks], separators=(",", ":"))
-        return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 @dataclass(frozen=True)

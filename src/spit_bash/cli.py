@@ -19,8 +19,10 @@ from .model import Dag, DagError, Job
 from .display import id_width, labels
 from .explain import explain
 from .files import stamp
-from .migrate import apply, find
-from .plan import Status, adopt, apply_refreshes, plan, reconcile
+from .plan import Decision, Status, adopt, plan, writes
+from .reuse.evidence import Compare
+from .reuse.relabel import relabel
+from .reuse.relocate import apply, find
 from .state.store import Store
 from .report import blocked_lines, counts, failure_groups, ids, job_line, jobs
 from .run import Result, execute, log_tail
@@ -78,7 +80,7 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--force", action="store_true",
                                  help="rerun selected command jobs even if current")
         if action is not Action.ADOPT:
-            command.add_argument("--compare", choices=("stat", "content", "full"), default="content",
+            command.add_argument("--compare", choices=[compare.value for compare in Compare], default="content",
                                  help="how a file counts as unchanged since its record: stat, by size and modification\n"
                                       "time alone, with no stop at an unchanged output and no reuse after a rename;\n"
                                       "content, by size and time, then by content where those differ (default);\n"
@@ -248,22 +250,27 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         forced = selected.matched_ids if args.force else False
-        hashing, verify = args.compare != "stat", args.compare == "full"
-        if hashing:
-            reconcile(dag, state, everything, args.action is Action.RUN)
-        decisions = plan(dag, state, forced, hashing, verify=verify)
+        compare = Compare(args.compare)
+        if compare is not Compare.STAT:
+            handed = relabel(dag, state.jobs, everything)
+            # A plan sees the records handed over, but only a run stores them.
+            if args.action is Action.RUN:
+                state.apply(handed)
+            else:
+                state.assume(handed)
+        decisions = plan(dag, state, forced, compare)
         if args.move_files and not args.force:
             # A job that is current as it stands has nothing to move; `find` leaves out one whose
             # inputs changed, which a moved output would not save from running.
-            migrations = find(dag, state, {d.job.id for d in decisions if d.status in (Status.RUN, Status.MAYBE)})
+            migrations = find(dag, state.jobs, {d.job.id for d in decisions if d.status in (Status.RUN, Status.MAYBE)})
             if args.action is Action.RUN:
-                migrations = apply(dag, state, migrations)
+                migrations = apply(dag, migrations, state.apply)
             else:
                 # Judge the jobs as if the files were already where the pipeline wants them.
                 pending = {new: stamp(dag.checked(old), new in dag.folders)
                            for m in migrations for old, new in m.moves}
                 if pending:
-                    decisions = plan(dag, state, forced, hashing, pending, verify)
+                    decisions = plan(dag, state, forced, compare, pending)
             for migration in migrations:
                 for old, new in migration.moves:
                     print(f"[{migration.job.id}] {'moved' if args.action is Action.RUN else 'would move'} {old} -> {new}")
@@ -275,13 +282,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.action is Action.RUN and any(m.moves for m in migrations):
                 print("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
                       "into its output is not rerun", file=sys.stderr)
-                decisions = plan(dag, state, forced, hashing, verify=verify)
+                decisions = plan(dag, state, forced, compare)
         if args.action is Action.RUN:
-            apply_refreshes(decisions, state)
+            state.apply(writes(decisions))
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
         work, width = labels(dag.jobs), id_width(dag.jobs)
         if args.action is Action.PLAN and args.job is not None:
-            print("\n".join(explain(dag, state, decisions, args.job, hashing)))
+            print("\n".join(explain(dag, state, decisions, args.job, compare)))
             return 1 if any(d.job.id == args.job and d.status is Status.BLOCKED for d in decisions) else 0
         if args.action is Action.PLAN and args.json:
             held = Counter(d.caused_by for d in decisions if d.caused_by is not None)
@@ -321,8 +328,8 @@ def main(argv: list[str] | None = None) -> int:
 
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.layout.logs
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.cores, logs, hashing, args.memory,
-                                          args.keep_failed, args.enforce_memory, args.timestamp_logs, verify))
+            results = asyncio.run(execute(dag, decisions, state, args.cores, logs, compare, args.memory,
+                                          args.keep_failed, args.enforce_memory, args.timestamp_logs))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM

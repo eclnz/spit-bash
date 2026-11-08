@@ -7,8 +7,9 @@ import sys
 from pathlib import Path
 
 from spit_bash.load import load_dag
-from spit_bash.model import Artifact, Job, Kind, Port, Run
+from spit_bash.model import Artifact, Job, Kind, Port, Run, Work
 from spit_bash.plan import plan
+from spit_bash.reuse import identity
 from spit_bash.state.store import Store
 from spit_bash.run import execute
 
@@ -38,7 +39,7 @@ def job_entry(id, inputs, output, script, depends_on=(), dependents=()):
 def job(id, depends_on=(), cores=1, memory=None, operation=None, product="p"):
     """A `Job` that reads nothing and runs `true` to make `{id}.txt`, for tests that need no DAG."""
     made = Artifact("out0", f"{id}.txt", Kind.FILE, product, ())
-    return Job(id=id, operation=operation or f"op{id}", stage=(), fingerprint="0" * 16, inputs=(),
+    return Job(id=id, operation=operation or f"op{id}", stage=(), work=Work("0" * 16, {}, None, identity.key((made,))), inputs=(),
                outputs=(Port("output", (made,)),), depends_on=tuple(depends_on), commands=(Run(("true",)),),
                verify=(), cores=cores, memory=memory)
 

@@ -19,8 +19,9 @@ from .display import id_width, labels, name
 from .files import FolderEntries, Stamps, folder_entries, folder_inputs, hashes, stamps, stored, stored_each
 from .logs import StampedLog, drain, open_log, pump
 from .memory import group_memory
-from .plan import Decision, Status, job_key, judge
-from .state.record import Record
+from .plan import Decision, Status, judge
+from .reuse import records
+from .reuse.evidence import Compare
 from .state.store import Store
 from .progress import Progress, about, duration
 from .schedule import ReadyQueue, ranks, size, too_big
@@ -341,9 +342,9 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
 
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores: int, logs: Path,
-                  hashing: bool = True, memory: int | None = None,
+                  compare: Compare = Compare.CONTENT, memory: int | None = None,
                   keep_failed: bool = False, enforce_memory: bool = True,
-                  timestamp_logs: bool = False, verify: bool = False) -> tuple[Result, ...]:
+                  timestamp_logs: bool = False) -> tuple[Result, ...]:
     """Run every job planned to run, within `cores` and `memory` bytes; stop them all if the process gets SIGTERM.
 
     `memory` None sets no limit on memory. A job that declares memory has each
@@ -351,7 +352,8 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
     `enforce_memory` is off. A job that fails once its first command has started
     loses its outputs, unless `keep_failed` keeps them for debugging. With
     `timestamp_logs`, each line of a job's log starts with the time it was received.
-    `hashing` and `verify` are as for `plan.plan`, for the jobs planned `maybe`.
+    `compare` is as for `plan.plan`, for the jobs planned `maybe`, and under
+    `Compare.STAT` a run records no hashes.
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
@@ -382,14 +384,13 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
     async def settle(job: Job) -> Result:
         """Judge a job planned `maybe` again, now that its upstream jobs have finished."""
         # Off the event loop: it may hash files the upstream jobs rewrote.
-        settled = await asyncio.to_thread(judge, dag, job, state, False, hashing, None, verify)
+        settled = await asyncio.to_thread(judge, dag, job, state, False, compare, None)
         if settled.status is not Status.RUN:
             progress.dropped(job)
         if settled.status is Status.BLOCKED:
             return Result(job, settled.reason)
         if settled.status is Status.SKIP:
-            if settled.refresh is not None:
-                state.record(job_key(job), settled.refresh)
+            state.apply(settled.writes)
             say(job, "skip", ": upstream output unchanged")
             return Result(job, None, None, Status.SKIP)
         result = await perform(settled)
@@ -408,16 +409,14 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
         # With the job's cores and memory freed. Big files are hashed off the event loop, so they
         # hold up neither another job's start nor the loop; small ones where they are,
         # since a thread hop costs more than hashing a small file.
-        if not hashing:
+        if compare is Compare.STAT:
             input_hashes = output_hashes = None
         elif sum(value.size for value in (*ran.after.values(), *ran.outputs.values())) < INLINE_HASH_BYTES:
             input_hashes, output_hashes = _hash_both(dag, job)
         else:
             input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
-        record = Record(fingerprint=job.fingerprint, parts=job.parts, inputs=stored_each(job.keyed(ran.after)), outputs=stored_each(job.keyed(ran.outputs)), checks=job.checks_key,
-                        input_hashes=input_hashes, output_hashes=output_hashes, seconds=round(ran.seconds, 3),
-                        output_paths=job.output_paths_by_slot)
-        state.record(job_key(job), record)
+        state.record(job.work.key, records.after_run(job, ran.after, ran.outputs, input_hashes, output_hashes,
+                                                     ran.seconds))
         progress.finished(job, ran.seconds)
         say(job, "done", f" in {duration(ran.seconds)}; {progress.report()}")
         return Result(job, None, ran.log)
@@ -433,7 +432,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
         path = log_path(logs, job)
         say(job, "start")
         started = time.monotonic()
-        state.forget(job_key(job))
+        state.forget(job.work.key)
         limit = job.memory if enforce_memory else None
         with open_log(path, timestamp_logs) as log:
             error = await _checks(dag, job.before, log)
@@ -474,7 +473,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
         """Run a current job's checks alone, on the files it already has."""
         path = log_path(logs, job)
         say(job, "check")
-        key = job_key(job)
+        key = job.work.key
         record = state.jobs.get(key)
         with open_log(path, timestamp_logs) as log:
             error = await _checks(dag, job.checks, log)
@@ -486,7 +485,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
             # A command could change a file under a check; record the stamps it passed on.
             outputs, inputs = stored_each(job.keyed(stamps(dag, job.output_paths))), stored_each(job.keyed(stamps(dag, job.input_paths)))
             if outputs == record.outputs and inputs == record.inputs:
-                state.record(key, record.model_copy(update={"checks": job.checks_key}))
+                state.record(key, records.checked(record, job))
         say(job, "checked")
         return Result(job, None, path)
 
@@ -495,7 +494,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
     to_run = [decision.job for decision in decisions if decision.status in (Status.RUN, Status.MAYBE)]
     previous = {}
     for job in dag.jobs:
-        record = state.jobs.get(job_key(job))
+        record = state.jobs.get(job.work.key)
         if record is not None and record.seconds is not None:
             previous[job.id] = record.seconds
     progress = Progress.of(to_run, dag.jobs, previous, cores)

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash.model import DagError
-from spit_bash.plan import Status, adopt, job_key, plan
+from spit_bash.plan import Status, adopt, plan
 from support import command, read, run, sample, state_at
 
 # A check that passes when its file holds `text`, and fails otherwise.
@@ -44,8 +44,8 @@ class CheckTests(unittest.TestCase):
         self.assertLess(log.index("source.txt"), log.index("work/upper.txt"))
         state = state_at(self.root)
         self.assertEqual([d.status for d in plan(dag, state)], [Status.SKIP, Status.SKIP])
-        self.assertIsNotNone(state.jobs[job_key(dag.jobs[0])].checks)
-        self.assertIsNone(state.jobs[job_key(dag.jobs[1])].checks)
+        self.assertIsNotNone(state.jobs[dag.jobs[0].work.key].checks)
+        self.assertIsNone(state.jobs[dag.jobs[1].work.key].checks)
 
     def test_a_failed_input_check_stops_the_command(self):
         data = checked(self.root, [check("before", "input", "source.txt", "bye")])

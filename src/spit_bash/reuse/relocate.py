@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Callable
 
-from .model import Dag, DagError, Job
-from .files import stamp, stamps, stored, stored_each
-from .plan import changed_parts, _unchanged, job_key
-from .state.store import Store
+from ..files import stamp, stamps, stored
+from ..model import Dag, DagError, Job
+from ..state.record import Record
+from ..state.store import StateWrite
+from . import records
+from .evidence import Compare, changed, changed_parts, compare_files, describe_parts
 
 
 @dataclass(frozen=True)
@@ -17,24 +20,34 @@ class Migration:
     # (recorded path, current path) of each output to move; empty when `reason` says why not.
     moves: tuple[tuple[str, str], ...]
     reason: str
+    # The job's record as it stands, which the moved files are checked against; None without moves.
+    record: Record | None = None
+
+    @property
+    def writes(self) -> tuple[StateWrite, ...]:
+        """What the state records once the moves are made: the job's record at its new paths."""
+        if self.record is None or not self.moves:
+            return ()
+        return (StateWrite(self.job.work.key, records.relocated(self.record, self.job)),)
 
 
-def _plan_job(dag: Dag, job: Job, state: Store, claimed: set[str], moving: set[str]) -> Migration | None:
+def _plan_job(dag: Dag, job: Job, held: dict[str, Record], claimed: set[str], moving: set[str]) -> Migration | None:
     """The moves that bring a job's recorded outputs to its current paths, or None when it has nothing to move."""
-    record = state.jobs.get(job_key(job))
+    record = held.get(job.work.key)
     if record is None or record.output_paths is None:
         return None
     current = job.output_paths_by_slot
     if all(record.output_paths.get(key, path) == path for key, path in current.items()):
         return None
-    if record.fingerprint != job.fingerprint:
-        return Migration(job, (), f"the job changed since the run ({changed_parts(record, job)}), so its outputs are stale")
+    if record.fingerprint != job.work.fingerprint:
+        return Migration(job, (), f"the job changed since the run ({describe_parts(changed_parts(record, job))}), "
+                                  "so its outputs are stale")
     # A moved output is reused only if the job would be current but for the move.
     # An input an earlier job is moving arrives with the stamps it has, so it counts as present.
     in_paths = {slot: path for slot, path in job.input_paths_by_slot.items() if path not in moving}
-    now = stored_each(job.keyed(stamps(dag, tuple(in_paths.values()))))
-    if any(value is None for value in now.values()) or not _unchanged(
-            dag, in_paths, now, record.inputs, record.input_hashes, True):
+    now = stamps(dag, tuple(in_paths.values()))
+    if any(value is None for value in now.values()) or changed(compare_files(
+            dag, in_paths, now, record.inputs, record.input_hashes, Compare.CONTENT, {})):
         return Migration(job, (), "an input is missing or changed since the run")
     moves = []
     for key, new in current.items():
@@ -55,18 +68,18 @@ def _plan_job(dag: Dag, job: Job, state: Store, claimed: set[str], moving: set[s
             return Migration(job, (), f"{old} is missing or changed since the run")
         moves.append((old, new))
     moving.update(new for _, new in moves)
-    return Migration(job, tuple(moves), "outputs recorded at other paths")
+    return Migration(job, tuple(moves), "outputs recorded at other paths", record)
 
 
-def find(dag: Dag, state: Store, jobs: set[int] | None = None) -> tuple[Migration, ...]:
-    """The jobs, among `jobs` when given, whose recorded outputs are at other paths than their current ones."""
+def find(dag: Dag, held: dict[str, Record], jobs: set[int] | None = None) -> tuple[Migration, ...]:
+    """The jobs, among `jobs` when given, whose records in `held` have their outputs at other paths than their current ones."""
     # A file at a path that any job reads or writes now is not the one the record left behind.
     claimed = set(dag.external_inputs)
     for job in dag.jobs:
         claimed.update(job.input_paths)
         claimed.update(job.output_paths)
     moving: set[str] = set()
-    found = (_plan_job(dag, job, state, claimed, moving) for job in dag.jobs
+    found = (_plan_job(dag, job, held, claimed, moving) for job in dag.jobs
              if job.commands and (jobs is None or job.id in jobs))
     return tuple(migration for migration in found if migration is not None)
 
@@ -76,20 +89,21 @@ def _undo(dag: Dag, done: list[tuple[str, str]]) -> None:
         os.rename(dag.checked(new), dag.checked(old))
 
 
-def apply(dag: Dag, state: Store, migrations: tuple[Migration, ...]) -> tuple[Migration, ...]:
+def apply(dag: Dag, migrations: tuple[Migration, ...],
+          record: Callable[[tuple[StateWrite, ...]], None]) -> tuple[Migration, ...]:
     """Move each migration's files, all of a job's or none, and return what each one came to.
 
     A file is renamed, so it keeps its size and time; the move is checked against
-    the record's stamps and then recorded, and a job whose move fails or does not check is put back
-    as it was and reported with the reason. Nothing is overwritten: a destination
-    that appeared since `find` stops that job's move.
+    the record's stamps, and then `record` is given the migration's writes at
+    once, so a run stopped after it still finds the files. A job whose move fails
+    or does not check is put back as it was and reported with the reason.
+    Nothing is overwritten: a destination that appeared since `find` stops that job's move.
     """
     results = []
     for migration in migrations:
-        if not migration.moves:
+        if not migration.moves or migration.record is None:
             results.append(migration)
             continue
-        record = state.jobs[job_key(migration.job)]
         done: list[tuple[str, str]] = []
         try:
             for old, new in migration.moves:
@@ -100,7 +114,7 @@ def apply(dag: Dag, state: Store, migrations: tuple[Migration, ...]) -> tuple[Mi
                 os.rename(source, target)
                 done.append((old, new))
                 key = migration.job.identities[new]
-                if stored(stamp(target, new in dag.folders)) != record.outputs.get(key):
+                if stored(stamp(target, new in dag.folders)) != migration.record.outputs.get(key):
                     raise OSError(f"{new} does not match the record after the move")
         except OSError as exc:
             try:
@@ -110,7 +124,6 @@ def apply(dag: Dag, state: Store, migrations: tuple[Migration, ...]) -> tuple[Mi
                 reason = f"partly moved, and putting it back failed: {undo}"
             results.append(Migration(migration.job, (), reason))
         else:
-            # Record the new paths at once, so a run stopped now still finds the files.
-            state.record(job_key(migration.job), record.model_copy(update={"output_paths": migration.job.output_paths_by_slot}))
+            record(migration.writes)
             results.append(migration)
     return tuple(results)

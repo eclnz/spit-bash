@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path, PurePosixPath
 from typing import Iterator, TextIO
 
@@ -11,7 +9,8 @@ from pydantic import ValidationError
 
 from . import schema
 from .model import Artifact, Check, Dag, DagError, Job, Kind, Port, Run, Side
-from .schema import Command, CommandPart, DirPart, HerePart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
+from .reuse import identity
+from .schema import Command, DirPart, HerePart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
 
 
 def _here(part: HerePart, folder: str | None) -> str:
@@ -45,21 +44,6 @@ def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
     return tuple(arguments)
 
 
-def _slots(item: SpitJob) -> dict[str, str]:
-    """Each input and output path's slot, as `Artifact.slot` gives it.
-
-    An artifact is the same work whatever it is called, so a record names a file
-    by where the job holds it, not by product or entities.
-    """
-    slots: dict[str, str] = {}
-    for port, artifacts in enumerate(item.inputs.values()):
-        for place, artifact in enumerate(artifacts):
-            slots.setdefault(artifact.path, f"in{port}.{place}")
-    for port, artifact in enumerate(item.outputs.values()):
-        slots.setdefault(artifact.path, f"out{port}")
-    return slots
-
-
 def _artifact(declared: schema.Artifact, slots: dict[str, str]) -> Artifact:
     return Artifact(slots[declared.path], declared.path, Kind(declared.kind), declared.product,
                     tuple(sorted(declared.entities.items())))
@@ -70,48 +54,6 @@ def _ports(item: SpitJob, slots: dict[str, str]) -> tuple[tuple[Port, ...], tupl
     inputs = tuple(Port(name, tuple(_artifact(a, slots) for a in artifacts)) for name, artifacts in item.inputs.items())
     outputs = tuple(Port(name, (_artifact(a, slots),)) for name, a in item.outputs.items())
     return inputs, outputs
-
-
-def _fingerprint(item: SpitJob, slots: dict[str, str]) -> tuple[str, dict[str, str]]:
-    """The job's work as the runner identifies it: the shape of what it reads and
-    writes, and its commands, with every path replaced by its place in the job.
-    Names, storage paths, checks, scheduling and where the job came from are left
-    out, so renaming or moving things changes nothing here. What the inputs hold
-    is checked against the record's hashes, not here."""
-
-    def of(path: str) -> str:
-        return slots.get(path, path)
-
-    def part(value: CommandPart) -> list | str:
-        if isinstance(value, str):
-            return value
-        if isinstance(value, PathPart):
-            return ["path", of(value.path)]
-        if isinstance(value, DirPart):
-            # The tool is given this text, so a change to it is a change to the work.
-            return ["dir", value.dir, of(value.of_path)]
-        if isinstance(value, StemPart):
-            return ["stem", value.stem, of(value.of_path)]
-        return ["here", value.here]
-
-    def command(arguments: Command) -> list:
-        return [[part(value) for value in argument] for argument in arguments]
-
-    # Ports are listed in order, without their names: a renamed operation or port is the same work.
-    work = {
-        "inputs": [[[slots[a.path], a.kind] for a in artifacts] for artifacts in item.inputs.values()],
-        "outputs": [[slots[a.path], a.kind] for a in item.outputs.values()],
-        "commands": [
-            [command(c.command), None if c.stdin is None else of(c.stdin), None if c.stdout is None else of(c.stdout)]
-            for c in item.commands
-        ],
-        "verify": [command(c) for c in item.verify],
-    }
-    def digest(value: object) -> str:
-        return hashlib.sha256(json.dumps(value, separators=(",", ":"), sort_keys=True).encode()).hexdigest()[:16]
-
-    # The parts are hashed apart so that a record can say which of them changed.
-    return digest(work), {name: digest(value) for name, value in work.items()}
 
 
 def _artifacts(document: SpitDag) -> Iterator[schema.Artifact]:
@@ -221,33 +163,36 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             if path in producers or path in external_set:
                 raise DagError(f"multiple jobs or sources claim path: {path}")
             producers[path] = item.id
-        slots = _slots(item)
-        fingerprint, parts = _fingerprint(item, slots)
+        slots = identity.slots(item)
         inputs, produced = _ports(item, slots)
-        jobs.append(Job(
-            id=item.id,
-            operation=item.operation,
-            stage=tuple(item.stage),
-            fingerprint=fingerprint,
-            parts=parts,
-            inputs=inputs,
-            outputs=produced,
-            depends_on=tuple(item.depends_on),
-            commands=tuple(_run(command, document.pipeline_folder) for command in item.commands),
-            verify=tuple(_command(command, document.pipeline_folder) for command in item.verify),
-            checks=tuple(
-                Check(Side(check.when), check.check, check.port, check.path, _command(check.command, document.pipeline_folder))
-                for check in item.checks
-            ),
-            origin=_origin(document, item),
-            cores=item.cores,
-            memory=item.memory,
-        ))
+        commands = tuple(_run(command, document.pipeline_folder) for command in item.commands)
+        verify = tuple(_command(command, document.pipeline_folder) for command in item.verify)
+        checks = tuple(
+            Check(Side(check.when), check.check, check.port, check.path, _command(check.command, document.pipeline_folder))
+            for check in item.checks
+        )
+        origin = _origin(document, item)
+        # Before the checks key, which names each checked path by its slot.
         for check in item.checks:
             ports = item.inputs if check.when == "before" else {k: [v] for k, v in item.outputs.items()}
             if not any(artifact.path == check.path for artifact in ports.get(check.port, ())):
                 raise DagError(f"job {item.id}: check {check.check} names {check.path}, "
                                f"which is not on its {'input' if check.when == 'before' else 'output'} {check.port}")
+        jobs.append(Job(
+            id=item.id,
+            operation=item.operation,
+            stage=tuple(item.stage),
+            work=identity.work(item, slots, checks, tuple(a for port in produced for a in port.artifacts)),
+            inputs=inputs,
+            outputs=produced,
+            depends_on=tuple(item.depends_on),
+            commands=commands,
+            verify=verify,
+            checks=checks,
+            origin=origin,
+            cores=item.cores,
+            memory=item.memory,
+        ))
         seen_ids.add(item.id)
 
     for job in jobs:

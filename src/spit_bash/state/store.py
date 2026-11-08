@@ -110,6 +110,14 @@ class Store:
             else:
                 self.record(write.key, write.record)
 
+    def assume(self, writes: tuple[StateWrite, ...]) -> None:
+        """Make each write to the records in memory only, as a plan does to see what a run would store."""
+        for write in writes:
+            if write.record is None:
+                self.jobs.pop(write.key, None)
+            else:
+                self.jobs[write.key] = write.record
+
     def _append(self, entry: StateEntry) -> None:
         if self._log is None:
             if not self.path.exists():

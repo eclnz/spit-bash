@@ -2,77 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from dataclasses import dataclass, replace
 from enum import Enum
-from pathlib import Path
 
+from .files import Stamps, stamps
 from .model import Dag, DagError, Job
-from .files import Stamps, content_hash, stamps, stored_each
-from .state.record import Record
+from .reuse import records
+from .reuse.evidence import Compare, describe_parts, evidence
+from .reuse.verdict import Stale, Standing, verdict
 from .state.store import StateWrite, Store
-
-
-def job_key(job: Job) -> str:
-    # Job IDs may change when SPIT resolves a different inventory, and paths
-    # change when the pipeline's path rules do. What a job makes is its outputs'
-    # products and entities, which neither changes.
-    made = sorted([output.product, output.entities] for output in job.output_artifacts)
-    return json.dumps(made, separators=(",", ":"))
-
-
-def reconcile(dag: Dag, state: Store, everything: Dag, persist: bool = False) -> tuple[tuple[str, str], ...]:
-    """Give a record left by a renamed product, dimension, source or entity to the job that now does its work.
-
-    A job with no record under its key takes an unclaimed record of the same
-    work (the same fingerprint) when each input holds what the record's did, so
-    the same work on the same bytes is reused whatever things are called.
-    `everything` is the whole DAG, whose jobs claim their keys even when `dag`
-    holds only some. Returns (old key, new key) for each record handed over;
-    with `persist` the state file records the change, else only `state` does.
-    """
-    claimed = {job_key(job) for job in everything.jobs}
-    orphans: dict[str, list[str]] = {}
-    for key, record in sorted(state.jobs.items()):
-        if key not in claimed and record.input_hashes is not None and record.output_hashes is not None:
-            orphans.setdefault(record.fingerprint, []).append(key)
-    if not orphans:
-        return ()
-    # What each file holds: as read, or, for a file a handed-over job has yet to make
-    # at its new path, as that job's record says.
-    held: dict[str, str | None] = {}
-
-    def hash_of(job: Job, path: str) -> str | None:
-        if path not in held:
-            held[path] = content_hash(str(dag.path(path)), path in dag.folders)
-        return held[path]
-
-    handed = []
-    for job in dag.jobs:
-        key = job_key(job)
-        if key in state.jobs or not job.commands or not orphans.get(job.fingerprint):
-            continue
-        for old in orphans[job.fingerprint]:
-            record = state.jobs[old]
-            assert record.input_hashes is not None and record.output_hashes is not None
-            slots = job.input_paths_by_slot
-            if set(slots) != set(record.input_hashes) or any(
-                    hash_of(job, path) != record.input_hashes[slot] for slot, path in slots.items()):
-                continue
-            orphans[job.fingerprint].remove(old)
-            if persist:
-                state.forget(old)
-                state.record(key, record)
-            else:
-                del state.jobs[old]
-                state.jobs[key] = record
-            for slot, path in job.output_paths_by_slot.items():
-                held[path] = record.output_hashes.get(slot)
-            handed.append((old, key))
-            break
-    return tuple(handed)
 
 
 class Status(Enum):
@@ -91,9 +31,9 @@ class Decision:
     job: Job
     status: Status
     reason: str
-    # A current job whose files were touched but not changed: its record with the
-    # files' new stamps, which `run` stores so the next plan need not hash them.
-    refresh: Record | None = None
+    # What `run` stores for a current job whose files were touched but not changed:
+    # its record with the files' new stamps, so the next plan need not hash them.
+    writes: tuple[StateWrite, ...] = ()
     # The jobs upstream that will or may rewrite what this job reads, which it has to wait for.
     waits_for: tuple[int, ...] = ()
     # For a job blocked only because a job upstream is, the id of the job whose own cause it is.
@@ -102,25 +42,6 @@ class Decision:
 
 # The start of the reason of a job blocked by a job upstream, which `Decision.caused_by` follows.
 DEPENDENCY_BLOCKED = "dependency blocked: "
-
-
-def _unchanged(dag: Dag, paths: dict[str, str], now: dict[str, list[int] | None],
-               recorded: dict[str, list[int]], recorded_hashes: dict[str, str] | None, hashing: bool,
-               verify: bool = False) -> bool:
-    """Whether these files are as the record has them: by stamp, else, where they differ, by content.
-
-    `paths` gives each artifact's current path by identity, as do `now` and the record. With
-    `verify`, every file is compared by content, whatever its stamp, and a record without
-    hashes counts as changed.
-    """
-    differing = list(paths) if verify else [key for key in paths if now[key] != recorded.get(key)]
-    if not differing:
-        return True
-    if not hashing or not recorded_hashes:
-        return False
-    return all(key in recorded_hashes
-               and recorded_hashes[key] == content_hash(str(dag.path(paths[key])), paths[key] in dag.folders)
-               for key in differing)
 
 
 def _missing_programs(dag: Dag) -> set[str]:
@@ -142,21 +63,9 @@ def _missing_programs(dag: Dag) -> set[str]:
 UPSTREAM = (Status.RUN, Status.MAYBE)
 
 
-PART_NAMES = {"commands": "command", "verify": "verify commands",
-              "inputs": "the artifacts it reads", "outputs": "the artifacts it makes"}
-
-
-def changed_parts(record: Record, job: Job) -> str:
-    """Why a job's fingerprint differs from its record's, naming the parts that changed when it can."""
-    if record.parts is None:
-        return "job fingerprint changed"
-    names = [text for part, text in PART_NAMES.items() if record.parts.get(part) != job.parts.get(part)]
-    return "; ".join(names) + " changed" if names else "job fingerprint changed"
-
-
 def _missing(dag: Dag, job: Job, state: Store) -> str:
     """'output missing', and where an earlier run left the file if a change of path rules stranded it."""
-    record = state.jobs.get(job_key(job))
+    record = state.jobs.get(job.work.key)
     here = job.output_paths_by_slot
     for key, old in sorted((record.output_paths or {}).items() if record else ()):
         if key in here and old != here[key] and old not in job.output_paths:
@@ -169,8 +78,11 @@ def _missing(dag: Dag, job: Job, state: Store) -> str:
     return "output missing"
 
 
-def judge(dag: Dag, job: Job, state: Store, force: bool, hashing: bool, seen: Stamps | None = None,
-          verify: bool = False) -> Decision:
+STALE_REASONS = {Stale.NO_RECORD: "no successful run recorded", Stale.INPUT_CHANGED: "input changed",
+                 Stale.OUTPUT_CHANGED: "output changed"}
+
+
+def judge(dag: Dag, job: Job, state: Store, force: bool, compare: Compare, seen: Stamps | None = None) -> Decision:
     """Whether a command job is current on the files it has now, ignoring the jobs upstream.
 
     `plan` asks it for every job, with the stamps it has read so far as
@@ -184,27 +96,21 @@ def judge(dag: Dag, job: Job, state: Store, force: bool, hashing: bool, seen: St
         return Decision(job, Status.BLOCKED, "input is missing")
     if force:
         return Decision(job, Status.RUN, "forced")
-    record = state.jobs.get(job_key(job))
-    if record is None:
-        return Decision(job, Status.RUN, "no successful run recorded")
-    if record.fingerprint != job.fingerprint:
-        return Decision(job, Status.RUN, changed_parts(record, job))
-    # A record holds its files by identity, so files moved to new paths are
-    # the same files when their stamps or contents match.
-    in_paths = job.input_paths_by_slot
-    out_paths = job.output_paths_by_slot
-    now_in, now_out = stored_each(job.keyed(now_in)), stored_each(job.keyed(now_out))
-    if not _unchanged(dag, in_paths, now_in, record.inputs, record.input_hashes, hashing, verify):
-        return Decision(job, Status.RUN, "input changed")
-    if not _unchanged(dag, out_paths, now_out, record.outputs, record.output_hashes, hashing, verify):
-        return Decision(job, Status.RUN, "output changed")
-    # Touched files hold what they held: keep the new stamps.
-    refresh = None if (now_in, now_out, out_paths) == (record.inputs, record.outputs, record.output_paths) else record.model_copy(
-        update={"inputs": now_in, "outputs": now_out, "output_paths": out_paths})
-    if record.checks != job.checks_key:
-        reason = "checks changed" if record.checks is not None else "checks not yet run on these files"
-        return Decision(job, Status.CHECK, reason, refresh)
-    return Decision(job, Status.SKIP, "current", refresh)
+    found = evidence(dag, job, state.jobs.get(job.work.key), {**now_in, **now_out}, compare)
+    judged = verdict(found)
+    writes = () if judged.refreshed is None else (StateWrite(job.work.key, judged.refreshed),)
+    match judged.standing, judged.cause:
+        case Standing.STALE, Stale.WORK_CHANGED:
+            return Decision(job, Status.RUN, describe_parts(found.parts))
+        case Standing.STALE, cause:
+            assert cause is not None, "a stale verdict has a cause"
+            return Decision(job, Status.RUN, STALE_REASONS[cause])
+        case Standing.CHECKS_ONLY, _:
+            assert found.record is not None, "a verdict of checks only has a record"
+            reason = "checks changed" if found.record.checks is not None else "checks not yet run on these files"
+            return Decision(job, Status.CHECK, reason, writes)
+        case _:
+            return Decision(job, Status.SKIP, "current", writes)
 
 
 def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamps) -> Decision:
@@ -227,12 +133,11 @@ def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamp
     return Decision(job, Status.SKIP, "no command; outputs exist")
 
 
-def _below_rerun(dag: Dag, job: Job, state: Store, force: bool, hashing: bool, seen: Stamps,
-                 verify: bool = False) -> Decision:
+def _below_rerun(dag: Dag, job: Job, state: Store, force: bool, compare: Compare, seen: Stamps) -> Decision:
     """A job that reads from one that will or may run: `maybe` when it is current as it stands."""
-    if not hashing or any(value is None for value in stamps(dag, job.input_paths, seen).values()):
+    if compare is Compare.STAT or any(value is None for value in stamps(dag, job.input_paths, seen).values()):
         return Decision(job, Status.RUN, "dependency will run")
-    decision = judge(dag, job, state, force, hashing, seen, verify)
+    decision = judge(dag, job, state, force, compare, seen)
     if decision.status in (Status.SKIP, Status.CHECK):
         return Decision(job, Status.MAYBE, "runs if an upstream output changes")
     return decision
@@ -263,11 +168,14 @@ def _located(decision: Decision, by_id: dict[int, Decision]) -> Decision:
     return replace(decision, waits_for=waits if decision.status in UPSTREAM else (), caused_by=cause)
 
 
-def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, hashing: bool = True,
-         seen: Stamps | None = None, verify: bool = False) -> tuple[Decision, ...]:
-    """Decide every job. `seen` may hold stamps to take as the files' own; `plan --move-files`'s
-    listing gives the stamps the files would have once moved. Without `hashing`, files are
-    compared by stamp alone; with `verify`, by content alone."""
+def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, compare: Compare = Compare.CONTENT,
+         seen: Stamps | None = None) -> tuple[Decision, ...]:
+    """Decide every job, comparing files with their records as `compare` says.
+
+    `seen` may hold stamps to take as the files' own; `plan --move-files`'s
+    listing gives the stamps the files would have once moved. Nothing is
+    written: a decision carries the writes `run` makes for it.
+    """
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
     seen = {} if seen is None else seen
@@ -285,8 +193,8 @@ def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, hashing: 
         if not job.commands:
             return _without_command(dag, job, by_id, seen)
         if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
-            return _below_rerun(dag, job, state, forced, hashing, seen, verify)
-        return judge(dag, job, state, forced, hashing, seen, verify)
+            return _below_rerun(dag, job, state, forced, compare, seen)
+        return judge(dag, job, state, forced, compare, seen)
 
     for job in dag.jobs:
         decision = _located(_with_programs(decide(job), missing_programs), by_id)
@@ -295,10 +203,9 @@ def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, hashing: 
     return tuple(decisions)
 
 
-def apply_refreshes(decisions: tuple[Decision, ...], state: Store) -> None:
-    """Store the new stamps of jobs whose files were touched but not changed."""
-    state.apply(tuple(StateWrite(job_key(decision.job), decision.refresh) for decision in decisions
-                      if decision.refresh is not None and decision.status in (Status.SKIP, Status.CHECK)))
+def writes(decisions: tuple[Decision, ...]) -> tuple[StateWrite, ...]:
+    """Every write the decisions carry, in order, for a run to store."""
+    return tuple(write for decision in decisions for write in decision.writes)
 
 
 class AdoptStatus(Enum):
@@ -329,10 +236,7 @@ def adopt(dag: Dag, state: Store) -> tuple[Adoption, ...]:
         elif any(value is None for value in inputs.values()):
             adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
         else:
-            state.record(job_key(job), Record(fingerprint=job.fingerprint, parts=job.parts,
-                                                 inputs=stored_each(job.keyed(inputs)),
-                                                 outputs=stored_each(job.keyed(outputs)),
-                                                 output_paths=job.output_paths_by_slot))
+            state.record(job.work.key, records.adopted(job, inputs, outputs))
             adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
         adoptions.append(adoption)
     return tuple(adoptions)

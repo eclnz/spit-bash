@@ -10,6 +10,7 @@ from unittest import mock
 
 from spit_bash.cli import main
 from spit_bash.plan import Status, plan
+from spit_bash.reuse.evidence import Compare
 from support import EXCLAIM, job_entry, read, run, sample, state_at
 
 
@@ -74,7 +75,7 @@ class CutoffTests(unittest.TestCase):
 
     def test_without_hashing_a_job_below_a_rerun_runs(self):
         self.edit_source("Hello")
-        decisions = plan(self.dag, state_at(self.root), hashing=False)
+        decisions = plan(self.dag, state_at(self.root), compare=Compare.STAT)
         self.assertEqual([d.status for d in decisions], [Status.RUN] * 3)
         self.assertEqual(decisions[1].reason, "dependency will run")
 
