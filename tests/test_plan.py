@@ -19,7 +19,7 @@ class PlanTests(unittest.TestCase):
 
     def test_plan_reads_each_file_once(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             (root / "source.txt").write_text("hello")
             dag = read(sample(root))
             run(dag, state_at(root))
