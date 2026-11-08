@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from ..cause import Cause, Why
 from ..state.record import Record
 from . import records
 from .evidence import Evidence, changed
@@ -21,20 +22,12 @@ class Standing(Enum):
     STALE = "stale"
 
 
-class Stale(Enum):
-    """Why a record does not hold, the first that applies in this order."""
-
-    NO_RECORD = "no record"
-    WORK_CHANGED = "work changed"
-    INPUT_CHANGED = "input changed"
-    OUTPUT_CHANGED = "output changed"
-
-
 @dataclass(frozen=True)
 class Verdict:
     standing: Standing
-    # Set only when `standing` is `Standing.STALE`.
-    cause: Stale | None = None
+    # Set only when `standing` is `Standing.STALE`: why the record does not hold, the first
+    # that applies of `Why.NO_RECORD`, `Why.WORK_CHANGED`, `Why.INPUT_CHANGED` and `Why.OUTPUT_CHANGED`.
+    cause: Cause | None = None
     # For a record that holds: the record with its files' new stamps, when they
     # were touched but not changed; else None.
     refreshed: Record | None = None
@@ -44,12 +37,12 @@ def verdict(found: Evidence) -> Verdict:
     """Whether the record in `found` holds, and why not when it does not."""
     record = found.record
     if record is None:
-        return Verdict(Standing.STALE, Stale.NO_RECORD)
+        return Verdict(Standing.STALE, Cause(Why.NO_RECORD))
     if found.work_changed:
-        return Verdict(Standing.STALE, Stale.WORK_CHANGED)
+        return Verdict(Standing.STALE, Cause(Why.WORK_CHANGED, parts=found.parts))
     if changed(found.inputs):
-        return Verdict(Standing.STALE, Stale.INPUT_CHANGED)
+        return Verdict(Standing.STALE, Cause(Why.INPUT_CHANGED))
     if changed(found.outputs):
-        return Verdict(Standing.STALE, Stale.OUTPUT_CHANGED)
+        return Verdict(Standing.STALE, Cause(Why.OUTPUT_CHANGED))
     refreshed = records.refreshed(record, found.job, found.now)
     return Verdict(Standing.CHECKS_ONLY if found.checks_changed else Standing.CURRENT, None, refreshed)

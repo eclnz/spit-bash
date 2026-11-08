@@ -4,9 +4,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from spit_bash.cause import Cause, Why
 from spit_bash.load import load_dag
 from spit_bash import files
-from spit_bash.plan import AdoptStatus, Status, adopt, plan
+from spit_bash.plan import AdoptCause, AdoptStatus, Status, adopt, plan
 from support import FIXTURE, artifact, job_entry, read, run, sample, state_at, UPPER
 
 
@@ -15,7 +16,7 @@ class PlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             decisions = plan(read(sample(Path(directory))), state_at(directory))
             self.assertEqual([d.status for d in decisions], [Status.BLOCKED, Status.BLOCKED])
-            self.assertIn("missing external input", decisions[0].reason)
+            self.assertEqual(decisions[0].cause.why, Why.MISSING_EXTERNAL)
 
     def test_plan_reads_each_file_once(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -66,8 +67,8 @@ class PlanTests(unittest.TestCase):
             data["jobs"][1]["verify"] = [[["bin/missing-check"]]]
             decisions = plan(read(data), state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.BLOCKED, Status.BLOCKED, Status.RUN])
-            self.assertEqual(decisions[0].reason, "program not found: spit-bash-no-such-program")
-            self.assertEqual(decisions[1].reason, "dependency blocked: 1")
+            self.assertEqual(decisions[0].cause, Cause(Why.PROGRAM_NOT_FOUND, ("spit-bash-no-such-program",)))
+            self.assertEqual(decisions[1].cause, Cause(Why.DEPENDENCY_BLOCKED, jobs=(1,)))
 
     def test_program_named_by_a_path_is_found_from_the_root(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -75,7 +76,7 @@ class PlanTests(unittest.TestCase):
             (root / "source.txt").write_text("hello")
             data = sample(root)
             data["jobs"][1]["verify"] = [[["bin/check"]]]
-            self.assertEqual(plan(read(data), state_at(root))[1].reason, "program not found: bin/check")
+            self.assertEqual(plan(read(data), state_at(root))[1].cause, Cause(Why.PROGRAM_NOT_FOUND, ("bin/check",)))
             (root / "bin").mkdir()
             (root / "bin/check").write_text("#!/bin/sh\n")
             (root / "bin/check").chmod(0o755)
@@ -101,13 +102,13 @@ class PlanTests(unittest.TestCase):
             (root / "work/upper.txt").write_text("made elsewhere")
             dag = read(sample(root))
             state = state_at(root)
-            self.assertEqual([d.reason for d in plan(dag, state)], ["no successful run recorded", "output missing"])
+            self.assertEqual([d.cause for d in plan(dag, state)], [Cause(Why.NO_RECORD), Cause(Why.OUTPUT_MISSING)])
             adoptions = adopt(dag, state)
             state.close()
             self.assertEqual([a.status for a in adoptions], [AdoptStatus.ADOPTED, AdoptStatus.LEFT])
-            self.assertEqual(adoptions[1].reason, "output missing")
+            self.assertEqual(adoptions[1].cause, AdoptCause.OUTPUT_MISSING)
             decisions = plan(dag, state_at(root))
-            self.assertEqual([(d.status, d.reason) for d in decisions], [(Status.SKIP, "current"), (Status.RUN, "output missing")])
+            self.assertEqual([(d.status, d.cause.why) for d in decisions], [(Status.SKIP, Why.CURRENT), (Status.RUN, Why.OUTPUT_MISSING)])
 
 
 if __name__ == "__main__":

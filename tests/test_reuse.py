@@ -7,10 +7,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from spit_bash.cause import Cause, Why
 from spit_bash.files import stamps
 from spit_bash.reuse import evidence as evidence_module
 from spit_bash.reuse.evidence import Compare, Content, evidence
-from spit_bash.reuse.verdict import Stale, Standing, Verdict, verdict
+from spit_bash.reuse.verdict import Standing, Verdict, verdict
 from support import read, run, sample, state_at
 
 
@@ -56,13 +57,13 @@ class EvidenceTests(unittest.TestCase):
         (self.root / "source.txt").write_text("changed")
         found = self.found()
         self.assertEqual(found.inputs[0].content, Content.DIFFERS)
-        self.assertEqual(verdict(found), Verdict(Standing.STALE, Stale.INPUT_CHANGED))
+        self.assertEqual(verdict(found), Verdict(Standing.STALE, Cause(Why.INPUT_CHANGED)))
 
     def test_by_stat_a_touched_file_is_not_compared_and_counts_as_changed(self):
         touch(self.root / "source.txt")
         found = self.found(compare=Compare.STAT)
         self.assertEqual(found.inputs[0].content, Content.NOT_COMPARED)
-        self.assertEqual(verdict(found).cause, Stale.INPUT_CHANGED)
+        self.assertEqual(verdict(found).cause, Cause(Why.INPUT_CHANGED))
 
     def test_full_compares_every_file_whatever_its_stamp(self):
         found = self.found(compare=Compare.FULL)
@@ -98,13 +99,13 @@ class EvidenceTests(unittest.TestCase):
         touch(self.root / "source.txt")
         found = self.found(dag=read(changed))
         self.assertEqual((found.work_changed, found.parts, found.inputs), (True, ("commands",), ()))
-        self.assertEqual(verdict(found).cause, Stale.WORK_CHANGED)
+        self.assertEqual(verdict(found).cause, Cause(Why.WORK_CHANGED, parts=("commands",)))
 
     def test_no_record_is_stale(self):
         (self.root / ".spit-bash/state.jsonl").unlink()
         found = self.found()
         self.assertIsNone(found.record)
-        self.assertEqual(verdict(found).cause, Stale.NO_RECORD)
+        self.assertEqual(verdict(found).cause, Cause(Why.NO_RECORD))
 
     def test_changed_checks_leave_only_the_checks_to_run(self):
         data = copy.deepcopy(self.data)

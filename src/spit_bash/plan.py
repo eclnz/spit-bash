@@ -7,11 +7,12 @@ import shutil
 from dataclasses import dataclass, replace
 from enum import Enum
 
+from .cause import Cause, Why
 from .files import Stamps, stamps
 from .model import Dag, DagError, Job
 from .reuse import records
-from .reuse.evidence import Compare, describe_parts, evidence
-from .reuse.verdict import Stale, Standing, verdict
+from .reuse.evidence import Compare, Evidence, evidence
+from .reuse.verdict import Standing, verdict
 from .state.store import StateWrite, Store
 
 
@@ -30,7 +31,7 @@ class Status(Enum):
 class Decision:
     job: Job
     status: Status
-    reason: str
+    cause: Cause
     # What `run` stores for a current job whose files were touched but not changed:
     # its record with the files' new stamps, so the next plan need not hash them.
     writes: tuple[StateWrite, ...] = ()
@@ -38,10 +39,6 @@ class Decision:
     waits_for: tuple[int, ...] = ()
     # For a job blocked only because a job upstream is, the id of the job whose own cause it is.
     caused_by: int | None = None
-
-
-# The start of the reason of a job blocked by a job upstream, which `Decision.caused_by` follows.
-DEPENDENCY_BLOCKED = "dependency blocked: "
 
 
 def _missing_programs(dag: Dag) -> set[str]:
@@ -63,8 +60,8 @@ def _missing_programs(dag: Dag) -> set[str]:
 UPSTREAM = (Status.RUN, Status.MAYBE)
 
 
-def _missing(dag: Dag, job: Job, state: Store) -> str:
-    """'output missing', and where an earlier run left the file if a change of path rules stranded it."""
+def _missing(dag: Dag, job: Job, state: Store) -> Cause:
+    """`Why.OUTPUT_MISSING`, with where an earlier run left the file if a change of path rules stranded it."""
     record = state.jobs.get(job.work.key)
     here = job.output_paths_by_slot
     for key, old in sorted((record.output_paths or {}).items() if record else ()):
@@ -74,12 +71,8 @@ def _missing(dag: Dag, job: Job, state: Store) -> str:
             except DagError:
                 continue
             if present:
-                return f"output missing; an earlier run left it at {old}"
-    return "output missing"
-
-
-STALE_REASONS = {Stale.NO_RECORD: "no successful run recorded", Stale.INPUT_CHANGED: "input changed",
-                 Stale.OUTPUT_CHANGED: "output changed"}
+                return Cause(Why.OUTPUT_MISSING, (old,))
+    return Cause(Why.OUTPUT_MISSING)
 
 
 def judge(dag: Dag, job: Job, state: Store, force: bool, compare: Compare, seen: Stamps | None = None) -> Decision:
@@ -93,53 +86,51 @@ def judge(dag: Dag, job: Job, state: Store, force: bool, compare: Compare, seen:
     if any(value is None for value in now_out.values()):
         return Decision(job, Status.RUN, _missing(dag, job, state))
     if any(value is None for value in now_in.values()):
-        return Decision(job, Status.BLOCKED, "input is missing")
+        return Decision(job, Status.BLOCKED, Cause(Why.INPUT_MISSING))
     if force:
-        return Decision(job, Status.RUN, "forced")
+        return Decision(job, Status.RUN, Cause(Why.FORCED))
     found = evidence(dag, job, state.jobs.get(job.work.key), {**now_in, **now_out}, compare)
     judged = verdict(found)
     writes = () if judged.refreshed is None else (StateWrite(job.work.key, judged.refreshed),)
-    match judged.standing, judged.cause:
-        case Standing.STALE, Stale.WORK_CHANGED:
-            return Decision(job, Status.RUN, describe_parts(found.parts))
-        case Standing.STALE, cause:
-            assert cause is not None, "a stale verdict has a cause"
-            return Decision(job, Status.RUN, STALE_REASONS[cause])
-        case Standing.CHECKS_ONLY, _:
+    match judged.standing:
+        case Standing.STALE:
+            assert judged.cause is not None, "a stale verdict has a cause"
+            return Decision(job, Status.RUN, judged.cause)
+        case Standing.CHECKS_ONLY:
             assert found.record is not None, "a verdict of checks only has a record"
-            reason = "checks changed" if found.record.checks is not None else "checks not yet run on these files"
-            return Decision(job, Status.CHECK, reason, writes)
-        case _:
-            return Decision(job, Status.SKIP, "current", writes)
+            why = Why.CHECKS_CHANGED if found.record.checks is not None else Why.CHECKS_NOT_RUN
+            return Decision(job, Status.CHECK, Cause(why), writes)
+        case Standing.CURRENT:
+            return Decision(job, Status.SKIP, Cause(Why.CURRENT), writes)
 
 
 def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamps) -> Decision:
     """A job with no command is current only when its outputs exist and are newer than its inputs."""
     outputs = stamps(dag, job.output_paths, seen)
     if any(value is None for value in outputs.values()):
-        return Decision(job, Status.BLOCKED, "no command and output is missing")
+        return Decision(job, Status.BLOCKED, Cause(Why.NO_COMMAND_OUTPUT_MISSING))
     # It cannot be rerun, so any change upstream would leave its outputs stale.
     if any(by_id[dep].status is Status.RUN for dep in job.depends_on):
-        return Decision(job, Status.BLOCKED, "no command and dependency will run")
+        return Decision(job, Status.BLOCKED, Cause(Why.NO_COMMAND_DEPENDENCY_WILL_RUN))
     if any(by_id[dep].status is Status.MAYBE for dep in job.depends_on):
-        return Decision(job, Status.BLOCKED, "no command and dependency may run")
+        return Decision(job, Status.BLOCKED, Cause(Why.NO_COMMAND_DEPENDENCY_MAY_RUN))
     inputs = stamps(dag, job.input_paths, seen)
     if any(value is None for value in inputs.values()):
-        return Decision(job, Status.BLOCKED, "input is missing")
+        return Decision(job, Status.BLOCKED, Cause(Why.INPUT_MISSING))
     if job.input_paths and max(value.mtime_ns for value in inputs.values()) > min(value.mtime_ns for value in outputs.values()):
-        return Decision(job, Status.BLOCKED, "no command and output is older than an input")
+        return Decision(job, Status.BLOCKED, Cause(Why.NO_COMMAND_OUTPUT_OLDER))
     if job.checks:
-        return Decision(job, Status.CHECK, "no command; outputs exist, checking them")
-    return Decision(job, Status.SKIP, "no command; outputs exist")
+        return Decision(job, Status.CHECK, Cause(Why.NO_COMMAND_CHECKING))
+    return Decision(job, Status.SKIP, Cause(Why.NO_COMMAND_OUTPUTS_EXIST))
 
 
 def _below_rerun(dag: Dag, job: Job, state: Store, force: bool, compare: Compare, seen: Stamps) -> Decision:
     """A job that reads from one that will or may run: `maybe` when it is current as it stands."""
     if compare is Compare.STAT or any(value is None for value in stamps(dag, job.input_paths, seen).values()):
-        return Decision(job, Status.RUN, "dependency will run")
+        return Decision(job, Status.RUN, Cause(Why.DEPENDENCY_WILL_RUN))
     decision = judge(dag, job, state, force, compare, seen)
     if decision.status in (Status.SKIP, Status.CHECK):
-        return Decision(job, Status.MAYBE, "runs if an upstream output changes")
+        return Decision(job, Status.MAYBE, Cause(Why.UPSTREAM_MAY_RUN))
     return decision
 
 
@@ -154,7 +145,7 @@ def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
     programs = sorted({command[0] for command in commands} & missing_programs)
     if not programs:
         return decision
-    return Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
+    return Decision(job, Status.BLOCKED, Cause(Why.PROGRAM_NOT_FOUND, tuple(programs)))
 
 
 def _located(decision: Decision, by_id: dict[int, Decision]) -> Decision:
@@ -162,8 +153,8 @@ def _located(decision: Decision, by_id: dict[int, Decision]) -> Decision:
     job = decision.job
     waits = tuple(dep for dep in job.depends_on if by_id[dep].status in UPSTREAM)
     cause = None
-    if decision.status is Status.BLOCKED and decision.reason.startswith(DEPENDENCY_BLOCKED):
-        first = next(dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED)
+    if decision.cause.why is Why.DEPENDENCY_BLOCKED:
+        first = decision.cause.jobs[0]
         cause = by_id[first].caused_by or first
     return replace(decision, waits_for=waits if decision.status in UPSTREAM else (), caused_by=cause)
 
@@ -186,10 +177,10 @@ def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, compare: 
         forced = force is True or (not isinstance(force, bool) and job.id in force)
         missing = [path for path in job.input_paths if path in missing_external]
         if missing:
-            return Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
+            return Decision(job, Status.BLOCKED, Cause(Why.MISSING_EXTERNAL, tuple(missing)))
         blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
         if blocked:
-            return Decision(job, Status.BLOCKED, DEPENDENCY_BLOCKED + ", ".join(map(str, blocked)))
+            return Decision(job, Status.BLOCKED, Cause(Why.DEPENDENCY_BLOCKED, jobs=tuple(blocked)))
         if not job.commands:
             return _without_command(dag, job, by_id, seen)
         if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
@@ -203,6 +194,20 @@ def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, compare: 
     return tuple(decisions)
 
 
+def explained(dag: Dag, state: Store, decisions: tuple[Decision, ...], job_id: int,
+              compare: Compare) -> tuple[Decision, Evidence]:
+    """The decision on job `job_id` and the evidence behind it, every input and output compared, for `plan --job`."""
+    decision = next((decision for decision in decisions if decision.job.id == job_id), None)
+    if decision is None:
+        raise DagError(f"no job {job_id} among the jobs planned")
+    job = decision.job
+    # The files shown are those whose stamps differ, which are compared by content
+    # unless `compare` says not to, so `full` shows what `content` does.
+    found = evidence(dag, job, state.jobs.get(job.work.key), stamps(dag, (*job.input_paths, *job.output_paths), {}),
+                     Compare.STAT if compare is Compare.STAT else Compare.CONTENT, every=True)
+    return decision, found
+
+
 def writes(decisions: tuple[Decision, ...]) -> tuple[StateWrite, ...]:
     """Every write the decisions carry, in order, for a run to store."""
     return tuple(write for decision in decisions for write in decision.writes)
@@ -213,11 +218,20 @@ class AdoptStatus(Enum):
     LEFT = "left"
 
 
+class AdoptCause(Enum):
+    """Why `adopt` recorded a job or left it; only `OUTPUTS_EXIST` adopts."""
+
+    NO_COMMAND = "no command"
+    OUTPUT_MISSING = "output missing"
+    INPUT_MISSING = "input missing"
+    OUTPUTS_EXIST = "outputs exist"
+
+
 @dataclass(frozen=True)
 class Adoption:
     job: Job
     status: AdoptStatus
-    reason: str
+    cause: AdoptCause
 
 
 def adopt(dag: Dag, state: Store) -> tuple[Adoption, ...]:
@@ -230,13 +244,13 @@ def adopt(dag: Dag, state: Store) -> tuple[Adoption, ...]:
         inputs = stamps(dag, job.input_paths)
         outputs = stamps(dag, job.output_paths)
         if not job.commands:
-            adoption = Adoption(job, AdoptStatus.LEFT, "no command")
+            adoption = Adoption(job, AdoptStatus.LEFT, AdoptCause.NO_COMMAND)
         elif any(value is None for value in outputs.values()):
-            adoption = Adoption(job, AdoptStatus.LEFT, "output missing")
+            adoption = Adoption(job, AdoptStatus.LEFT, AdoptCause.OUTPUT_MISSING)
         elif any(value is None for value in inputs.values()):
-            adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
+            adoption = Adoption(job, AdoptStatus.LEFT, AdoptCause.INPUT_MISSING)
         else:
             state.record(job.work.key, records.adopted(job, inputs, outputs))
-            adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
+            adoption = Adoption(job, AdoptStatus.ADOPTED, AdoptCause.OUTPUTS_EXIST)
         adoptions.append(adoption)
     return tuple(adoptions)

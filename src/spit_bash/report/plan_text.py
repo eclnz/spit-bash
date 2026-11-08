@@ -1,16 +1,15 @@
-"""What `plan` and `run` print: counts, the causes that need action, and failures grouped by cause."""
+"""What `plan` prints: counts, the causes that need action, each job's line, and what `adopt` and `--move-files` did."""
 
 from __future__ import annotations
 
 from collections import Counter
-from pathlib import Path
 
-from .display import name
-from .plan import Decision, Status
-from .run import Result, log_tail
-
-# The most causes or job ids listed before the rest are counted.
-LISTED = 10
+from ..display import id_width, labels, name
+from ..model import Dag
+from ..plan import Adoption, Decision, Status
+from ..reuse.relocate import Migration
+from . import LISTED
+from .causes import adoption, cause, move
 
 
 def jobs(count: int) -> str:
@@ -63,7 +62,7 @@ def blocked_lines(decisions: tuple[Decision, ...]) -> list[str]:
     causes: dict[tuple[str, str], list[Decision]] = {}
     for decision in decisions:
         if decision.status is Status.BLOCKED and decision.caused_by is None:
-            causes.setdefault((decision.job.operation, decision.reason), []).append(decision)
+            causes.setdefault((decision.job.operation, cause(decision.cause)), []).append(decision)
     lines = []
     for (operation, reason), members in list(causes.items())[:LISTED]:
         line = f"blocked: {operation}" + (f" x{len(members)}" if len(members) > 1 else "") + f": {reason}"
@@ -85,7 +84,7 @@ def _word(decision: Decision) -> str:
             return "may run"
         case Status.SKIP:
             return "current"
-        case _:
+        case Status.CHECK | Status.BLOCKED:
             return decision.status.value
 
 
@@ -93,7 +92,7 @@ def _reason(decision: Decision) -> str:
     if decision.status is Status.RUN and decision.waits_for:
         waits = decision.waits_for
         return "waits for " + (", ".join(map(str, waits)) if len(waits) <= 3 else f"{len(waits)} jobs")
-    return decision.reason
+    return cause(decision.cause)
 
 
 def job_line(decision: Decision, work: dict[int, str], width: int) -> str:
@@ -101,29 +100,44 @@ def job_line(decision: Decision, work: dict[int, str], width: int) -> str:
     return f"[{job.id:>{width}}] {_word(decision):7} {name(job, work[job.id])}: {_reason(decision)}"
 
 
-def _normalised(job_files: tuple[str, ...], root: Path, lines: list[str]) -> tuple[str, ...]:
-    """A log's last lines without what is particular to the job: its command line and the paths of its files."""
-    names = sorted({*job_files, *(str(root / path) for path in job_files)}, key=len, reverse=True)
-    kept = []
-    for line in lines:
-        if line.lstrip().startswith("$ "):
-            continue
-        for file in names:
-            line = line.replace(file, "<file>")
-        kept.append(line)
-    return tuple(kept)
+def listing(dag: Dag, decisions: tuple[Decision, ...], verbose: bool) -> list[str]:
+    """What `plan` and `run` print of a plan: the counts, a line for each cause that blocks jobs, and with `verbose` every job."""
+    lines = [counts(decisions), *blocked_lines(decisions)]
+    if verbose:
+        work, width = labels(dag.jobs), id_width(dag.jobs)
+        lines += [job_line(decision, work, width) for decision in decisions]
+    return lines
 
 
-def failure_groups(root: Path, failures: list[Result]) -> list[list[Result]]:
-    """The failed jobs grouped by what went wrong: the same error and the same last lines of the log."""
-    groups: dict[tuple, list[Result]] = {}
-    for result in failures:
-        files = (*result.job.input_paths, *result.job.output_paths)
-        tail = log_tail(result.log) if result.log is not None else []
-        groups.setdefault((result.error, _normalised(files, root, tail)), []).append(result)
-    return list(groups.values())
+def nothing_run(decisions: tuple[Decision, ...]) -> str:
+    """Why `run` without `--partial` ran nothing: how many jobs are blocked."""
+    held = sum(decision.status is Status.BLOCKED for decision in decisions)
+    return (f"nothing was run: {jobs(held)} {'is' if held == 1 else 'are'} blocked. Fix the cause, or pass "
+            "--partial to run the jobs that are not.")
 
 
-def ids(results: list[Result]) -> str:
-    shown = ", ".join(str(result.job.id) for result in results[:LISTED])
-    return shown + (f", and {len(results) - LISTED} more" if len(results) > LISTED else "")
+def adoption_line(adopted: Adoption) -> str:
+    return f"[{adopted.job.id}] {adopted.status.value:7} {adopted.job.operation}: {adoption(adopted.cause)}"
+
+
+def move_lines(migrations: tuple[Migration, ...], made: bool) -> list[str]:
+    """For stdout: each move, made or that would be made as `made` says, and each job not moved with why."""
+    lines = []
+    for migration in migrations:
+        for old, new in migration.moves:
+            lines.append(f"[{migration.job.id}] {'moved' if made else 'would move'} {old} -> {new}")
+        if not migration.moves:
+            lines.append(f"[{migration.job.id}] not moved: {move(migration)}")
+    return lines
+
+
+def move_notes(migrations: tuple[Migration, ...], made: bool) -> list[str]:
+    """For stderr: how many jobs reuse moved outputs, and once moves are made, what that leaves unchecked."""
+    moved = sum(1 for migration in migrations if migration.moves)
+    if not moved:
+        return []
+    notes = [f"{moved} job(s) reuse outputs by moving them to their new paths"]
+    if made:
+        notes.append("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
+                     "into its output is not rerun")
+    return notes

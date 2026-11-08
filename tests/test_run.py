@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from spit_bash.cause import Cause, Why
 from spit_bash.load import load_dag
 from spit_bash.files import Stamp
 from spit_bash.plan import Status, plan
@@ -139,14 +140,14 @@ class RunTests(unittest.TestCase):
 
             source.write_text("changed")
             decisions, results = run(dag, state_at(root))
-            self.assertEqual(decisions[0].reason, "input changed")
+            self.assertEqual(decisions[0].cause, Cause(Why.INPUT_CHANGED))
             self.assertFalse(any(r.error for r in results))
             self.assertEqual((root / "final.txt").read_text(), "CHANGED!")
 
             data["jobs"][0]["commands"][0]["command"].append(["extra"])
             decisions = plan(read(data), state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE])
-            self.assertEqual(decisions[0].reason, "command changed")
+            self.assertEqual(decisions[0].cause, Cause(Why.WORK_CHANGED, parts=("commands",)))
 
     def test_failed_verify_prevents_command_and_dependent(self):
         with tempfile.TemporaryDirectory() as directory:

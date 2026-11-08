@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spit_bash.cause import Cause, Why
 from spit_bash.model import DagError
 from spit_bash.plan import Status, adopt, plan
 from support import command, read, run, sample, state_at
@@ -72,13 +73,13 @@ class CheckTests(unittest.TestCase):
         dag = read(data)
         decisions, results = run(dag, state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.CHECK, Status.SKIP])
-        self.assertEqual(decisions[0].reason, "checks not yet run on these files")
+        self.assertEqual(decisions[0].cause, Cause(Why.CHECKS_NOT_RUN))
         self.assertEqual([r.error for r in results], [None])
         self.assertEqual(upper.stat().st_mtime_ns, made)
         self.assertEqual([d.status for d in plan(dag, state_at(self.root))], [Status.SKIP, Status.SKIP])
 
         data = checked(self.root, [check("after", "output", "work/upper.txt", "HELLO", name="other")])
-        self.assertEqual(plan(read(data), state_at(self.root))[0].reason, "checks changed")
+        self.assertEqual(plan(read(data), state_at(self.root))[0].cause, Cause(Why.CHECKS_CHANGED))
 
     def test_a_recheck_that_fails_drops_the_record_so_the_job_reruns(self):
         run(read(checked(self.root)), state_at(self.root))
@@ -106,7 +107,7 @@ class CheckTests(unittest.TestCase):
         data["executables"] = ["no-such-checker-here"]
         decisions = plan(read(data), state_at(self.root))
         self.assertEqual(decisions[0].status, Status.BLOCKED)
-        self.assertEqual(decisions[0].reason, "program not found: no-such-checker-here")
+        self.assertEqual(decisions[0].cause, Cause(Why.PROGRAM_NOT_FOUND, ("no-such-checker-here",)))
 
     def test_checks_must_be_given_and_match_their_ports(self):
         data = checked(self.root)

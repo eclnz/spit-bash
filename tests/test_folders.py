@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spit_bash.cause import Cause, Why
 from spit_bash.model import DagError
 from spit_bash.files import stamp
 from spit_bash.plan import Status, plan
@@ -81,7 +82,7 @@ class FolderTests(unittest.TestCase):
             # A file deep in the folder changes, but not the folder's own time.
             (root / "pages/part/2.txt").write_text("three")
             decisions, results = run(dag, state_at(root))
-            self.assertEqual(decisions[0].reason, "input changed")
+            self.assertEqual(decisions[0].cause, Cause(Why.INPUT_CHANGED))
             self.assertEqual((root / "book.txt").read_text(), "ONE THREE")
 
     def test_clears_a_folder_an_earlier_run_left(self):
@@ -92,7 +93,7 @@ class FolderTests(unittest.TestCase):
             (root / "work/upper/stale.txt").write_text("STALE ")
             dag = read(folders_dag(root))
             decisions, results = run(dag, state_at(root))
-            self.assertEqual(decisions[0].reason, "no successful run recorded")
+            self.assertEqual(decisions[0].cause, Cause(Why.NO_RECORD))
             self.assertFalse(any(r.error for r in results), [r.error for r in results])
             # The folder was made again, empty, for the tool: the stale file is gone.
             self.assertFalse((root / "work/upper/stale.txt").exists())
@@ -116,7 +117,7 @@ class FolderTests(unittest.TestCase):
             (root / "pages").write_text("a file, not a folder")
             decisions = plan(read(folders_dag(root)), state_at(root))
             self.assertEqual(decisions[0].status, Status.BLOCKED)
-            self.assertEqual(decisions[0].reason, "missing external input: pages")
+            self.assertEqual(decisions[0].cause, Cause(Why.MISSING_EXTERNAL, ("pages",)))
 
             (root / "pages").unlink()
             pages(root)

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spit_bash.cause import Cause, Why
 from spit_bash.model import DagError
 from spit_bash.plan import Status, plan
 from spit_bash.run import execute, partial
@@ -123,7 +124,7 @@ class SequenceTests(unittest.TestCase):
         data = sequenced(self.root)
         dag = read(data)
         self.assertEqual(dag.jobs[0].commands, ())
-        self.assertEqual(plan(dag, state_at(self.root))[0].reason, "no command and output is missing")
+        self.assertEqual(plan(dag, state_at(self.root))[0].cause, Cause(Why.NO_COMMAND_OUTPUT_MISSING))
 
 
 if __name__ == "__main__":

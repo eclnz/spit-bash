@@ -13,9 +13,11 @@ import unittest.mock
 from pathlib import Path
 
 from spit_bash import cli
+from spit_bash.cause import Cause, Why
 from spit_bash.plan import Status, plan
+from spit_bash.report import causes
 from spit_bash.reuse import relocate
-from spit_bash.reuse.relocate import Migration
+from spit_bash.reuse.relocate import Migration, MoveCause
 from support import command, job_entry, document, read, run, sample, state_at
 
 
@@ -77,14 +79,15 @@ class IdentityTests(unittest.TestCase):
     def test_a_changed_job_names_the_part_that_changed(self):
         (self.root / "source.txt").write_text("hello")
         run(read(self.data), state_at(self.root))
-        for edit, reason in [
-            (lambda item: item["commands"][0]["command"].append(["x"]), "command changed"),
-            (lambda item: item["inputs"].update(again=item["inputs"]["input"]), "the artifacts it reads changed"),
+        for edit, part, words in [
+            (lambda item: item["commands"][0]["command"].append(["x"]), "commands", "command changed"),
+            (lambda item: item["inputs"].update(again=item["inputs"]["input"]), "inputs", "the artifacts it reads changed"),
         ]:
             changed = copy.deepcopy(self.data)
             edit(changed["jobs"][0])
             decision = plan(read(changed), state_at(self.root))[0]
-            self.assertIn(reason, decision.reason)
+            self.assertEqual(decision.cause, Cause(Why.WORK_CHANGED, parts=(part,)))
+            self.assertEqual(causes.cause(decision.cause), words)
 
     def test_a_record_without_parts_still_reports_a_changed_fingerprint(self):
         (self.root / "source.txt").write_text("hello")
@@ -94,14 +97,16 @@ class IdentityTests(unittest.TestCase):
             state.jobs[key] = record.model_copy(update={"parts": None})
         changed = copy.deepcopy(self.data)
         changed["jobs"][0]["commands"][0]["command"].append(["x"])
-        self.assertEqual(plan(read(changed), state)[0].reason, "job fingerprint changed")
+        decision = plan(read(changed), state)[0]
+        self.assertEqual(decision.cause, Cause(Why.WORK_CHANGED, parts=None))
+        self.assertEqual(causes.cause(decision.cause), "job fingerprint changed")
 
     def test_a_stranded_output_is_named_when_the_path_rules_change(self):
         (self.root / "source.txt").write_text("hello")
         run(read(self.data), state_at(self.root))
         after = read(moved(copy.deepcopy(self.data), lambda path: path if path == "source.txt" else "derivatives/" + path))
-        reason = plan(after, state_at(self.root))[0].reason
-        self.assertEqual(reason, "output missing; an earlier run left it at work/upper.txt")
+        cause = plan(after, state_at(self.root))[0].cause
+        self.assertEqual(cause, Cause(Why.OUTPUT_MISSING, ("work/upper.txt",)))
 
     def test_scheduling_checks_and_origin_do_not_change_the_fingerprint(self):
         base = read(self.data).jobs[0].work.fingerprint
@@ -160,8 +165,7 @@ class MigrateTests(unittest.TestCase):
 
     def test_moves_a_chain_in_one_pass_and_the_jobs_are_then_current(self):
         found = self.find()
-        self.assertEqual({i: m.reason for i, m in found.items()}, {1: "outputs recorded at other paths"} | {
-            2: "outputs recorded at other paths"})
+        self.assertEqual({i: m.cause for i, m in found.items()}, {1: MoveCause.MOVABLE, 2: MoveCause.MOVABLE})
         done = relocate.apply(self.dag, tuple(found.values()), self.state.apply)
         self.assertTrue(all(m.moves for m in done))
         self.assertEqual((self.root / "derivatives/final.txt").read_text(), "HELLO!")
@@ -185,7 +189,7 @@ class MigrateTests(unittest.TestCase):
         target.write_text("someone else's")
         found = self.find()
         self.assertEqual(found[1].moves, ())
-        self.assertIn("already exists", found[1].reason)
+        self.assertEqual((found[1].cause, found[1].detail), (MoveCause.DESTINATION_EXISTS, "derivatives/work/upper.txt"))
         relocate.apply(self.dag, tuple(found.values()), self.state.apply)
         self.assertEqual(target.read_text(), "someone else's")
         self.assertTrue((self.root / "work/upper.txt").exists())
@@ -194,11 +198,11 @@ class MigrateTests(unittest.TestCase):
         (self.root / "final.txt").write_text("edited by hand")
         found = self.find()
         self.assertEqual(found[2].moves, ())
-        self.assertIn("missing or changed", found[2].reason)
+        self.assertEqual((found[2].cause, found[2].detail), (MoveCause.OUTPUT_CHANGED, "final.txt"))
 
     def test_a_job_whose_input_changed_is_not_moved(self):
         (self.root / "source.txt").write_text("changed")
-        self.assertIn("input", self.find()[1].reason)
+        self.assertEqual(self.find()[1].cause, MoveCause.INPUT_CHANGED)
         self.assertEqual(self.find()[1].moves, ())
 
     def test_a_downstream_job_is_not_moved_when_its_producer_is_not(self):
@@ -211,7 +215,7 @@ class MigrateTests(unittest.TestCase):
         # Job 2 now reads and writes under the paths job 1's record left its output at.
         data["jobs"][1]["outputs"]["output"]["path"] = "work/upper.txt"
         self.dag = read(data)
-        self.assertIn("still uses", self.find()[1].reason)
+        self.assertEqual(self.find()[1].cause, MoveCause.STILL_USED)
 
     def test_a_move_that_fails_part_way_puts_the_job_back(self):
         real, calls = os.rename, []
@@ -223,11 +227,11 @@ class MigrateTests(unittest.TestCase):
             real(source, target)
 
         found = {m.job.id: m for m in relocate.find(self.dag, self.state.jobs)}
-        two = Migration(found[1].job, found[1].moves + found[2].moves, found[1].reason, found[1].record)
+        two = Migration(found[1].job, found[1].moves + found[2].moves, found[1].cause, record=found[1].record)
         with unittest.mock.patch("os.rename", flaky):
             done = relocate.apply(self.dag, (two,), self.state.apply)
         self.assertEqual(done[0].moves, ())
-        self.assertIn("disk says no", done[0].reason)
+        self.assertEqual((done[0].cause, done[0].detail), (MoveCause.MOVE_FAILED, "disk says no"))
         self.assertTrue((self.root / "work/upper.txt").exists())
         self.assertTrue((self.root / "final.txt").exists())
         self.assertFalse((self.root / "derivatives/work/upper.txt").exists())
@@ -238,7 +242,7 @@ class MigrateTests(unittest.TestCase):
 
         with unittest.mock.patch("os.rename", cross):
             done = relocate.apply(self.dag, tuple(self.find().values()), self.state.apply)
-        self.assertTrue(all(m.moves == () and "not moved" in m.reason for m in done))
+        self.assertTrue(all(m.moves == () and m.cause is MoveCause.MOVE_FAILED for m in done))
         self.assertTrue((self.root / "final.txt").exists() and (self.root / "work/upper.txt").exists())
 
     def test_nothing_to_move_when_paths_are_unchanged(self):
@@ -300,7 +304,7 @@ class OutputShapeTests(unittest.TestCase):
         (self.root / "out/dir/extra.txt").write_text("added later")
         found = relocate.find(self.dag, self.state.jobs)
         self.assertEqual(found[0].moves, ())
-        self.assertIn("missing or changed", found[0].reason)
+        self.assertEqual(found[0].cause, MoveCause.OUTPUT_CHANGED)
 
 
 class CommandLineTests(unittest.TestCase):

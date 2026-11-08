@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
-import json
 import os
 import signal
 import subprocess
@@ -16,15 +15,16 @@ from pathlib import Path
 
 from .load import load_dag
 from .model import Dag, DagError, Job
-from .display import id_width, labels
-from .explain import explain
 from .files import stamp
-from .plan import Decision, Status, adopt, plan, writes
+from .plan import Decision, Status, adopt, explained, plan, writes
 from .reuse.evidence import Compare
 from .reuse.relabel import relabel
 from .reuse.relocate import apply, find
 from .state.store import Store
-from .report import blocked_lines, counts, failure_groups, ids, job_line, jobs
+from .report.explain import explain
+from .report.failures import failure_groups, ids
+from .report.plan_json import document
+from .report.plan_text import adoption_line, listing, move_lines, move_notes, nothing_run
 from .run import Result, execute, log_tail
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.ADOPT:
             adoptions = adopt(dag, state)
             for adoption in adoptions:
-                print(f"[{adoption.job.id}] {adoption.status.value:7} {adoption.job.operation}: {adoption.reason}")
+                print(adoption_line(adoption))
             return 0
 
         forced = selected.matched_ids if args.force else False
@@ -271,49 +271,29 @@ def main(argv: list[str] | None = None) -> int:
                            for m in migrations for old, new in m.moves}
                 if pending:
                     decisions = plan(dag, state, forced, compare, pending)
-            for migration in migrations:
-                for old, new in migration.moves:
-                    print(f"[{migration.job.id}] {'moved' if args.action is Action.RUN else 'would move'} {old} -> {new}")
-                if not migration.moves:
-                    print(f"[{migration.job.id}] not moved: {migration.reason}")
-            moved = sum(1 for m in migrations if m.moves)
-            if moved:
-                print(f"{moved} job(s) reuse outputs by moving them to their new paths", file=sys.stderr)
-            if args.action is Action.RUN and any(m.moves for m in migrations):
-                print("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
-                      "into its output is not rerun", file=sys.stderr)
+            made = args.action is Action.RUN
+            for line in move_lines(migrations, made):
+                print(line)
+            for line in move_notes(migrations, made):
+                print(line, file=sys.stderr)
+            if made and any(m.moves for m in migrations):
                 decisions = plan(dag, state, forced, compare)
         if args.action is Action.RUN:
             state.apply(writes(decisions))
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
-        work, width = labels(dag.jobs), id_width(dag.jobs)
         if args.action is Action.PLAN and args.job is not None:
-            print("\n".join(explain(dag, state, decisions, args.job, compare)))
-            return 1 if any(d.job.id == args.job and d.status is Status.BLOCKED for d in decisions) else 0
+            decision, found = explained(dag, state, decisions, args.job, compare)
+            print("\n".join(explain(dag, decisions, decision, found)))
+            return 1 if decision.status is Status.BLOCKED else 0
         if args.action is Action.PLAN and args.json:
-            held = Counter(d.caused_by for d in decisions if d.caused_by is not None)
-            json.dump({
-                "left_out": list(dag.left_out),
-                "jobs": [
-                    {"id": d.job.id, "operation": d.job.operation, "status": d.status.value, "reason": d.reason,
-                     "waits_for": list(d.waits_for), "caused_by": d.caused_by, "holds_up": held[d.job.id]}
-                    for d in decisions
-                ],
-            }, sys.stdout, indent=2)
-            print()
+            print(document(dag, decisions))
         else:
-            print(counts(decisions))
-            for line in blocked_lines(decisions):
+            for line in listing(dag, decisions, args.verbose):
                 print(line)
-            if args.verbose:
-                for decision in decisions:
-                    print(job_line(decision, work, width))
         if args.action is Action.PLAN:
             return 1 if blocked else 0
         if blocked and not args.partial:
-            held = sum(decision.status is Status.BLOCKED for decision in decisions)
-            print(f"nothing was run: {jobs(held)} {'is' if held == 1 else 'are'} blocked. Fix the cause, or pass "
-                  "--partial to run the jobs that are not.", file=sys.stderr)
+            print(nothing_run(decisions), file=sys.stderr)
             return 1
 
         if args.enforce_memory:

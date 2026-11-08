@@ -20,6 +20,7 @@ from .files import FolderEntries, Stamps, folder_entries, folder_inputs, hashes,
 from .logs import StampedLog, drain, open_log, pump
 from .memory import group_memory
 from .plan import Decision, Status, judge
+from .report.causes import cause
 from .reuse import records
 from .reuse.evidence import Compare
 from .state.store import Store
@@ -388,7 +389,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
         if settled.status is not Status.RUN:
             progress.dropped(job)
         if settled.status is Status.BLOCKED:
-            return Result(job, settled.reason)
+            return Result(job, cause(settled.cause))
         if settled.status is Status.SKIP:
             state.apply(settled.writes)
             say(job, "skip", ": upstream output unchanged")

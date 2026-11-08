@@ -145,12 +145,3 @@ def evidence(dag: Dag, job: Job, record: Record | None, now: Stamps, compare: Co
                             hashes, every)
     return Evidence(job, record, now, work_changed, parts, found.checks_changed, inputs, outputs)
 
-
-PART_NAMES = {"commands": "command", "verify": "verify commands",
-              "inputs": "the artifacts it reads", "outputs": "the artifacts it makes"}
-
-
-def describe_parts(parts: tuple[str, ...] | None) -> str:
-    """Why a job's work differs from its record's, naming the parts that changed when it can."""
-    names = [text for part, text in PART_NAMES.items() if part in (parts or ())]
-    return "; ".join(names) + " changed" if names else "job fingerprint changed"

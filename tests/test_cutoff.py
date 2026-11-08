@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from spit_bash.cause import Cause, Why
 from spit_bash.cli import main
 from spit_bash.plan import Status, plan
 from spit_bash.reuse.evidence import Compare
@@ -71,20 +72,20 @@ class CutoffTests(unittest.TestCase):
         self.data["jobs"][2]["commands"][0]["command"].append(["extra"])
         decisions = plan(read(self.data), state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.RUN])
-        self.assertEqual(decisions[2].reason, "command changed")
+        self.assertEqual(decisions[2].cause, Cause(Why.WORK_CHANGED, parts=("commands",)))
 
     def test_without_hashing_a_job_below_a_rerun_runs(self):
         self.edit_source("Hello")
         decisions = plan(self.dag, state_at(self.root), compare=Compare.STAT)
         self.assertEqual([d.status for d in decisions], [Status.RUN] * 3)
-        self.assertEqual(decisions[1].reason, "dependency will run")
+        self.assertEqual(decisions[1].cause, Cause(Why.DEPENDENCY_WILL_RUN))
 
     def test_a_job_with_no_command_below_a_maybe_is_blocked(self):
         self.data["jobs"][2]["commands"] = []
         self.edit_source("Hello")
         decisions = plan(read(self.data), state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.BLOCKED])
-        self.assertEqual(decisions[2].reason, "no command and dependency may run")
+        self.assertEqual(decisions[2].cause, Cause(Why.NO_COMMAND_DEPENDENCY_MAY_RUN))
 
     def test_a_job_whose_input_is_missing_is_not_a_maybe(self):
         self.edit_source("Hello")
@@ -92,7 +93,7 @@ class CutoffTests(unittest.TestCase):
         decisions = plan(self.dag, state_at(self.root))
         # Nothing is there to compare, so the job below it cannot be settled early.
         self.assertEqual([d.status for d in decisions], [Status.RUN] * 3)
-        self.assertEqual([d.reason for d in decisions][1:], ["output missing", "dependency will run"])
+        self.assertEqual([d.cause.why for d in decisions][1:], [Why.OUTPUT_MISSING, Why.DEPENDENCY_WILL_RUN])
 
     def test_plan_and_run_say_how_many_may_run_and_how_many_were_cut_off(self):
         self.edit_source("Hello")

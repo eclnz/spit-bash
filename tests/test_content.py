@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash import files
+from spit_bash.cause import Cause, Why
 from spit_bash.model import DagError
 from spit_bash.plan import Status, plan, writes
 from spit_bash.reuse.evidence import Compare
@@ -49,7 +50,7 @@ class ContentTests(unittest.TestCase):
             touch(root / "source.txt")
             decisions = plan(dag, state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE])
-            self.assertEqual(decisions[0].reason, "input changed")
+            self.assertEqual(decisions[0].cause, Cause(Why.INPUT_CHANGED))
 
     def test_touched_output_is_current_but_an_edited_one_is_not(self):
         with tempfile.TemporaryDirectory() as directory:
