@@ -57,11 +57,33 @@ class ContentTests(unittest.TestCase):
             (root / "final.txt").write_text("edited")
             self.assertEqual(self.statuses(dag, root), [Status.SKIP, Status.RUN])
 
-    def test_stat_only_treats_a_touch_as_a_change(self):
+    def test_comparing_by_stat_treats_a_touch_as_a_change(self):
         with tempfile.TemporaryDirectory() as directory:
             root, dag = self.ran(directory)
             touch(root / "source.txt")
             self.assertEqual(self.statuses(dag, root, hashing=False), [Status.RUN, Status.RUN])
+
+    def test_comparing_in_full_catches_a_change_that_kept_the_stamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, dag = self.ran(directory)
+            source = root / "source.txt"
+            before = source.stat().st_mtime_ns
+            source.write_text("HELLO")
+            os.utime(source, ns=(before, before))
+            # Same size and time: only reading the bytes tells.
+            self.assertEqual(self.statuses(dag, root), [Status.SKIP, Status.SKIP])
+            self.assertEqual(self.statuses(dag, root, verify=True), [Status.RUN, Status.MAYBE])
+
+    def test_comparing_in_full_reruns_a_job_whose_record_holds_no_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            dag = read(sample(root))
+            state = state_at(root)
+            asyncio.run(execute(dag, plan(dag, state), state, 2, root / ".spit-bash/logs", hashing=False))
+            state.close()
+            self.assertEqual(self.statuses(dag, root), [Status.SKIP, Status.SKIP])
+            self.assertEqual(self.statuses(dag, root, verify=True), [Status.RUN, Status.RUN])
 
     def test_a_run_without_hashing_records_none_and_a_touch_then_runs(self):
         with tempfile.TemporaryDirectory() as directory:

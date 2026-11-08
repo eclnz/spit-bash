@@ -49,9 +49,9 @@ class ExplainTests(unittest.TestCase):
         self.assertIn("decision: skip", out)
         self.assertIn("same content, so only touched", out)
 
-    def test_stat_only_says_content_was_not_compared(self):
+    def test_comparing_by_stat_says_content_was_not_compared(self):
         (self.root / "source.txt").write_text("changed!")
-        self.assertIn("not compared (--stat-only)", self.explain(1, None, "--stat-only")[1])
+        self.assertIn("not compared (--compare stat)", self.explain(1, None, "--compare", "stat")[1])
 
     def test_a_record_without_hashes_counts_as_changed(self):
         (self.root / ".spit-bash/state.jsonl").unlink()
