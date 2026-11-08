@@ -320,13 +320,12 @@ class CommandLineTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_plan_lists_the_moves_and_changes_nothing(self):
-        code, out, _ = self.main("plan", "--move-files")
+        code, out, _ = self.main("plan", "--move-files", "--verbose")
         self.assertIn("would move final.txt -> derivatives/final.txt", out)
         self.assertTrue((self.root / "final.txt").exists())
         self.assertFalse((self.root / "derivatives").exists())
         # The listing judges the jobs as if the files were already moved.
-        self.assertEqual([line.split()[1] for line in out.splitlines() if line.startswith("[")
-                          and "would move" not in line], ["skip", "skip"])
+        self.assertIn("all 2 jobs are current", out)
         self.assertIn("2 job(s) reuse outputs", _)
 
     def test_run_moves_the_files_and_executes_no_job(self):

@@ -55,6 +55,8 @@ def explain(dag: Dag, state: State, decisions: tuple[Decision, ...], job_id: int
     job = decision.job
     lines = [f"Job {job.id}: {name(job, labels(dag.jobs)[job.id])}",
              f"  decision: {decision.status.value}, {decision.reason}"]
+    if decision.caused_by is not None:
+        lines.append(f"  blocked by job {decision.caused_by}: {by_id[decision.caused_by].reason}")
     record = state.jobs.get(job_key(job))
     if record is None:
         lines.append("  record: none; no successful run is recorded for what this job makes")

@@ -39,6 +39,8 @@ class Result:
     log: Path | None = None
     # What a job planned `maybe` turned out to be, once its upstream jobs had finished.
     settled: Status | None = None
+    # For a job that did not run because a job it needs failed: the job whose failure it is.
+    caused_by: int | None = None
 
 
 @dataclass(frozen=True)
@@ -395,10 +397,10 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         print(f"  [{job.id:>{width}}] {word:7} {name(job, work[job.id])}{rest}", flush=True)
 
     async def failed_dependency(job: Job) -> int | None:
-        """Wait for the jobs this one needs, and name the first that failed."""
+        """Wait for the jobs this one needs, and name the job whose failure stopped the first that failed."""
         for dependency in job.depends_on:
-            if dependency in tasks and (await tasks[dependency]).error:
-                return dependency
+            if dependency in tasks and (result := await tasks[dependency]).error:
+                return result.caused_by or dependency
         return None
 
     async def run_one(decision: Decision) -> Result:
@@ -407,7 +409,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         if failed is not None:
             if decision.status in (Status.RUN, Status.MAYBE):
                 progress.dropped(job)
-            return Result(job, f"dependency {failed} failed")
+            return Result(job, f"dependency {failed} failed", caused_by=failed)
         if decision.status is Status.MAYBE:
             return await settle(job)
         return await perform(decision)

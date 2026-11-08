@@ -97,10 +97,10 @@ class CutoffTests(unittest.TestCase):
         self.edit_source("Hello")
         path = self.root / "jobs.spitdag"
         path.write_text(json.dumps(self.data))
-        code, out, err = call("plan", str(path))
+        code, out, err = call("plan", str(path), "--verbose")
         self.assertEqual(code, 0)
-        self.assertIn("[2] maybe   op2: runs if an upstream output changes", out)
-        self.assertIn("1 will run, 2 more may, if an upstream output changes", err)
+        self.assertIn("[2] may run op2: runs if an upstream output changes", out)
+        self.assertIn("1 job can start, 2 jobs may run if an upstream output changes", out)
         code, _, err = call("run", str(path))
         self.assertEqual(code, 0, err)
         self.assertIn("1 done, 0 checked, 0 failed, 2 current, 0 blocked, "
