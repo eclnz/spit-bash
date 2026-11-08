@@ -60,7 +60,9 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--spit", default=os.environ.get("SPIT", "spit"),
                              help="the spit program, for a recipe or pipeline (default: $SPIT, else spit)")
         command.add_argument("--partial", action="store_true",
-                             help="pass --partial to `spit dag`: plan complete jobs, leave out the rest")
+                             help="do what can be done: pass --partial to `spit dag`, which leaves out jobs it cannot\n"
+                                  "complete, and with `run`, run the jobs that are not blocked (default: run nothing\n"
+                                  "while any job is blocked)")
         choose = command.add_argument_group("choosing jobs", "Keep the jobs whose outputs match, and every job upstream of them.\n"
                                             "Repeat an option to match any of its values; different options must all match.")
         choose.add_argument("--only", action="append", default=[], metavar="DIM=VALUE[,...]",
@@ -103,9 +105,6 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--timestamp-logs", action="store_true",
                                  help="start each line of a job's log with the date, time and UTC offset at which\n"
                                       "the runner received it; a tool that buffers its output may have written it earlier")
-            command.add_argument("--skip-blocked", action="store_true",
-                                 help="run the jobs that can start even when others are blocked, leaving the blocked ones\n"
-                                      "(default: run nothing while any job is blocked)")
             command.add_argument("--keep-failed", action="store_true",
                                  help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
@@ -133,8 +132,6 @@ def _load(args: argparse.Namespace) -> Dag:
     if not args.files[0].endswith(SPIT_SUFFIXES):
         if len(args.files) > 1:
             raise DagError(f"expected one .spitdag, got {len(args.files)} files")
-        if args.partial:
-            raise DagError("--partial is for `spit dag`; give a recipe or pipeline, not a .spitdag")
         if args.files[0] == "-":
             return load_dag(sys.stdin, args.root)
         with open(args.files[0], encoding="utf-8") as source:
@@ -299,10 +296,10 @@ def main(argv: list[str] | None = None) -> int:
                     print(job_line(decision, work, width))
         if args.action is Action.PLAN:
             return 1 if blocked else 0
-        if blocked and not args.skip_blocked:
+        if blocked and not args.partial:
             held = sum(decision.status is Status.BLOCKED for decision in decisions)
             print(f"nothing was run: {jobs(held)} {'is' if held == 1 else 'are'} blocked. Fix the cause, or pass "
-                  "--skip-blocked to run the jobs that are not.", file=sys.stderr)
+                  "--partial to run the jobs that are not.", file=sys.stderr)
             return 1
 
         if args.enforce_memory:

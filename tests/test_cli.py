@@ -79,7 +79,7 @@ class CliTests(unittest.TestCase):
     def test_blocked_job_does_not_stop_independent_jobs(self):
         self.data["external_inputs"].append(artifact("missing.txt"))
         self.data["jobs"].append(job(3, ["missing.txt"], "other.txt", UPPER))
-        code, out, err = call("run", self.write(), "--skip-blocked")
+        code, out, err = call("run", self.write(), "--partial")
         self.assertEqual(code, 1)
         self.assertIn("blocked: op3: missing external input: missing.txt", out)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
@@ -171,11 +171,8 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(code, 0, err)
                 self.assertIn("1 job can start, 1 job is current", out)
 
-    def test_options_for_spit_need_a_recipe_or_pipeline(self):
-        code, _, err = call("plan", self.write(), "--partial")
-        self.assertEqual(code, 2)
-        self.assertIn("--partial is for `spit dag`", err)
-        code, _, err = call("plan", str(self.dag), str(self.dag))
+    def test_a_spitdag_is_given_alone(self):
+        code, _, err = call("plan", self.write(), str(self.dag))
         self.assertEqual(code, 2)
         self.assertIn("expected one .spitdag, got 2 files", err)
         code, _, err = call("plan", "study.spitin", "--spit", str(self.root / "no-spit"))
