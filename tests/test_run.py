@@ -15,7 +15,8 @@ from unittest import mock
 
 from spit_bash.dag import load_dag
 from spit_bash.files import Stamp
-from spit_bash.plan import State, Status, plan
+from spit_bash.plan import Status, plan
+from spit_bash.state.store import Store
 from spit_bash import run as run_module
 from spit_bash.run import execute
 from support import FIXTURE, artifact, command, document, job, read, run, sample, state_at
@@ -421,7 +422,7 @@ class EarlierOutputTests(unittest.TestCase):
 
     def run_job(self, script, keep_failed=False):
         dag = load_dag(io.StringIO(json.dumps(document(self.root, [job(1, ["in.txt"], "out.txt", script)], ["in.txt"]))), None)
-        state = State(self.root / "state.jsonl")
+        state = Store(self.root / "state.jsonl")
         decisions = plan(dag, state, False)
         with contextlib.redirect_stdout(io.StringIO()):
             return asyncio.run(execute(dag, decisions, state, 1, self.root / "logs", keep_failed=keep_failed))

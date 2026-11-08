@@ -6,7 +6,8 @@ from unittest import mock
 
 from spit_bash import progress as timing
 from spit_bash.dag import Job, Output, Run
-from spit_bash.plan import State, job_key
+from spit_bash.plan import job_key
+from spit_bash.state.store import Store
 from spit_bash.progress import Progress, duration
 from support import read, run, sample, state_at
 
@@ -137,7 +138,7 @@ class ProgressTests(unittest.TestCase):
             (root / "source.txt").write_text("hello")
             dag = read(sample(root))
             run(dag, state_at(root))
-            records = State(root / ".spit-bash" / "state.jsonl").jobs
+            records = Store(root / ".spit-bash" / "state.jsonl").jobs
             for job in dag.jobs:
                 self.assertGreater(records[job_key(job)].seconds, 0)
 

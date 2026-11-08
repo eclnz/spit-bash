@@ -6,7 +6,8 @@ from pathlib import Path
 
 from spit_bash import files
 from spit_bash.dag import DagError
-from spit_bash.plan import RunRecord, State, Status, apply_refreshes, plan
+from spit_bash.plan import Status, apply_refreshes, plan
+from spit_bash.state.store import Store
 from spit_bash.run import execute
 from support import artifact, command, read, run, sample, state_at
 
@@ -163,7 +164,7 @@ class ContentTests(unittest.TestCase):
             path = Path(directory) / "state.jsonl"
             path.write_text('{"version": 5}\n')
             with self.assertRaisesRegex(DagError, "delete it to start from fresh records"):
-                State(path)
+                Store(path)
 
 
 if __name__ == "__main__":

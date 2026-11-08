@@ -19,7 +19,9 @@ from .display import id_width, labels, name
 from .files import FolderEntries, Stamps, folder_entries, folder_inputs, hashes, stamps, stored, stored_each
 from .logs import StampedLog, drain, open_log, pump
 from .memory import group_memory
-from .plan import Decision, RunRecord, State, Status, job_key, judge
+from .plan import Decision, Status, job_key, judge
+from .state.record import Record
+from .state.store import Store
 from .progress import Progress, about, duration
 from .schedule import ReadyQueue, ranks, size, too_big
 
@@ -344,7 +346,7 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
     return job.keyed(hashes(dag, job.inputs)), job.keyed(hashes(dag, job.outputs))
 
 
-async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores: int, logs: Path,
+async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores: int, logs: Path,
                   hashing: bool = True, memory: int | None = None,
                   keep_failed: bool = False, enforce_memory: bool = True,
                   timestamp_logs: bool = False, verify: bool = False) -> tuple[Result, ...]:
@@ -418,9 +420,9 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             input_hashes, output_hashes = _hash_both(dag, job)
         else:
             input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
-        record = RunRecord(fingerprint=job.fingerprint, parts=job.parts, inputs=stored_each(job.keyed(ran.after)), outputs=stored_each(job.keyed(ran.outputs)), checks=job.checks_key,
-                           input_hashes=input_hashes, output_hashes=output_hashes, seconds=round(ran.seconds, 3),
-                           output_paths=job.output_paths)
+        record = Record(fingerprint=job.fingerprint, parts=job.parts, inputs=stored_each(job.keyed(ran.after)), outputs=stored_each(job.keyed(ran.outputs)), checks=job.checks_key,
+                        input_hashes=input_hashes, output_hashes=output_hashes, seconds=round(ran.seconds, 3),
+                        output_paths=job.output_paths)
         state.record(job_key(job), record)
         progress.finished(job, ran.seconds)
         say(job, "done", f" in {duration(ran.seconds)}; {progress.report()}")

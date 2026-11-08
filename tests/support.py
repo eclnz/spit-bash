@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 from spit_bash.dag import load_dag
-from spit_bash.plan import State, plan
+from spit_bash.plan import plan
+from spit_bash.state.store import Store
 from spit_bash.run import execute
 
 FIXTURE = Path(__file__).parent / "fixtures" / "command_demo.spitdag"
@@ -76,4 +77,4 @@ def run(dag, state, cores=2, force=False, memory=None, keep_failed=False, enforc
 
 
 def state_at(root):
-    return State(Path(root) / ".spit-bash" / "state.jsonl")
+    return Store(Path(root) / ".spit-bash" / "state.jsonl")

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 
 from .dag import Dag, DagError, Job
 from .files import stamp, stamps, stored, stored_each
-from .plan import State, changed_parts, _unchanged, job_key
+from .plan import changed_parts, _unchanged, job_key
+from .state.store import Store
 
 
 @dataclass(frozen=True)
@@ -18,7 +19,7 @@ class Migration:
     reason: str
 
 
-def _plan_job(dag: Dag, job: Job, state: State, claimed: set[str], moving: set[str]) -> Migration | None:
+def _plan_job(dag: Dag, job: Job, state: Store, claimed: set[str], moving: set[str]) -> Migration | None:
     """The moves that bring a job's recorded outputs to its current paths, or None when it has nothing to move."""
     record = state.jobs.get(job_key(job))
     if record is None or record.output_paths is None:
@@ -57,7 +58,7 @@ def _plan_job(dag: Dag, job: Job, state: State, claimed: set[str], moving: set[s
     return Migration(job, tuple(moves), "outputs recorded at other paths")
 
 
-def find(dag: Dag, state: State, jobs: set[int] | None = None) -> tuple[Migration, ...]:
+def find(dag: Dag, state: Store, jobs: set[int] | None = None) -> tuple[Migration, ...]:
     """The jobs, among `jobs` when given, whose recorded outputs are at other paths than their current ones."""
     # A file at a path that any job reads or writes now is not the one the record left behind.
     claimed = set(dag.external_inputs)
@@ -75,7 +76,7 @@ def _undo(dag: Dag, done: list[tuple[str, str]]) -> None:
         os.rename(dag.checked(new), dag.checked(old))
 
 
-def apply(dag: Dag, state: State, migrations: tuple[Migration, ...]) -> tuple[Migration, ...]:
+def apply(dag: Dag, state: Store, migrations: tuple[Migration, ...]) -> tuple[Migration, ...]:
     """Move each migration's files, all of a job's or none, and return what each one came to.
 
     A file is renamed, so it keeps its size and time; the move is checked against

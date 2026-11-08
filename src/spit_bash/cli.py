@@ -19,7 +19,8 @@ from .display import id_width, labels
 from .explain import explain
 from .files import stamp
 from .migrate import apply, find
-from .plan import State, Status, adopt, apply_refreshes, plan, reconcile
+from .plan import Status, adopt, apply_refreshes, plan, reconcile
+from .state.store import Store
 from .report import blocked_lines, counts, failure_groups, ids, job_line, jobs
 from .run import Result, execute, log_tail
 from .schedule import over_memory
@@ -221,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.action is Action.RUN and args.cores < 1:
         parser.error("--cores must be at least 1")
-    state: State | None = None
+    state: Store | None = None
     try:
         selection = _selection(args)
         dag = _load(args)
@@ -232,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         if selection:
             needed = f", and {selected.needed} they need" if selected.needed else ""
             print(f"chose {selected.matched} of {total} jobs{needed}", file=sys.stderr)
-        state = State(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl",
+        state = Store(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl",
                       args.action is not Action.PLAN)
         if args.action is not Action.PLAN:
             state.lock()

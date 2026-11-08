@@ -5,7 +5,8 @@ from __future__ import annotations
 from .dag import Dag, DagError, Job
 from .display import labels, name
 from .files import Stamp, content_hash, stamps, stored
-from .plan import changed_parts, Decision, State, Status, UPSTREAM, job_key
+from .plan import changed_parts, Decision, Status, UPSTREAM, job_key
+from .state.store import Store
 
 
 def _stamp(value: Stamp | None) -> str:
@@ -41,7 +42,7 @@ def _files(dag: Dag, job: Job, paths: tuple[str, ...], recorded: dict[str, list[
     return lines or ["    none differs from the record"]
 
 
-def explain(dag: Dag, state: State, decisions: tuple[Decision, ...], job_id: int, hashing: bool) -> list[str]:
+def explain(dag: Dag, state: Store, decisions: tuple[Decision, ...], job_id: int, hashing: bool) -> list[str]:
     """Describe why the planner decided as it did about job `job_id`, from its own decision and the record."""
     by_id = {decision.job.id: decision for decision in decisions}
     if job_id not in by_id:
