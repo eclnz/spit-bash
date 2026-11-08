@@ -6,13 +6,13 @@ import unittest
 from pathlib import Path
 
 from spit_bash.display import id_width, labels, name
-from support import command, document, job, read
+from support import command, document, job_entry, read
 
 
 def made(id, operation, product, entities, source="source.txt"):
     """A job that writes `product[entities]`, with its output named by them."""
     path = f"out/{product}-" + "-".join(f"{k}{v}" for k, v in entities.items()) + ".txt"
-    item = job(id, [source], path, "pass")
+    item = job_entry(id, [source], path, "pass")
     item["operation"] = operation
     item["outputs"]["output"].update(product=product, entities=entities)
     return item

@@ -79,9 +79,7 @@ class IncrementalTests(unittest.TestCase):
     def outcome(self, *flags):
         """Compile the edited pipeline; return the plan's statuses and how many jobs a run did."""
         self.compile()
-        text = spit_bash(self.root, "plan", "--json", *flags).stdout
-        # A listing of moves comes first when there are any.
-        plan = json.JSONDecoder().raw_decode(text[text.index("{\n"):])[0]
+        plan = json.loads(spit_bash(self.root, "plan", "--json", *flags).stdout)
         statuses = Counter(job["status"] for job in plan["jobs"])
         run = spit_bash(self.root, "run", *flags)
         done = int(re.findall(r"(\d+) done,", run.stdout + run.stderr)[-1])
@@ -142,9 +140,10 @@ class IncrementalTests(unittest.TestCase):
     def test_changed_paths_are_reused_with_move_files(self):
         self.edit("out/{@product}", "res/{@product}")
         self.edit("out/merged.txt", "res/merged.txt")
-        self.assertReruns({"skip": 5}, 0, "--move-files")
+        self.assertReruns({"place": 5}, 0, "--move-files")
         self.assertTrue((self.root / "res/merged.txt").exists())
         self.assertFalse((self.root / "out/merged.txt").exists())
+        self.assertReruns({"skip": 5}, 0, "--move-files")
 
     def test_a_moved_source(self):
         shutil.move(self.root / "input", self.root / "data")
@@ -196,7 +195,7 @@ class IncrementalTests(unittest.TestCase):
     def test_moving_checked_files_does_not_check_again(self):
         self.edit("out/{@product}", "res/{@product}")
         self.edit("out/merged.txt", "res/merged.txt")
-        self.assertReruns({"skip": 5}, 0, "--move-files")
+        self.assertReruns({"place": 5}, 0, "--move-files")
 
     # Data.
 
@@ -228,13 +227,13 @@ class IncrementalTests(unittest.TestCase):
 
     def test_renaming_a_product_reuses_its_outputs_with_move_files(self):
         self.edit("tally = ", "counts = ")
-        self.assertReruns({"skip": 5}, 0, "--move-files")
+        self.assertReruns({"place": 2, "skip": 3}, 0, "--move-files")
 
     def test_renaming_a_dimension_reuses_its_outputs_with_move_files(self):
         self.edit("[sub]", "[id]")
         self.edit("input/{sub}", "input/{id}")
         self.edit("@vary(sub)", "@vary(id)")
-        self.assertReruns({"skip": 5}, 0, "--move-files")
+        self.assertReruns({"place": 4, "skip": 1}, 0, "--move-files")
 
     def test_renaming_a_source_family_reuses_its_outputs_with_move_files(self):
         self.edit("source raw", "source scans")
@@ -245,7 +244,7 @@ class IncrementalTests(unittest.TestCase):
     def test_relabelling_entity_values_of_the_same_files_reuses_outputs_with_move_files(self):
         for old, new in (("s1", "p1"), ("s2", "p2")):
             (self.root / f"input/{old}.txt").rename(self.root / f"input/{new}.txt")
-        self.assertReruns({"skip": 5}, 0, "--move-files")
+        self.assertReruns({"place": 4, "skip": 1}, 0, "--move-files")
 
     def test_a_renamed_product_whose_input_changed_is_not_reused(self):
         self.edit("tally = ", "counts = ")

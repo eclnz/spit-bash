@@ -1,0 +1,98 @@
+$ spit-bash plan jobs.spitdag
+exit 0
+--- stdout
+1 job can start, 2 jobs may run if an upstream output changes
+--- stderr
+
+$ spit-bash plan jobs.spitdag --verbose
+exit 0
+--- stdout
+1 job can start, 2 jobs may run if an upstream output changes
+[1] ready   op1: input changed
+[2] may run op2: runs if an upstream output changes
+[3] may run op3: runs if an upstream output changes
+--- stderr
+
+$ spit-bash plan jobs.spitdag --json
+exit 0
+--- stdout
+{
+  "left_out": [],
+  "jobs": [
+    {
+      "id": 1,
+      "operation": "op1",
+      "status": "run",
+      "reason": "input changed",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    },
+    {
+      "id": 2,
+      "operation": "op2",
+      "status": "maybe",
+      "reason": "runs if an upstream output changes",
+      "waits_for": [
+        1
+      ],
+      "caused_by": null,
+      "holds_up": 0
+    },
+    {
+      "id": 3,
+      "operation": "op3",
+      "status": "maybe",
+      "reason": "runs if an upstream output changes",
+      "waits_for": [
+        2
+      ],
+      "caused_by": null,
+      "holds_up": 0
+    }
+  ]
+}
+--- stderr
+
+$ spit-bash plan jobs.spitdag --job 2
+exit 0
+--- stdout
+Job 2: op2
+  decision: maybe, runs if an upstream output changes
+  fingerprint: same (recorded 3959901bb9a60cd2, now 3959901bb9a60cd2)
+  checks: same (recorded none, now none)
+  inputs that differ from the record:
+    none differs from the record
+  outputs that differ from the record:
+    none differs from the record
+  upstream jobs that will or may rewrite its inputs: 1 (run)
+--- stderr
+
+$ spit-bash run jobs.spitdag --cores 1
+exit 0
+--- stdout
+1 job can start, 2 jobs may run if an upstream output changes
+
+Running 1 job, and 2 more that may, <time>
+  [1] start   op1
+  [1] done    op1 in <time>; 2 left, <time>
+  [2] skip    op2: upstream output unchanged
+  [3] skip    op3: upstream output unchanged
+--- stderr
+1 done, 0 checked, 0 failed, 2 current, 0 blocked, 2 of the current ones not rerun because upstream output was unchanged
+
+$ spit-bash run jobs.spitdag --cores 1 --verbose
+exit 0
+--- stdout
+1 job can start, 2 jobs may run if an upstream output changes
+[1] ready   op1: input changed
+[2] may run op2: runs if an upstream output changes
+[3] may run op3: runs if an upstream output changes
+
+Running 1 job, and 2 more that may, <time>
+  [1] start   op1
+  [1] done    op1 in <time>; 2 left, <time>
+  [2] skip    op2: upstream output unchanged
+  [3] skip    op3: upstream output unchanged
+--- stderr
+1 done, 0 checked, 0 failed, 2 current, 0 blocked, 2 of the current ones not rerun because upstream output was unchanged

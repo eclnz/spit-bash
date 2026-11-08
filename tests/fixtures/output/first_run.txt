@@ -1,0 +1,80 @@
+$ spit-bash plan jobs.spitdag
+exit 0
+--- stdout
+1 job can start, 1 job will wait for it
+--- stderr
+
+$ spit-bash plan jobs.spitdag --verbose
+exit 0
+--- stdout
+1 job can start, 1 job will wait for it
+[1] ready   op1: output missing
+[2] waits   op2: waits for 1
+--- stderr
+
+$ spit-bash plan jobs.spitdag --json
+exit 0
+--- stdout
+{
+  "left_out": [],
+  "jobs": [
+    {
+      "id": 1,
+      "operation": "op1",
+      "status": "run",
+      "reason": "output missing",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    },
+    {
+      "id": 2,
+      "operation": "op2",
+      "status": "run",
+      "reason": "dependency will run",
+      "waits_for": [
+        1
+      ],
+      "caused_by": null,
+      "holds_up": 0
+    }
+  ]
+}
+--- stderr
+
+$ spit-bash plan jobs.spitdag --job 2
+exit 0
+--- stdout
+Job 2: op2
+  decision: run, dependency will run
+  record: none; no successful run is recorded for what this job makes
+  upstream jobs that will or may rewrite its inputs: 1 (run)
+--- stderr
+
+$ spit-bash run jobs.spitdag --cores 1
+exit 0
+--- stdout
+1 job can start, 1 job will wait for it
+
+Running 2 jobs
+  [1] start   op1
+  [1] done    op1 in <time>; 1 left
+  [2] start   op2
+  [2] done    op2 in <time>; 0 left
+--- stderr
+2 done, 0 checked, 0 failed, 0 current, 0 blocked
+
+$ spit-bash run jobs.spitdag --cores 1 --verbose
+exit 0
+--- stdout
+1 job can start, 1 job will wait for it
+[1] ready   op1: output missing
+[2] waits   op2: waits for 1
+
+Running 2 jobs
+  [1] start   op1
+  [1] done    op1 in <time>; 1 left
+  [2] start   op2
+  [2] done    op2 in <time>; 0 left
+--- stderr
+2 done, 0 checked, 0 failed, 0 current, 0 blocked

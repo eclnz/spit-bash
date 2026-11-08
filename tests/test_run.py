@@ -13,11 +13,17 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from spit_bash.dag import load_dag
-from spit_bash.plan import State, Status, plan
-from spit_bash import run as run_module
-from spit_bash.run import execute
-from support import FIXTURE, artifact, command, document, job, read, run, sample, state_at
+from spit_bash.cause import Cause, Why
+from spit_bash.load import load_dag
+from spit_bash.files import Stamp
+from spit_bash.plan import Status, plan
+from spit_bash.state.store import Store
+from spit_bash.execute import process
+from spit_bash.execute.failure import InputChanged
+from spit_bash.execute.options import Options
+from spit_bash.execute.scheduler import execute
+from spit_bash.report.run_text import failure_words
+from support import FIXTURE, artifact, command, document, error, job, job_entry, read, run, sample, state_at
 
 # Each job writes its own marker, then waits for the other's: they finish only
 # if both run at once.
@@ -33,33 +39,33 @@ MEET = (
 
 class InputChangeDiagnosticTests(unittest.TestCase):
     def test_names_changed_file_and_stamps(self):
-        error = run_module._input_changes(
-            {"source.txt": [10, 100], "stable.txt": [2, 30]},
-            {"source.txt": [12, 150], "stable.txt": [2, 30]},
-            set(),
-        )
+        error = failure_words(job(1), InputChanged(
+            {"source.txt": Stamp(10, 100), "stable.txt": Stamp(2, 30)},
+            {"source.txt": Stamp(12, 150), "stable.txt": Stamp(2, 30)},
+            (),
+        ))
         self.assertEqual(
             error,
             "input changed during execution: source.txt: size 10 -> 12, mtime_ns 100 -> 150",
         )
 
     def test_names_folder_mtime_and_file_count(self):
-        error = run_module._input_changes(
-            {"templates": [1024, 100, 4]},
-            {"templates": [1024, 200, 5]},
-            {"templates"},
-        )
+        error = failure_words(job(1), InputChanged(
+            {"templates": Stamp(1024, 100, 4)},
+            {"templates": Stamp(1024, 200, 5)},
+            (),
+        ))
         self.assertEqual(
             error,
             "input changed during execution: templates: latest mtime_ns 100 -> 200, file count 4 -> 5",
         )
 
     def test_names_missing_input(self):
-        error = run_module._input_changes(
-            {"source.txt": [12, 100]},
+        error = failure_words(job(1), InputChanged(
+            {"source.txt": Stamp(12, 100)},
             {"source.txt": None},
-            set(),
-        )
+            (),
+        ))
         self.assertEqual(
             error, "input changed during execution: source.txt: [12, 100] -> None",
         )
@@ -83,7 +89,7 @@ class DirectoryTimestampTests(unittest.TestCase):
                 "input", "work/upper.txt",
             )
             _, results = run(read(data), state_at(root))
-            self.assertEqual([result.error for result in results], [None, None])
+            self.assertEqual([error(result) for result in results], [None, None])
 
     def test_renaming_file_inside_directory_still_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -101,7 +107,7 @@ class DirectoryTimestampTests(unittest.TestCase):
                 "input", "work/upper.txt",
             )
             _, results = run(read(data), state_at(root))
-            self.assertIn("input changed during execution", results[0].error)
+            self.assertIn("input changed during execution", error(results[0]))
 
     def test_touching_a_file_inside_directory_still_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -121,7 +127,7 @@ class DirectoryTimestampTests(unittest.TestCase):
                 "input", "work/upper.txt",
             )
             _, results = run(read(data), state_at(root))
-            self.assertIn("input changed during execution", results[0].error)
+            self.assertIn("input changed during execution", error(results[0]))
 
 
 class RunTests(unittest.TestCase):
@@ -134,20 +140,20 @@ class RunTests(unittest.TestCase):
             dag = read(data)
             decisions, results = run(dag, state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
-            self.assertFalse(any(r.error for r in results))
+            self.assertFalse(any(error(r) for r in results))
             self.assertEqual((root / "final.txt").read_text(), "HELLO!")
             self.assertEqual([d.status for d in plan(dag, state_at(root))], [Status.SKIP, Status.SKIP])
 
             source.write_text("changed")
             decisions, results = run(dag, state_at(root))
-            self.assertEqual(decisions[0].reason, "input changed")
-            self.assertFalse(any(r.error for r in results))
+            self.assertEqual(decisions[0].cause, Cause(Why.INPUT_CHANGED))
+            self.assertFalse(any(error(r) for r in results))
             self.assertEqual((root / "final.txt").read_text(), "CHANGED!")
 
             data["jobs"][0]["commands"][0]["command"].append(["extra"])
             decisions = plan(read(data), state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE])
-            self.assertEqual(decisions[0].reason, "command changed")
+            self.assertEqual(decisions[0].cause, Cause(Why.WORK_CHANGED, parts=("commands",)))
 
     def test_failed_verify_prevents_command_and_dependent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -156,8 +162,8 @@ class RunTests(unittest.TestCase):
             data = sample(root)
             data["jobs"][0]["verify"] = [command("import sys; print('input is bad'); sys.exit(3)")]
             _, results = run(read(data), state_at(root))
-            self.assertIn("verify 1 exited with status 3", results[0].error)
-            self.assertIn("dependency 1 failed", results[1].error)
+            self.assertIn("verify 1 exited with status 3", error(results[0]))
+            self.assertIn("dependency 1 failed", error(results[1]))
             self.assertFalse((root / "work/upper.txt").exists())
             self.assertIn("input is bad", results[0].log.read_text())
 
@@ -171,8 +177,8 @@ class RunTests(unittest.TestCase):
             convert["outputs"] = {"image": artifact("work/upper.txt"), "meta": artifact("work/upper.json")}
             data["jobs"][1]["inputs"]["input"] = [artifact("work/upper.txt")]
             _, results = run(read(data), state_at(root))
-            self.assertEqual(results[0].error, "command succeeded but did not create output meta work/upper.json")
-            self.assertIn("dependency 1 failed", results[1].error)
+            self.assertEqual(error(results[0]), "command succeeded but did not create output meta work/upper.json")
+            self.assertIn("dependency 1 failed", error(results[1]))
             self.assertFalse((root / "final.txt").exists())
             # No success was recorded, so the next plan runs the job again.
             decisions = plan(read(data), state_at(root))
@@ -190,13 +196,13 @@ class RunTests(unittest.TestCase):
             }
             dag = read(data)
             self.assertEqual(
-                [(output.port, output.path) for output in dag.jobs[0].produced],
+                [(port.name, artifact.path) for port in dag.jobs[0].outputs for artifact in port.artifacts],
                 [("image", "work/upper.txt"), ("meta", "work/upper.json"),
                  ("log", "work/conversion.log")],
             )
             _, results = run(dag, state_at(root))
             self.assertEqual(
-                results[0].error,
+                error(results[0]),
                 "command succeeded but did not create output meta work/upper.json, "
                 "output log work/conversion.log",
             )
@@ -213,7 +219,7 @@ class RunTests(unittest.TestCase):
                 "from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"
             ]
             _, results = run(read(data), state_at(root))
-            self.assertEqual(results[0].error, "command exited with status 4")
+            self.assertEqual(error(results[0]), "command exited with status 4")
             self.assertFalse((root / "work/upper.txt").exists())
             log = results[0].log.read_text()
             self.assertTrue(log.endswith("spit-bash: removed failed output work/upper.txt\n"), log)
@@ -228,7 +234,7 @@ class RunTests(unittest.TestCase):
             ]
             dag = read(data)
             _, results = run(dag, state_at(root), keep_failed=True)
-            self.assertEqual(results[0].error, "command exited with status 4")
+            self.assertEqual(error(results[0]), "command exited with status 4")
             self.assertEqual((root / "work/upper.txt").read_text(), "HAL")
             log = results[0].log.read_text()
             self.assertTrue(log.endswith("spit-bash: kept failed output work/upper.txt\n"), log)
@@ -246,7 +252,7 @@ class RunTests(unittest.TestCase):
             data["jobs"][0]["commands"][0]["command"].append(["extra"])
             data["jobs"][0]["verify"] = [command("import sys; sys.exit(3)")]
             _, results = run(read(data), state_at(root))
-            self.assertEqual(results[0].error, "verify 1 exited with status 3")
+            self.assertEqual(error(results[0]), "verify 1 exited with status 3")
             self.assertEqual((root / "work/upper.txt").read_text(), "HELLO")
             self.assertNotIn("removed", results[0].log.read_text())
 
@@ -267,11 +273,11 @@ class RunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "source.txt").write_text("")
-            jobs = [job(1, ["source.txt"], "a.txt", MEET), job(2, ["source.txt"], "b.txt", MEET)]
+            jobs = [job_entry(1, ["source.txt"], "a.txt", MEET), job_entry(2, ["source.txt"], "b.txt", MEET)]
             jobs[0]["commands"][0]["command"].append(["b.txt.here"])
             jobs[1]["commands"][0]["command"].append(["a.txt.here"])
             _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), cores=2)
-            self.assertFalse(any(r.error for r in results))
+            self.assertFalse(any(error(r) for r in results))
             self.assertEqual((root / "a.txt").read_text(), "True")
             self.assertEqual((root / "b.txt").read_text(), "True")
 
@@ -285,12 +291,12 @@ class RunTests(unittest.TestCase):
                 "open(sys.argv[2] + '.pid', 'w').write(str(os.getpid()))\n"
                 "time.sleep(60)\n"
             )
-            dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
+            dag = read(document(root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
             state = state_at(root)
             pid_file = root / "out.txt.pid"
 
             async def cancel_once_started():
-                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, 1, root / "logs"))
+                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(root / "logs")))
                 while not pid_file.exists() or not pid_file.read_text():
                     await asyncio.sleep(0.01)
                 task.cancel()
@@ -319,12 +325,12 @@ class RunTests(unittest.TestCase):
                 "open(sys.argv[2] + '.pid', 'w').write(f'{os.getpid()} {child.pid}')\n"
                 "time.sleep(60)\n"
             )
-            dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
+            dag = read(document(root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
             state = state_at(root)
             pid_file = root / "out.txt.pid"
 
             async def cancel_once_started():
-                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, 1, root / "logs"))
+                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(root / "logs")))
                 while not pid_file.exists() or not pid_file.read_text():
                     await asyncio.sleep(0.01)
                 started = time.monotonic()
@@ -333,7 +339,7 @@ class RunTests(unittest.TestCase):
                     await task
                 return time.monotonic() - started
 
-            with mock.patch.object(run_module, "STOP_GRACE_SECONDS", 0.2):
+            with mock.patch.object(process, "STOP_GRACE_SECONDS", 0.2):
                 elapsed = asyncio.run(cancel_once_started())
             state.close()
             self.assertLess(elapsed, 5)
@@ -364,7 +370,7 @@ class RunTests(unittest.TestCase):
             dag = load_dag(source, directory)
             decisions, results = run(dag, state_at(root), cores=3)
             self.assertEqual([d.status for d in decisions], [Status.RUN] * 5)
-            self.assertFalse(any(r.error for r in results))
+            self.assertFalse(any(error(r) for r in results))
             self.assertEqual((root / "merged/group=alpha.txt").read_text(), "a\nb\nz\n")
             self.assertEqual((root / "merged/group=beta.txt").read_text(), "p\nq\n")
             self.assertEqual([d.status for d in plan(dag, state_at(root))], [Status.SKIP] * 5)
@@ -382,7 +388,7 @@ class SignalTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("")
             script = "import os, sys, time; open(sys.argv[2] + '.pid', 'w').write(str(os.getpid())); time.sleep(60)"
-            data = document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"])
+            data = document(root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"])
             (root / "dag.json").write_text(json.dumps(data))
             env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"))
             process = subprocess.Popen(
@@ -422,21 +428,21 @@ class EarlierOutputTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def run_job(self, script, keep_failed=False):
-        dag = load_dag(io.StringIO(json.dumps(document(self.root, [job(1, ["in.txt"], "out.txt", script)], ["in.txt"]))), None)
-        state = State(self.root / "state.jsonl")
+        dag = load_dag(io.StringIO(json.dumps(document(self.root, [job_entry(1, ["in.txt"], "out.txt", script)], ["in.txt"]))), None)
+        state = Store(self.root / "state.jsonl")
         decisions = plan(dag, state, False)
         with contextlib.redirect_stdout(io.StringIO()):
-            return asyncio.run(execute(dag, decisions, state, 1, self.root / "logs", keep_failed=keep_failed))
+            return asyncio.run(execute(dag, decisions, state, Options(self.root / "logs", keep_failed=keep_failed)))
 
     def test_a_tool_that_refuses_to_overwrite_runs_again(self):
         (result,) = self.run_job(self.REFUSE)
-        self.assertIsNone(result.error)
+        self.assertIsNone(error(result))
         self.assertEqual((self.root / "out.txt").read_text(), "new")
         self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())
 
     def test_a_failure_puts_the_earlier_output_back(self):
         (result,) = self.run_job(self.FAIL)
-        self.assertIsNotNone(result.error)
+        self.assertIsNotNone(error(result))
         self.assertEqual((self.root / "out.txt").read_text(), "earlier")
         self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())
 

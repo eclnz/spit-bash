@@ -1,0 +1,84 @@
+$ spit-bash plan jobs.spitdag
+exit 0
+--- stdout
+1 job can start, 1 job will wait for it
+--- stderr
+
+$ spit-bash plan jobs.spitdag --verbose
+exit 0
+--- stdout
+1 job can start, 1 job will wait for it
+[1] ready   op1: output missing
+[2] waits   op2: waits for 1
+--- stderr
+
+$ spit-bash plan jobs.spitdag --json
+exit 0
+--- stdout
+{
+  "left_out": [],
+  "jobs": [
+    {
+      "id": 1,
+      "operation": "op1",
+      "status": "run",
+      "reason": "output missing",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    },
+    {
+      "id": 2,
+      "operation": "op2",
+      "status": "run",
+      "reason": "dependency will run",
+      "waits_for": [
+        1
+      ],
+      "caused_by": null,
+      "holds_up": 0
+    }
+  ]
+}
+--- stderr
+
+$ spit-bash plan jobs.spitdag --job 1
+exit 0
+--- stdout
+Job 1: op1
+  decision: run, output missing
+  record: none; no successful run is recorded for what this job makes
+--- stderr
+
+$ spit-bash run jobs.spitdag --cores 1
+exit 1
+--- stdout
+1 job can start, 1 job will wait for it
+
+Running 2 jobs
+  [1] start   op1
+--- stderr
+[1] failed: command exited with status 3
+[1] last lines of <root>/.spit-bash/logs/1-op1.log:
+    $ python3 -c 'import sys; print('"'"'boom'"'"'); sys.exit(3)' source.txt work/upper.txt
+    boom
+[1] held up 1 other job
+0 done, 0 checked, 1 failed, 1 not run (an upstream job failed), 0 current, 0 blocked
+
+$ spit-bash run jobs.spitdag --cores 1 --verbose
+exit 1
+--- stdout
+1 job can start, 1 job will wait for it
+[1] ready   op1: output missing
+[2] waits   op2: waits for 1
+
+Running 2 jobs
+  [1] start   op1
+--- stderr
+[1] failed: command exited with status 3
+[1] last lines of <root>/.spit-bash/logs/1-op1.log:
+    $ python3 -c 'import sys; print('"'"'boom'"'"'); sys.exit(3)' source.txt work/upper.txt
+    boom
+[1] held up 1 other job
+[2] not run: job 1 failed
+0 done, 0 checked, 1 failed, 1 not run (an upstream job failed), 0 current, 0 blocked

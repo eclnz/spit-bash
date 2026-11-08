@@ -5,28 +5,35 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
-import json
 import os
 import signal
 import subprocess
 import sys
-from collections import Counter
 from enum import Enum
 from pathlib import Path
 
-from .dag import Dag, DagError, Job, load_dag
-from .display import id_width, labels
-from .explain import explain
-from .migrate import apply, find
-from .plan import State, Status, adopt, apply_refreshes, plan, reconcile, stamp
-from .report import blocked_lines, counts, failure_groups, ids, job_line, jobs
-from .run import Result, execute, log_tail
+from .load import load_dag
+from .model import Dag, DagError, Layout
+from .plan import Status, adopt, explained, plan, writes
+from .reuse.evidence import Compare
+from .reuse.relabel import relabel
+from .state.store import Store
+from .execute.options import Options
+from .execute.scheduler import execute
+from .report import run_text
+from .report.explain import explain
+from .report.plan_json import document
+from .report.plan_text import adoption_line, listing, nothing_run
+from .report.summary import Summary, stale
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
 
 SPIT_SUFFIXES = (".spitin", ".spit", ".spitout")
 # The units of --memory, as SPIT's `resources` line takes them.
 UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+
+# The default paths `--state` and `--logs` name in their help.
+DEFAULT = Layout(Path("ROOT"))
 
 FILES_HELP = """\
 what to run: a .spitdag (or - for one on stdin), or what `spit dag` takes,
@@ -70,12 +77,12 @@ def _parser() -> argparse.ArgumentParser:
         choose.add_argument("--product", action="append", default=[], metavar="NAME", help="outputs of this product")
         choose.add_argument("--stage", action="append", default=[], metavar="NAME[/NAME...]",
                             help="jobs in this stage, or a stage inside it, such as preprocess/combine")
-        command.add_argument("--state", help="state file (default: ROOT/.spit-bash/state.jsonl)")
+        command.add_argument("--state", help=f"state file (default: {DEFAULT.state})")
         if action is not Action.ADOPT:
             command.add_argument("--force", action="store_true",
                                  help="rerun selected command jobs even if current")
         if action is not Action.ADOPT:
-            command.add_argument("--compare", choices=("stat", "content", "full"), default="content",
+            command.add_argument("--compare", choices=[compare.value for compare in Compare], default="content",
                                  help="how a file counts as unchanged since its record: stat, by size and modification\n"
                                       "time alone, with no stop at an unchanged output and no reuse after a rename;\n"
                                       "content, by size and time, then by content where those differ (default);\n"
@@ -83,8 +90,8 @@ def _parser() -> argparse.ArgumentParser:
         if action is not Action.ADOPT:
             command.add_argument("--move-files", action="store_true",
                                  help="move outputs the state records at other paths to the paths the pipeline now gives,\n"
-                                      "instead of rerunning their jobs; `plan` lists the moves. A tool that writes its own\n"
-                                      "paths into its output is not rerun, so use this only if yours do not")
+                                      "instead of rerunning their jobs, which `plan` lists as `place`. A tool that writes\n"
+                                      "its own paths into its output is not rerun, so use this only if yours do not")
         if action is not Action.ADOPT:
             command.add_argument("--verbose", action="store_true",
                                  help="list every job, current ones too, and with `run` each job that did not run\n"
@@ -101,7 +108,7 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--memory", type=_memory, default=_machine_memory(), metavar="SIZE",
                                  help="memory to use, as 512M or 32G: run jobs at once while\n"
                                       "the memory they declare fits (default: the machine's)")
-            command.add_argument("--logs", help="folder for job logs (default: ROOT/.spit-bash/logs)")
+            command.add_argument("--logs", help=f"folder for job logs (default: {DEFAULT.logs})")
             command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
                                  help="let a job hold more memory than it declares, and run a job\n"
                                       "declaring more than --memory alone, rather than refusing it")
@@ -169,58 +176,12 @@ def _selection(args: argparse.Namespace) -> Selection:
         raise DagError(str(exc)) from exc
 
 
-def _stale(everything: Dag, chosen: Dag, decisions: tuple[Decision, ...], results: tuple[Result, ...]) -> int:
-    """The jobs left out of a partial run that read an output the run rewrote."""
-    settled = {result.job.id: result.settled for result in results if result.error is None}
-    rewritten = set()
-    for decision in decisions:
-        if decision.job.id not in settled:
-            continue
-        status = settled[decision.job.id] or decision.status
-        if status is Status.RUN:
-            rewritten.update(decision.job.outputs)
-    kept = {job.id for job in chosen.jobs}
-    return sum(1 for job in everything.jobs if job.id not in kept and rewritten.intersection(job.inputs))
-
-
-def _report_failure(job: Job, error: str, log: Path | None) -> None:
-    job_id = job.id
-    print(f"[{job_id}] failed: {error}", file=sys.stderr)
-    for line in job.origin:
-        print(f"[{job_id}] {line}", file=sys.stderr)
-    if log is not None:
-        tail = log_tail(log)
-        if tail:
-            print(f"[{job_id}] last lines of {log}:", file=sys.stderr)
-            for line in tail:
-                print(f"    {line}", file=sys.stderr)
-        else:
-            print(f"[{job_id}] log: {log}", file=sys.stderr)
-
-
-def _report_failures(dag: Dag, own: list[Result], not_run: list[Result], verbose: bool) -> None:
-    """Print each distinct failure once, with what it held up, then with `verbose` the jobs that did not run."""
-    held = Counter(result.caused_by for result in not_run)
-    for group in failure_groups(dag.root, own):
-        first, others = group[0], group[1:]
-        _report_failure(first.job, first.error or "", first.log)
-        if others:
-            print(f"[{first.job.id}] the same failure in {len(others)} other job{'' if len(others) == 1 else 's'}: {ids(others)}", file=sys.stderr)
-        total = sum(held[result.job.id] for result in group)
-        if total:
-            lead = "together they held up" if others else "held up"
-            print(f"[{first.job.id}] {lead} {total} other job{'' if total == 1 else 's'}", file=sys.stderr)
-    if verbose:
-        for result in not_run:
-            print(f"[{result.job.id}] not run: job {result.caused_by} failed", file=sys.stderr)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if args.action is Action.RUN and args.cores < 1:
         parser.error("--cores must be at least 1")
-    state: State | None = None
+    state: Store | None = None
     try:
         selection = _selection(args)
         dag = _load(args)
@@ -231,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         if selection:
             needed = f", and {selected.needed} they need" if selected.needed else ""
             print(f"chose {selected.matched} of {total} jobs{needed}", file=sys.stderr)
-        state = State(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl",
+        state = Store(Path(args.state).expanduser().resolve() if args.state else dag.layout.state,
                       args.action is not Action.PLAN)
         if args.action is not Action.PLAN:
             state.lock()
@@ -241,69 +202,36 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.ADOPT:
             adoptions = adopt(dag, state)
             for adoption in adoptions:
-                print(f"[{adoption.job.id}] {adoption.status.value:7} {adoption.job.operation}: {adoption.reason}")
+                print(adoption_line(adoption))
             return 0
 
         forced = selected.matched_ids if args.force else False
-        hashing, verify = args.compare != "stat", args.compare == "full"
-        if hashing:
-            reconcile(dag, state, everything, args.action is Action.RUN)
-        decisions = plan(dag, state, forced, hashing, verify=verify)
-        if args.move_files and not args.force:
-            # A job that is current as it stands has nothing to move; `find` leaves out one whose
-            # inputs changed, which a moved output would not save from running.
-            migrations = find(dag, state, {d.job.id for d in decisions if d.status in (Status.RUN, Status.MAYBE)})
+        compare = Compare(args.compare)
+        if compare is not Compare.STAT:
+            handed = relabel(dag, state.jobs, everything)
+            # A plan sees the records handed over, but only a run stores them.
             if args.action is Action.RUN:
-                migrations = apply(dag, state, migrations)
+                state.apply(handed)
             else:
-                # Judge the jobs as if the files were already where the pipeline wants them.
-                pending = {new: stamp(dag.checked(old), new in dag.folders)
-                           for m in migrations for old, new in m.moves}
-                if pending:
-                    decisions = plan(dag, state, forced, hashing, pending, verify)
-            for migration in migrations:
-                for old, new in migration.moves:
-                    print(f"[{migration.job.id}] {'moved' if args.action is Action.RUN else 'would move'} {old} -> {new}")
-                if not migration.moves:
-                    print(f"[{migration.job.id}] not moved: {migration.reason}")
-            moved = sum(1 for m in migrations if m.moves)
-            if moved:
-                print(f"{moved} job(s) reuse outputs by moving them to their new paths", file=sys.stderr)
-            if args.action is Action.RUN and any(m.moves for m in migrations):
-                print("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
-                      "into its output is not rerun", file=sys.stderr)
-                decisions = plan(dag, state, forced, hashing, verify=verify)
+                state.assume(handed)
+        # Under --force, no outputs are moved: the forced jobs run, and the rest are judged as they stand.
+        decisions = plan(dag, state, forced, compare, args.move_files and not args.force)
         if args.action is Action.RUN:
-            apply_refreshes(decisions, state)
+            state.apply(writes(decisions))
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
-        work, width = labels(dag.jobs), id_width(dag.jobs)
         if args.action is Action.PLAN and args.job is not None:
-            print("\n".join(explain(dag, state, decisions, args.job, hashing)))
-            return 1 if any(d.job.id == args.job and d.status is Status.BLOCKED for d in decisions) else 0
+            decision, found = explained(dag, state, decisions, args.job, compare)
+            print("\n".join(explain(dag, decisions, decision, found)))
+            return 1 if decision.status is Status.BLOCKED else 0
         if args.action is Action.PLAN and args.json:
-            held = Counter(d.caused_by for d in decisions if d.caused_by is not None)
-            json.dump({
-                "left_out": list(dag.left_out),
-                "jobs": [
-                    {"id": d.job.id, "operation": d.job.operation, "status": d.status.value, "reason": d.reason,
-                     "waits_for": list(d.waits_for), "caused_by": d.caused_by, "holds_up": held[d.job.id]}
-                    for d in decisions
-                ],
-            }, sys.stdout, indent=2)
-            print()
+            print(document(dag, decisions))
         else:
-            print(counts(decisions))
-            for line in blocked_lines(decisions):
+            for line in listing(dag, decisions, args.verbose):
                 print(line)
-            if args.verbose:
-                for decision in decisions:
-                    print(job_line(decision, work, width))
         if args.action is Action.PLAN:
             return 1 if blocked else 0
         if blocked and not args.partial:
-            held = sum(decision.status is Status.BLOCKED for decision in decisions)
-            print(f"nothing was run: {jobs(held)} {'is' if held == 1 else 'are'} blocked. Fix the cause, or pass "
-                  "--partial to run the jobs that are not.", file=sys.stderr)
+            print(nothing_run(decisions), file=sys.stderr)
             return 1
 
         if args.enforce_memory:
@@ -316,44 +244,26 @@ def main(argv: list[str] | None = None) -> int:
                       "or pass --no-enforce-memory to run it alone", file=sys.stderr)
                 return 2
 
-        logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
+        logs = Path(args.logs).expanduser().resolve() if args.logs else dag.layout.logs
+        options = Options(logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
+                          args.timestamp_logs)
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.cores, logs, hashing, args.memory,
-                                          args.keep_failed, args.enforce_memory, args.timestamp_logs, verify))
+            results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag)))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM
         except KeyboardInterrupt:
             print("interrupted; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGINT
-        failed = [result for result in results if result.error]
-        failed_ids = {result.job.id for result in failed}
-        # A job that did not run because one it needs failed is not a failure of its own.
-        own = [result for result in failed if result.caused_by is None]
-        not_run = [result for result in failed if result.caused_by is not None]
-        _report_failures(dag, own, not_run, args.verbose)
-        # What each job came to: a `maybe` job is whatever `run` settled it as.
-        outcome = {result.job.id: result.settled for result in results}
-        count = {status: 0 for status in Status}
-        cutoff = 0
-        for decision in decisions:
-            status = outcome.get(decision.job.id) or decision.status
-            if decision.job.id in failed_ids:
-                continue
-            count[status] += 1
-            cutoff += decision.status is Status.MAYBE and status is not Status.RUN
-        summary = (
-            f"{count[Status.RUN]} done, {count[Status.CHECK]} checked, {len(own)} failed, "
-            + (f"{len(not_run)} not run (an upstream job failed), " if not_run else "")
-            + f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked"
-        )
-        if cutoff:
-            summary += f", {cutoff} of the current ones not rerun because upstream output was unchanged"
-        print(summary, file=sys.stderr)
-        stale = _stale(everything, dag, decisions, results) if selection else 0
-        if stale:
-            print(f"{stale} job{'' if stale == 1 else 's'} outside the selection read outputs this run changed; "
-                  "run without the selection to bring them up to date", file=sys.stderr)
+        summary = Summary.of(decisions, results)
+        run_text.report_failures(dag, summary, args.verbose)
+        if summary.placed:
+            print(run_text.moved_note(), file=sys.stderr)
+        print(run_text.summary_line(summary), file=sys.stderr)
+        left = stale(everything, dag, decisions, results) if selection else 0
+        if left:
+            print(run_text.stale_line(left), file=sys.stderr)
+        failed = summary.failed or summary.not_run
         return 1 if failed or blocked else 0
     except (DagError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

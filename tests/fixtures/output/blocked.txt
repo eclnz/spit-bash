@@ -1,0 +1,138 @@
+$ spit-bash plan jobs.spitdag
+exit 1
+--- stdout
+1 job can start, 4 jobs are blocked
+blocked: reader: missing external input: absent.txt (1 more depends on it)
+blocked: tool: program not found: no-such-spit-bash-program (1 more depends on it)
+--- stderr
+
+$ spit-bash plan jobs.spitdag --verbose
+exit 1
+--- stdout
+1 job can start, 4 jobs are blocked
+blocked: reader: missing external input: absent.txt (1 more depends on it)
+blocked: tool: program not found: no-such-spit-bash-program (1 more depends on it)
+[1] blocked reader: missing external input: absent.txt
+[2] blocked after after_read.txt: dependency blocked: 1
+[3] blocked tool: program not found: no-such-spit-bash-program
+[4] blocked after after_tool.txt: dependency blocked: 3
+[5] ready   fine: output missing
+--- stderr
+
+$ spit-bash plan jobs.spitdag --json
+exit 1
+--- stdout
+{
+  "left_out": [],
+  "jobs": [
+    {
+      "id": 1,
+      "operation": "reader",
+      "status": "blocked",
+      "reason": "missing external input: absent.txt",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 1
+    },
+    {
+      "id": 2,
+      "operation": "after",
+      "status": "blocked",
+      "reason": "dependency blocked: 1",
+      "waits_for": [],
+      "caused_by": 1,
+      "holds_up": 0
+    },
+    {
+      "id": 3,
+      "operation": "tool",
+      "status": "blocked",
+      "reason": "program not found: no-such-spit-bash-program",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 1
+    },
+    {
+      "id": 4,
+      "operation": "after",
+      "status": "blocked",
+      "reason": "dependency blocked: 3",
+      "waits_for": [],
+      "caused_by": 3,
+      "holds_up": 0
+    },
+    {
+      "id": 5,
+      "operation": "fine",
+      "status": "run",
+      "reason": "output missing",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    }
+  ]
+}
+--- stderr
+
+$ spit-bash plan jobs.spitdag --job 4
+exit 1
+--- stdout
+Job 4: after after_tool.txt
+  decision: blocked, dependency blocked: 3
+  blocked by job 3: program not found: no-such-spit-bash-program
+  record: none; no successful run is recorded for what this job makes
+--- stderr
+
+$ spit-bash run jobs.spitdag --cores 1
+exit 1
+--- stdout
+1 job can start, 4 jobs are blocked
+blocked: reader: missing external input: absent.txt (1 more depends on it)
+blocked: tool: program not found: no-such-spit-bash-program (1 more depends on it)
+--- stderr
+nothing was run: 4 jobs are blocked. Fix the cause, or pass --partial to run the jobs that are not.
+
+$ spit-bash run jobs.spitdag --cores 1 --verbose
+exit 1
+--- stdout
+1 job can start, 4 jobs are blocked
+blocked: reader: missing external input: absent.txt (1 more depends on it)
+blocked: tool: program not found: no-such-spit-bash-program (1 more depends on it)
+[1] blocked reader: missing external input: absent.txt
+[2] blocked after after_read.txt: dependency blocked: 1
+[3] blocked tool: program not found: no-such-spit-bash-program
+[4] blocked after after_tool.txt: dependency blocked: 3
+[5] ready   fine: output missing
+--- stderr
+nothing was run: 4 jobs are blocked. Fix the cause, or pass --partial to run the jobs that are not.
+
+$ spit-bash run jobs.spitdag --cores 1 --partial
+exit 1
+--- stdout
+1 job can start, 4 jobs are blocked
+blocked: reader: missing external input: absent.txt (1 more depends on it)
+blocked: tool: program not found: no-such-spit-bash-program (1 more depends on it)
+
+Running 1 job
+  [5] start   fine
+  [5] done    fine in <time>; 0 left
+--- stderr
+1 done, 0 checked, 0 failed, 0 current, 4 blocked
+
+$ spit-bash run jobs.spitdag --cores 1 --verbose --partial
+exit 1
+--- stdout
+1 job can start, 4 jobs are blocked
+blocked: reader: missing external input: absent.txt (1 more depends on it)
+blocked: tool: program not found: no-such-spit-bash-program (1 more depends on it)
+[1] blocked reader: missing external input: absent.txt
+[2] blocked after after_read.txt: dependency blocked: 1
+[3] blocked tool: program not found: no-such-spit-bash-program
+[4] blocked after after_tool.txt: dependency blocked: 3
+[5] ready   fine: output missing
+
+Running 1 job
+  [5] start   fine
+  [5] done    fine in <time>; 0 left
+--- stderr
+1 done, 0 checked, 0 failed, 0 current, 4 blocked

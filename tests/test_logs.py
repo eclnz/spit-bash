@@ -7,8 +7,9 @@ import unittest
 from pathlib import Path
 
 from spit_bash.plan import plan
-from spit_bash.run import execute
-from support import command, document, job, read, state_at
+from spit_bash.execute.options import Options
+from spit_bash.execute.scheduler import execute
+from support import command, document, error, job_entry, read, state_at
 
 STAMP = re.compile(rb"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d ")
 # Writes to both streams, the last line with no newline.
@@ -19,7 +20,7 @@ NOISY = ("import sys; print('to stdout'); print('to stderr', file=sys.stderr); s
 def execute_all(root, data, timestamps, **options):
     dag = read(data)
     state = state_at(root)
-    results = asyncio.run(execute(dag, plan(dag, state), state, 2, root / "logs", timestamp_logs=timestamps, **options))
+    results = asyncio.run(execute(dag, plan(dag, state), state, Options(root / "logs", 2, timestamp_logs=timestamps, **options)))
     state.close()
     return results
 
@@ -36,13 +37,13 @@ class LogTests(unittest.TestCase):
         (self.root / "source.txt").write_text("in")
 
     def one(self, script=NOISY):
-        return document(self.root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"])
+        return document(self.root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"])
 
     def log(self, name="1-op1.log"):
         return (self.root / "logs" / name).read_bytes()
 
     def test_every_line_starts_with_a_date_time_and_offset(self):
-        self.assertEqual([r.error for r in execute_all(self.root, self.one(), True)], [None])
+        self.assertEqual([error(r) for r in execute_all(self.root, self.one(), True)], [None])
         lines = self.log().splitlines()
         self.assertTrue(all(STAMP.match(line) for line in lines), lines)
         text = [strip(line) for line in lines]
@@ -66,7 +67,7 @@ class LogTests(unittest.TestCase):
         data["jobs"][0]["commands"].append(
             {"command": command("import sys; print('second'); sys.exit(3)"), "stdin": None, "stdout": None})
         results = execute_all(self.root, data, True)
-        self.assertIn("exited with status 3", results[0].error)
+        self.assertIn("exited with status 3", error(results[0]))
         lines = self.log().splitlines()
         self.assertTrue(all(STAMP.match(line) for line in lines), lines)
         self.assertEqual(sum(strip(line).startswith(b"$ ") for line in lines), 2)
@@ -84,7 +85,7 @@ class LogTests(unittest.TestCase):
         self.assertIn(b"checking", [strip(line) for line in lines])
 
     def test_concurrent_jobs_keep_their_own_lines(self):
-        jobs = [job(i, ["source.txt"], f"out{i}.txt", f"import time; print('job {i}'); time.sleep(0.2);"
+        jobs = [job_entry(i, ["source.txt"], f"out{i}.txt", f"import time; print('job {i}'); time.sleep(0.2);"
                                                       f" open(__import__('sys').argv[2], 'w').write('x')")
                 for i in (1, 2)]
         execute_all(self.root, document(self.root, jobs, ["source.txt"]), True)
@@ -99,7 +100,7 @@ class LogTests(unittest.TestCase):
         data["jobs"][0]["commands"][0] = {"command": command(
             "import sys; print('data line'); print('note', file=sys.stderr)", "source.txt"),
             "stdin": None, "stdout": "out.txt"}
-        self.assertEqual([r.error for r in execute_all(self.root, data, True)], [None])
+        self.assertEqual([error(r) for r in execute_all(self.root, data, True)], [None])
         self.assertEqual((self.root / "out.txt").read_bytes(), b"data line\n")
         self.assertIn(b"note", [strip(line) for line in self.log().splitlines()])
 
@@ -126,8 +127,8 @@ class LogTests(unittest.TestCase):
         ready = self.root / "out.txt.ready"
 
         async def cancel_once_started():
-            task = asyncio.ensure_future(execute(dag, plan(dag, state), state, 1, self.root / "logs",
-                                                 timestamp_logs=True))
+            task = asyncio.ensure_future(execute(dag, plan(dag, state), state,
+                                                 Options(self.root / "logs", timestamp_logs=True)))
             while not ready.exists():
                 await asyncio.sleep(0.01)
             await asyncio.sleep(0.2)

@@ -1,0 +1,70 @@
+$ spit-bash plan jobs.spitdag
+exit 0
+--- stdout
+all 2 jobs are current
+--- stderr
+
+$ spit-bash plan jobs.spitdag --verbose
+exit 0
+--- stdout
+all 2 jobs are current
+[1] current op1: current
+[2] current op2: current
+--- stderr
+
+$ spit-bash plan jobs.spitdag --json
+exit 0
+--- stdout
+{
+  "left_out": [],
+  "jobs": [
+    {
+      "id": 1,
+      "operation": "op1",
+      "status": "skip",
+      "reason": "current",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    },
+    {
+      "id": 2,
+      "operation": "op2",
+      "status": "skip",
+      "reason": "current",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    }
+  ]
+}
+--- stderr
+
+$ spit-bash plan jobs.spitdag --job 2
+exit 0
+--- stdout
+Job 2: op2
+  decision: skip, current
+  fingerprint: same (recorded 3959901bb9a60cd2, now 3959901bb9a60cd2)
+  checks: same (recorded none, now none)
+  inputs that differ from the record:
+    none differs from the record
+  outputs that differ from the record:
+    none differs from the record
+--- stderr
+
+$ spit-bash run jobs.spitdag --cores 1
+exit 0
+--- stdout
+all 2 jobs are current
+--- stderr
+0 done, 0 checked, 0 failed, 2 current, 0 blocked
+
+$ spit-bash run jobs.spitdag --cores 1 --verbose
+exit 0
+--- stdout
+all 2 jobs are current
+[1] current op1: current
+[2] current op2: current
+--- stderr
+0 done, 0 checked, 0 failed, 2 current, 0 blocked

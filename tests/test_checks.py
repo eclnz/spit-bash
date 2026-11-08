@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import DagError
-from spit_bash.plan import Status, adopt, job_key, plan
-from support import command, read, run, sample, state_at
+from spit_bash.cause import Cause, Why
+from spit_bash.model import DagError
+from spit_bash.plan import Status, adopt, plan
+from support import command, error, read, run, sample, state_at
 
 # A check that passes when its file holds `text`, and fails otherwise.
 HOLDS = "from pathlib import Path; import sys; sys.exit(Path(sys.argv[1]).read_text() != sys.argv[2])"
@@ -39,27 +40,27 @@ class CheckTests(unittest.TestCase):
                                    check("after", "output", "work/upper.txt", "HELLO")])
         dag = read(data)
         decisions, results = run(dag, state_at(self.root))
-        self.assertEqual([r.error for r in results], [None, None])
+        self.assertEqual([error(r) for r in results], [None, None])
         log = (self.root / ".spit-bash/logs/1-op1.log").read_text()
         self.assertLess(log.index("source.txt"), log.index("work/upper.txt"))
         state = state_at(self.root)
         self.assertEqual([d.status for d in plan(dag, state)], [Status.SKIP, Status.SKIP])
-        self.assertIsNotNone(state.jobs[job_key(dag.jobs[0])].checks)
-        self.assertIsNone(state.jobs[job_key(dag.jobs[1])].checks)
+        self.assertIsNotNone(state.jobs[dag.jobs[0].work.key].checks)
+        self.assertIsNone(state.jobs[dag.jobs[1].work.key].checks)
 
     def test_a_failed_input_check_stops_the_command(self):
         data = checked(self.root, [check("before", "input", "source.txt", "bye")])
         _, results = run(read(data), state_at(self.root))
-        self.assertEqual(results[0].error,
+        self.assertEqual(error(results[0]),
                          "check holds(bye) on input input source.txt failed: exited with status 1")
-        self.assertEqual(results[1].error, "dependency 1 failed")
+        self.assertEqual(error(results[1]), "dependency 1 failed")
         self.assertFalse((self.root / "work/upper.txt").exists())
 
     def test_a_failed_output_check_fails_a_command_that_succeeded(self):
         data = checked(self.root, [check("after", "output", "work/upper.txt", "nope")])
         _, results = run(read(data), state_at(self.root))
-        self.assertIn("check holds(nope) on output output work/upper.txt failed", results[0].error)
-        self.assertEqual(results[1].error, "dependency 1 failed")
+        self.assertIn("check holds(nope) on output output work/upper.txt failed", error(results[0]))
+        self.assertEqual(error(results[1]), "dependency 1 failed")
         self.assertEqual(state_at(self.root).jobs, {})
         # The output is whole but rejected, so it is removed.
         self.assertFalse((self.root / "work/upper.txt").exists())
@@ -72,13 +73,13 @@ class CheckTests(unittest.TestCase):
         dag = read(data)
         decisions, results = run(dag, state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.CHECK, Status.SKIP])
-        self.assertEqual(decisions[0].reason, "checks not yet run on these files")
-        self.assertEqual([r.error for r in results], [None])
+        self.assertEqual(decisions[0].cause, Cause(Why.CHECKS_NOT_RUN))
+        self.assertEqual([error(r) for r in results], [None])
         self.assertEqual(upper.stat().st_mtime_ns, made)
         self.assertEqual([d.status for d in plan(dag, state_at(self.root))], [Status.SKIP, Status.SKIP])
 
         data = checked(self.root, [check("after", "output", "work/upper.txt", "HELLO", name="other")])
-        self.assertEqual(plan(read(data), state_at(self.root))[0].reason, "checks changed")
+        self.assertEqual(plan(read(data), state_at(self.root))[0].cause, Cause(Why.CHECKS_CHANGED))
 
     def test_a_recheck_that_fails_drops_the_record_so_the_job_reruns(self):
         run(read(checked(self.root)), state_at(self.root))
@@ -86,7 +87,7 @@ class CheckTests(unittest.TestCase):
         dag = read(data)
         decisions, results = run(dag, state_at(self.root))
         self.assertEqual(decisions[0].status, Status.CHECK)
-        self.assertIn("failed", results[0].error)
+        self.assertIn("failed", error(results[0]))
         self.assertEqual(plan(dag, state_at(self.root))[0].status, Status.RUN)
 
     def test_adopted_jobs_are_checked_on_the_next_run(self):
@@ -106,7 +107,7 @@ class CheckTests(unittest.TestCase):
         data["executables"] = ["no-such-checker-here"]
         decisions = plan(read(data), state_at(self.root))
         self.assertEqual(decisions[0].status, Status.BLOCKED)
-        self.assertEqual(decisions[0].reason, "program not found: no-such-checker-here")
+        self.assertEqual(decisions[0].cause, Cause(Why.PROGRAM_NOT_FOUND, ("no-such-checker-here",)))
 
     def test_checks_must_be_given_and_match_their_ports(self):
         data = checked(self.root)

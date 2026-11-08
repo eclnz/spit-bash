@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from .dag import Dag, DagError, Job
+from .model import Dag, DagError, Job
 
 LISTED_VALUES = 10
 
@@ -52,10 +52,10 @@ def _listing(names: set[str]) -> str:
 
 def _check_names(dag: Dag, selection: Selection) -> None:
     """Name a criterion the DAG cannot match at all, so a typo is not just "no job matches"."""
-    products = {output.product for job in dag.jobs for output in job.produced}
+    products = {output.product for job in dag.jobs for output in job.output_artifacts}
     values: dict[str, set[str]] = {}
     for job in dag.jobs:
-        for output in job.produced:
+        for output in job.output_artifacts:
             for dimension, value in output.entities:
                 values.setdefault(dimension, set()).add(value)
     stages = {job.stage[:depth] for job in dag.jobs for depth in range(1, len(job.stage) + 1)}
@@ -79,7 +79,7 @@ def _check_names(dag: Dag, selection: Selection) -> None:
 def _matches(job: Job, selection: Selection) -> bool:
     if selection.stages and not any(job.stage[:len(stage)] == stage for stage in selection.stages):
         return False
-    for output in job.produced:
+    for output in job.output_artifacts:
         if selection.products and output.product not in selection.products:
             continue
         if selection.only and not any(set(group) <= set(output.entities) for group in selection.only):

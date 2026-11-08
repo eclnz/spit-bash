@@ -1,0 +1,74 @@
+$ spit-bash plan jobs.spitdag
+exit 0
+--- stdout
+1 job needs only its checks, 1 job is current
+--- stderr
+
+$ spit-bash plan jobs.spitdag --verbose
+exit 0
+--- stdout
+1 job needs only its checks, 1 job is current
+[1] check   op1: checks not yet run on these files
+[2] current op2: current
+--- stderr
+
+$ spit-bash plan jobs.spitdag --json
+exit 0
+--- stdout
+{
+  "left_out": [],
+  "jobs": [
+    {
+      "id": 1,
+      "operation": "op1",
+      "status": "check",
+      "reason": "checks not yet run on these files",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    },
+    {
+      "id": 2,
+      "operation": "op2",
+      "status": "skip",
+      "reason": "current",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    }
+  ]
+}
+--- stderr
+
+$ spit-bash plan jobs.spitdag --job 1
+exit 0
+--- stdout
+Job 1: op1
+  decision: check, checks not yet run on these files
+  fingerprint: same (recorded 866c75df1f9c974b, now 866c75df1f9c974b)
+  checks: differ (recorded none, now 02b64f49c8fab7ee)
+  inputs that differ from the record:
+    none differs from the record
+  outputs that differ from the record:
+    none differs from the record
+--- stderr
+
+$ spit-bash run jobs.spitdag --cores 1
+exit 0
+--- stdout
+1 job needs only its checks, 1 job is current
+  [1] check   op1
+  [1] checked op1
+--- stderr
+0 done, 1 checked, 0 failed, 1 current, 0 blocked
+
+$ spit-bash run jobs.spitdag --cores 1 --verbose
+exit 0
+--- stdout
+1 job needs only its checks, 1 job is current
+[1] check   op1: checks not yet run on these files
+[2] current op2: current
+  [1] check   op1
+  [1] checked op1
+--- stderr
+0 done, 1 checked, 0 failed, 1 current, 0 blocked

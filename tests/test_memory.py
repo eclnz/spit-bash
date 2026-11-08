@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from spit_bash import run as run_module
+from spit_bash.execute import process
 from spit_bash import memory as memory_module
 from spit_bash.memory import group_memory
-from support import read, run, sample, state_at
+from support import error, read, run, sample, state_at
 
 MIB = 2**20
 # Hold 200 MiB, write the output, then wait long enough to be read.
@@ -56,7 +56,7 @@ class EnforcementTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         (self.root / "source.txt").write_text("hello")
-        patch = mock.patch.object(run_module, "MEMORY_POLL_SECONDS", 0.05)
+        patch = mock.patch.object(process, "MEMORY_POLL_SECONDS", 0.05)
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -68,12 +68,12 @@ class EnforcementTests(unittest.TestCase):
 
     def test_a_job_holding_more_than_it_declares_is_killed(self):
         _, results = run(self.greedy(64 * MIB), state_at(self.root))
-        error = results[0].error or ""
-        self.assertRegex(error, r"^command used \d+(\.\d)?M of memory, more than the 64M its job declares, "
+        said = error(results[0]) or ""
+        self.assertRegex(said, r"^command used \d+(\.\d)?M of memory, more than the 64M its job declares, "
                                 r"and was killed$")
         # Its output is removed as with any failure, and its dependent does not run.
         self.assertFalse((self.root / "work/upper.txt").exists())
-        self.assertEqual(results[1].error, "dependency 1 failed")
+        self.assertEqual(error(results[1]), "dependency 1 failed")
 
     def test_sigkill_reports_possible_oom_and_declared_memory(self):
         data = sample(self.root)
@@ -83,7 +83,7 @@ class EnforcementTests(unittest.TestCase):
         data["jobs"][0]["memory"] = 64 * MIB
         _, results = run(read(data), state_at(self.root))
         self.assertEqual(
-            results[0].error,
+            error(results[0]),
             "command killed by signal 9 (SIGKILL), possibly out of memory, declared memory=64M",
         )
 
@@ -95,21 +95,21 @@ class EnforcementTests(unittest.TestCase):
         data["jobs"][0]["memory"] = None
         _, results = run(read(data), state_at(self.root))
         self.assertEqual(
-            results[0].error,
+            error(results[0]),
             "command killed by signal 9 (SIGKILL), possibly out of memory",
         )
 
     def test_a_job_within_what_it_declares_runs(self):
         _, results = run(self.greedy(1024 * MIB), state_at(self.root))
-        self.assertEqual([result.error for result in results], [None, None])
+        self.assertEqual([error(result) for result in results], [None, None])
 
     def test_a_job_that_declares_no_memory_is_not_limited(self):
         _, results = run(self.greedy(None), state_at(self.root))
-        self.assertEqual([result.error for result in results], [None, None])
+        self.assertEqual([error(result) for result in results], [None, None])
 
     def test_without_enforcement_a_job_may_hold_more(self):
         _, results = run(self.greedy(64 * MIB), state_at(self.root), enforce_memory=False)
-        self.assertEqual([result.error for result in results], [None, None])
+        self.assertEqual([error(result) for result in results], [None, None])
 
 
 if __name__ == "__main__":

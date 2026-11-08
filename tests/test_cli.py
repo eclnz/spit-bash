@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.cli import main
-from support import artifact, job, sample, UPPER
+from support import artifact, job_entry, sample, UPPER
 
 
 def call(*argv, stdin=None):
@@ -78,7 +78,7 @@ class CliTests(unittest.TestCase):
 
     def test_blocked_job_does_not_stop_independent_jobs(self):
         self.data["external_inputs"].append(artifact("missing.txt"))
-        self.data["jobs"].append(job(3, ["missing.txt"], "other.txt", UPPER))
+        self.data["jobs"].append(job_entry(3, ["missing.txt"], "other.txt", UPPER))
         code, out, err = call("run", self.write(), "--partial")
         self.assertEqual(code, 1)
         self.assertIn("blocked: op3: missing external input: missing.txt", out)

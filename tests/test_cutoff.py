@@ -8,16 +8,18 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from spit_bash.cause import Cause, Why
 from spit_bash.cli import main
 from spit_bash.plan import Status, plan
-from support import EXCLAIM, job, read, run, sample, state_at
+from spit_bash.reuse.evidence import Compare
+from support import EXCLAIM, error, job_entry, read, run, sample, state_at
 
 
 def chain(root):
     """source.txt -> work/upper.txt -> final.txt -> last.txt"""
     data = sample(root)
     data["jobs"][1]["dependents"] = [3]
-    data["jobs"].append(job(3, ["final.txt"], "last.txt", EXCLAIM, depends_on=[2]))
+    data["jobs"].append(job_entry(3, ["final.txt"], "last.txt", EXCLAIM, depends_on=[2]))
     return data
 
 
@@ -53,7 +55,7 @@ class CutoffTests(unittest.TestCase):
         final = self.root / "last.txt"
         before = final.stat().st_mtime_ns
         _, results = run(self.dag, state_at(self.root))
-        self.assertFalse(any(r.error for r in results))
+        self.assertFalse(any(error(r) for r in results))
         self.assertEqual([r.settled for r in results], [None, Status.SKIP, Status.SKIP])
         self.assertEqual(final.stat().st_mtime_ns, before)
         # The stamps were stored, so the next plan has nothing left to settle.
@@ -70,20 +72,20 @@ class CutoffTests(unittest.TestCase):
         self.data["jobs"][2]["commands"][0]["command"].append(["extra"])
         decisions = plan(read(self.data), state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.RUN])
-        self.assertEqual(decisions[2].reason, "command changed")
+        self.assertEqual(decisions[2].cause, Cause(Why.WORK_CHANGED, parts=("commands",)))
 
     def test_without_hashing_a_job_below_a_rerun_runs(self):
         self.edit_source("Hello")
-        decisions = plan(self.dag, state_at(self.root), hashing=False)
+        decisions = plan(self.dag, state_at(self.root), compare=Compare.STAT)
         self.assertEqual([d.status for d in decisions], [Status.RUN] * 3)
-        self.assertEqual(decisions[1].reason, "dependency will run")
+        self.assertEqual(decisions[1].cause, Cause(Why.DEPENDENCY_WILL_RUN))
 
     def test_a_job_with_no_command_below_a_maybe_is_blocked(self):
         self.data["jobs"][2]["commands"] = []
         self.edit_source("Hello")
         decisions = plan(read(self.data), state_at(self.root))
         self.assertEqual([d.status for d in decisions], [Status.RUN, Status.MAYBE, Status.BLOCKED])
-        self.assertEqual(decisions[2].reason, "no command and dependency may run")
+        self.assertEqual(decisions[2].cause, Cause(Why.NO_COMMAND_DEPENDENCY_MAY_RUN))
 
     def test_a_job_whose_input_is_missing_is_not_a_maybe(self):
         self.edit_source("Hello")
@@ -91,7 +93,7 @@ class CutoffTests(unittest.TestCase):
         decisions = plan(self.dag, state_at(self.root))
         # Nothing is there to compare, so the job below it cannot be settled early.
         self.assertEqual([d.status for d in decisions], [Status.RUN] * 3)
-        self.assertEqual([d.reason for d in decisions][1:], ["output missing", "dependency will run"])
+        self.assertEqual([d.cause.why for d in decisions][1:], [Why.OUTPUT_MISSING, Why.DEPENDENCY_WILL_RUN])
 
     def test_plan_and_run_say_how_many_may_run_and_how_many_were_cut_off(self):
         self.edit_source("Hello")
@@ -121,8 +123,8 @@ class CutoffTests(unittest.TestCase):
         self.edit_source("Hello")
         self.data["jobs"][0]["commands"][0]["command"][2] = ["import sys; sys.exit(3)"]
         _, results = run(read(self.data), state_at(self.root))
-        self.assertEqual([bool(r.error) for r in results], [True, True, True])
-        self.assertEqual(results[1].error, "dependency 1 failed")
+        self.assertEqual([bool(error(r)) for r in results], [True, True, True])
+        self.assertEqual(error(results[1]), "dependency 1 failed")
 
 
 if __name__ == "__main__":
