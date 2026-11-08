@@ -44,14 +44,14 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual([job_key(j) for j in before], [job_key(j) for j in after])
         self.assertNotEqual(before[0].outputs, after[0].outputs)
 
-    def test_a_changed_command_or_artifact_identity_changes_the_fingerprint(self):
+    def test_a_changed_command_changes_the_fingerprint_but_a_renamed_artifact_does_not(self):
         base = read(self.data).jobs[0].fingerprint
         changed = copy.deepcopy(self.data)
         changed["jobs"][0]["commands"][0]["command"][2] = ["print('other')"]
         self.assertNotEqual(base, read(changed).jobs[0].fingerprint)
         renamed = copy.deepcopy(self.data)
-        renamed["jobs"][0]["inputs"]["input"][0]["entities"] = {"sub": "01"}
-        self.assertNotEqual(base, read(renamed).jobs[0].fingerprint)
+        renamed["jobs"][0]["inputs"]["input"][0].update(product="other", entities={"sub": "01"})
+        self.assertEqual(base, read(renamed).jobs[0].fingerprint)
 
     def test_renaming_an_operation_or_a_port_keeps_the_fingerprint(self):
         base = read(self.data).jobs[0].fingerprint
@@ -78,8 +78,7 @@ class IdentityTests(unittest.TestCase):
         run(read(self.data), state_at(self.root))
         for edit, reason in [
             (lambda item: item["commands"][0]["command"].append(["x"]), "command changed"),
-            (lambda item: item["inputs"]["input"][0].update(entities={"sub": "01"}),
-             "the artifacts it reads changed"),  # its command names them too
+            (lambda item: item["inputs"].update(again=item["inputs"]["input"]), "the artifacts it reads changed"),
         ]:
             changed = copy.deepcopy(self.data)
             edit(changed["jobs"][0])

@@ -81,8 +81,9 @@ class Job:
     # None when it claims none.
     cores: int = 1
     memory: int | None = None
-    # Each input and output path's artifact identity, which a state record keys
-    # its stamps and hashes by, so a record survives a change of path.
+    # Each input and output path's place in the job (see `_slots`), which a state
+    # record keys its stamps and hashes by, so a record survives a change of path
+    # or name.
     identities: dict[str, str] = field(default_factory=dict, compare=False)
     # `fingerprint`'s parts, each hashed on its own, by name.
     parts: dict[str, str] = field(default_factory=dict, compare=False)
@@ -181,22 +182,32 @@ def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
     return tuple(arguments)
 
 
-def _identity(artifact: Artifact) -> list:
-    """What an artifact is apart from where it is stored: product, entities and kind."""
-    return [artifact.product, sorted(artifact.entities.items()), artifact.kind]
+def _slots(item: SpitJob) -> dict[str, str]:
+    """Each input and output path's place in the job, which is its identity.
+
+    An artifact is the same work whatever it is called, so a record names a file
+    by where the job holds it (its port and place among that port's items), not by
+    product or entities. A path fed to two ports takes its first place.
+    """
+    slots: dict[str, str] = {}
+    for port, artifacts in enumerate(item.inputs.values()):
+        for place, artifact in enumerate(artifacts):
+            slots.setdefault(artifact.path, f"in{port}.{place}")
+    for port, artifact in enumerate(item.outputs.values()):
+        slots.setdefault(artifact.path, f"out{port}")
+    return slots
 
 
 def _fingerprint(item: SpitJob) -> tuple[str, dict[str, str]]:
-    """The job's work as the runner identifies it: the artifacts it reads and
-    writes, and its commands, with every path replaced by the identity of
-    the artifact it names. Storage paths, checks, scheduling and where the job came
-    from are left out, so moving the outputs changes nothing here."""
-    named = {artifact.path: artifact for port in item.inputs.values() for artifact in port}
-    named.update((artifact.path, artifact) for artifact in item.outputs.values())
+    """The job's work as the runner identifies it: the shape of what it reads and
+    writes, and its commands, with every path replaced by its place in the job.
+    Names, storage paths, checks, scheduling and where the job came from are left
+    out, so renaming or moving things changes nothing here. What the inputs hold
+    is checked against the record's hashes, not here."""
+    slots = _slots(item)
 
-    def of(path: str) -> list | str:
-        artifact = named.get(path)
-        return path if artifact is None else _identity(artifact)
+    def of(path: str) -> str:
+        return slots.get(path, path)
 
     def part(value: CommandPart) -> list | str:
         if isinstance(value, str):
@@ -215,8 +226,8 @@ def _fingerprint(item: SpitJob) -> tuple[str, dict[str, str]]:
 
     # Ports are listed in order, without their names: a renamed operation or port is the same work.
     work = {
-        "inputs": [[_identity(a) for a in artifacts] for artifacts in item.inputs.values()],
-        "outputs": [_identity(a) for a in item.outputs.values()],
+        "inputs": [[[slots[a.path], a.kind] for a in artifacts] for artifacts in item.inputs.values()],
+        "outputs": [[slots[a.path], a.kind] for a in item.outputs.values()],
         "commands": [
             [command(c.command), None if c.stdin is None else of(c.stdin), None if c.stdout is None else of(c.stdout)]
             for c in item.commands
@@ -359,8 +370,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
                 for check in item.checks
             ),
             origin=_origin(document, item),
-            identities={artifact.path: json.dumps(_identity(artifact)[:2], separators=(",", ":"), sort_keys=True)
-                        for artifact in (*(a for port in item.inputs.values() for a in port), *item.outputs.values())},
+            identities=_slots(item),
             cores=item.cores,
             memory=item.memory,
         ))

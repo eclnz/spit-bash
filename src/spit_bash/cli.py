@@ -17,7 +17,7 @@ from .dag import Dag, DagError, Job, load_dag
 from .display import id_width, labels, name
 from .explain import explain
 from .migrate import apply, find
-from .plan import State, Status, adopt, apply_refreshes, plan, stamp
+from .plan import State, Status, adopt, apply_refreshes, plan, reconcile, stamp
 from .run import Result, execute, log_tail
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
@@ -248,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         forced = selected.matched_ids if args.force else False
+        if not args.stat_only:
+            reconcile(dag, state, everything, args.action is Action.RUN)
         decisions = plan(dag, state, forced, not args.stat_only)
         if args.move_files and not args.force:
             # A job that is current as it stands has nothing to move; `find` leaves out one whose

@@ -36,7 +36,7 @@ class StateTests(unittest.TestCase):
     def test_rejects_a_corrupt_line(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.jsonl"
-            path.write_text('{"version": 6}\nnot json\n{"key": "k", "record": null}\n')
+            path.write_text('{"version": 7}\nnot json\n{"key": "k", "record": null}\n')
             with self.assertRaisesRegex(DagError, "cannot read state"):
                 State(path)
             path.write_text('{"version": 1, "jobs": {}}\n')
