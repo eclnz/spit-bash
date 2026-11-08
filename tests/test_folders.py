@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 from spit_bash.dag import DagError
-from spit_bash.plan import Status, plan, stamp
+from spit_bash.files import stamp
+from spit_bash.plan import Status, plan
 from support import artifact, command, document, read, run, state_at
 
 # Copy every file of the input folder into the output folder, upper-cased.
@@ -131,8 +132,8 @@ class FolderTests(unittest.TestCase):
             root = Path(directory)
             pages(root)
             first = stamp(root / "pages", folder=True)
-            self.assertEqual(first[0], len("one ") + len("two"))
-            self.assertEqual(first[2], 2)
+            self.assertEqual(first.size, len("one ") + len("two"))
+            self.assertEqual(first.count, 2)
             self.assertIsNone(stamp(root / "pages"))
             self.assertIsNone(stamp(root / "pages/1.txt", folder=True))
 
@@ -140,7 +141,7 @@ class FolderTests(unittest.TestCase):
             folder_time = os.stat(root / "pages/part").st_mtime_ns
             (root / "pages/part/2.txt").write_text("TWO")
             os.utime(root / "pages/part", ns=(folder_time, folder_time))
-            os.utime(root / "pages/part/2.txt", ns=(first[1] + 1, first[1] + 1))
+            os.utime(root / "pages/part/2.txt", ns=(first.mtime_ns + 1, first.mtime_ns + 1))
             self.assertNotEqual(stamp(root / "pages", folder=True), first)
 
 

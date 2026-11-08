@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.dag import load_dag
+from spit_bash.files import Stamp
 from spit_bash.plan import State, Status, plan
 from spit_bash import run as run_module
 from spit_bash.run import execute
@@ -34,9 +35,8 @@ MEET = (
 class InputChangeDiagnosticTests(unittest.TestCase):
     def test_names_changed_file_and_stamps(self):
         error = run_module._input_changes(
-            {"source.txt": [10, 100], "stable.txt": [2, 30]},
-            {"source.txt": [12, 150], "stable.txt": [2, 30]},
-            set(),
+            {"source.txt": Stamp(10, 100), "stable.txt": Stamp(2, 30)},
+            {"source.txt": Stamp(12, 150), "stable.txt": Stamp(2, 30)},
         )
         self.assertEqual(
             error,
@@ -45,9 +45,8 @@ class InputChangeDiagnosticTests(unittest.TestCase):
 
     def test_names_folder_mtime_and_file_count(self):
         error = run_module._input_changes(
-            {"templates": [1024, 100, 4]},
-            {"templates": [1024, 200, 5]},
-            {"templates"},
+            {"templates": Stamp(1024, 100, 4)},
+            {"templates": Stamp(1024, 200, 5)},
         )
         self.assertEqual(
             error,
@@ -56,9 +55,8 @@ class InputChangeDiagnosticTests(unittest.TestCase):
 
     def test_names_missing_input(self):
         error = run_module._input_changes(
-            {"source.txt": [12, 100]},
+            {"source.txt": Stamp(12, 100)},
             {"source.txt": None},
-            set(),
         )
         self.assertEqual(
             error, "input changed during execution: source.txt: [12, 100] -> None",

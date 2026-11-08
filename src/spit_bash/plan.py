@@ -6,7 +6,6 @@ import fcntl
 import json
 import os
 import shutil
-import stat
 import tempfile
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -15,8 +14,8 @@ from typing import IO, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .content import content_hash
 from .dag import Dag, DagError, Job
+from .files import Stamps, content_hash, stamps, stored_each
 
 
 def job_key(job: Job) -> str:
@@ -25,60 +24,6 @@ def job_key(job: Job) -> str:
     # products and entities, which neither changes.
     identities = sorted([output.product, output.entities] for output in job.produced)
     return json.dumps(identities, separators=(",", ":"))
-
-
-def stamp(path: Path, folder: bool = False) -> list[int] | None:
-    """A file's size and modification time, or None when it is not a file.
-
-    A folder's stamp is the total size of the files under it, the latest
-    modification time of any file under it, and how many files it holds, or
-    None when it is not a folder. Directory mtimes are deliberately excluded:
-    syncing software can touch them without changing the input files.
-    """
-    if folder:
-        return _folder_stamp(path)
-    try:
-        info = path.stat()
-    except FileNotFoundError:
-        return None
-    return [info.st_size, info.st_mtime_ns] if stat.S_ISREG(info.st_mode) else None
-
-
-def _folder_stamp(path: Path) -> list[int] | None:
-    if not path.is_dir():
-        return None
-    size, latest, count = 0, 0, 0
-    for directory, folders, files in os.walk(path):
-        for name in files:
-            try:
-                info = os.stat(os.path.join(directory, name))
-            except FileNotFoundError:
-                # A link to nothing names no file.
-                continue
-            size += info.st_size
-            latest = max(latest, info.st_mtime_ns)
-            count += 1
-    return [size, latest, count]
-
-
-Stamps = dict[str, list[int] | None]
-
-
-def stamps(dag: Dag, paths: tuple[str, ...], seen: Stamps | None = None) -> Stamps:
-    """Each path's stamp; with `seen`, each path is read once and kept there.
-
-    Planning reads a file as one job's output and again as each consumer's
-    input, and nothing changes the files meanwhile, so it keeps every stamp it
-    reads for the whole plan. A run reads them afresh: its jobs change them.
-    """
-    if seen is None:
-        return {path: stamp(dag.path(path), path in dag.folders) for path in paths}
-    found = {}
-    for path in paths:
-        if path not in seen:
-            seen[path] = stamp(dag.path(path), path in dag.folders)
-        found[path] = seen[path]
-    return found
 
 
 # A file's size and time, or a folder's, with how many files it holds. Both
@@ -303,10 +248,6 @@ class Decision:
 DEPENDENCY_BLOCKED = "dependency blocked: "
 
 
-def hashes(dag: Dag, paths: tuple[str, ...]) -> dict[str, str]:
-    return {path: h for path in paths if (h := content_hash(str(dag.path(path)), path in dag.folders)) is not None}
-
-
 def _unchanged(dag: Dag, paths: dict[str, str], now: dict[str, list[int] | None],
                recorded: dict[str, list[int]], recorded_hashes: dict[str, str] | None, hashing: bool,
                verify: bool = False) -> bool:
@@ -396,7 +337,7 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: St
     # the same files when their stamps or contents match.
     in_paths = {job.identities[path]: path for path in job.inputs}
     out_paths = {job.identities[path]: path for path in job.outputs}
-    now_in, now_out = job.keyed(now_in), job.keyed(now_out)
+    now_in, now_out = stored_each(job.keyed(now_in)), stored_each(job.keyed(now_out))
     if not _unchanged(dag, in_paths, now_in, record.inputs, record.input_hashes, hashing, verify):
         return Decision(job, Status.RUN, "input changed")
     if not _unchanged(dag, out_paths, now_out, record.outputs, record.output_hashes, hashing, verify):
@@ -423,7 +364,7 @@ def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamp
     inputs = stamps(dag, job.inputs, seen)
     if any(value is None for value in inputs.values()):
         return Decision(job, Status.BLOCKED, "input is missing")
-    if job.inputs and max(value[1] for value in inputs.values()) > min(value[1] for value in outputs.values()):
+    if job.inputs and max(value.mtime_ns for value in inputs.values()) > min(value.mtime_ns for value in outputs.values()):
         return Decision(job, Status.BLOCKED, "no command and output is older than an input")
     if job.checks:
         return Decision(job, Status.CHECK, "no command; outputs exist, checking them")
@@ -533,8 +474,9 @@ def adopt(dag: Dag, state: State) -> tuple[Adoption, ...]:
         elif any(value is None for value in inputs.values()):
             adoption = Adoption(job, AdoptStatus.LEFT, "input missing")
         else:
-            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, parts=job.parts, inputs=job.keyed(inputs),
-                                                    outputs=job.keyed(outputs),
+            state.record(job_key(job), RunRecord(fingerprint=job.fingerprint, parts=job.parts,
+                                                    inputs=stored_each(job.keyed(inputs)),
+                                                    outputs=stored_each(job.keyed(outputs)),
                                                     output_paths=job.output_paths))
             adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
         adoptions.append(adoption)

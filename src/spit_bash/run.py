@@ -16,9 +16,10 @@ from typing import IO
 
 from .dag import Check, Dag, Job
 from .display import id_width, labels, name
+from .files import FolderEntries, Stamps, folder_entries, folder_inputs, hashes, stamps, stored, stored_each
 from .logs import StampedLog, drain, open_log, pump
 from .memory import group_memory
-from .plan import Decision, RunRecord, State, Status, hashes, job_key, judge, stamps
+from .plan import Decision, RunRecord, State, Status, job_key, judge
 from .progress import Progress, about, duration
 from .schedule import ReadyQueue, ranks, size, too_big
 
@@ -47,8 +48,8 @@ class Result:
 class _Ran:
     """A job whose command and checks passed, before its files are hashed and recorded."""
 
-    after: dict[str, list[int] | None]
-    outputs: dict[str, list[int] | None]
+    after: Stamps
+    outputs: Stamps
     log: Path
     # How long it took, from its first check to its last.
     seconds: float
@@ -136,50 +137,18 @@ async def _finish(process: asyncio.subprocess.Process, pumps: list[asyncio.Task[
     return None if code == 0 else f"{kind} exited with status {code}"
 
 
-def _input_changes(
-    before: dict[str, list[int] | None],
-    after: dict[str, list[int] | None],
-    folders: set[str] | frozenset[str],
-) -> str:
-    """Name every changed input and show which recorded stamp fields changed."""
+def _input_changes(before: Stamps, after: Stamps) -> str:
+    """Name every changed input and show which of its stamp's fields changed."""
     changes = []
     for path, original in before.items():
         current = after.get(path)
         if original == current:
             continue
         if original is None or current is None:
-            changes.append(f"{path}: {original!r} -> {current!r}")
+            changes.append(f"{path}: {stored(original)!r} -> {stored(current)!r}")
             continue
-        fields = ("total size", "latest mtime_ns", "file count") if path in folders else ("size", "mtime_ns")
-        changed = [
-            f"{field} {old} -> {new}"
-            for field, old, new in zip(fields, original, current)
-            if old != new
-        ]
-        changes.append(f"{path}: {', '.join(changed)}")
+        changes.append(f"{path}: {', '.join(original.changes(current))}")
     return "input changed during execution: " + "; ".join(changes)
-
-
-def _folder_entries(root: Path) -> tuple[tuple[str, int, int], ...]:
-    """Record folder names and file metadata, excluding directory mtimes."""
-    entries = []
-    for directory, folders, files in os.walk(root):
-        folders.sort()
-        for name in folders:
-            entries.append((f"d:{(Path(directory) / name).relative_to(root)}", 0, 0))
-        for name in sorted(files):
-            path = Path(directory) / name
-            try:
-                info = path.stat()
-            except FileNotFoundError:
-                continue
-            if path.is_file():
-                entries.append((f"f:{path.relative_to(root)}", info.st_size, info.st_mtime_ns))
-    return tuple(entries)
-
-
-def _folder_inputs(dag: Dag, job: Job) -> dict[str, tuple[tuple[str, int, int], ...]]:
-    return {path: _folder_entries(dag.path(path)) for path in job.inputs if path in dag.folders}
 
 
 async def _within(process: asyncio.subprocess.Process, limit: int) -> int | None:
@@ -332,9 +301,8 @@ def _settle_aside(moved: list[tuple[str, Path, Path]], log: IO[bytes] | StampedL
     log.flush()
 
 
-async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO[bytes] | StampedLog,
-                limit: int | None, folder_entries: dict[str, tuple[tuple[str, int, int], ...]],
-                ) -> str | tuple[dict[str, list[int] | None], dict[str, list[int] | None]]:
+async def _make(dag: Dag, job: Job, before: Stamps, log: IO[bytes] | StampedLog,
+                limit: int | None, entries: dict[str, FolderEntries]) -> str | tuple[Stamps, Stamps]:
     """Run a job's commands in order, then its output checks; give an error, or its inputs' and outputs' stamps.
 
     The first command that fails stops the job, and the commands after it do not run.
@@ -353,11 +321,11 @@ async def _make(dag: Dag, job: Job, before: dict[str, list[int] | None], log: IO
                 return f"could not move standard output onto {run.stdout}: {exc}"
     after = stamps(dag, job.inputs)
     changed_folders = {
-        path for path, entries in folder_entries.items()
-        if entries != _folder_entries(dag.path(path))
+        path for path, listed in entries.items()
+        if listed != folder_entries(dag.path(path))
     }
     if after != before or changed_folders:
-        message = _input_changes(before, after, dag.folders) if after != before else "input changed during execution"
+        message = _input_changes(before, after) if after != before else "input changed during execution"
         extra = [f"{path}: directory entries or file metadata changed" for path in sorted(changed_folders)
                  if before[path] == after[path]]
         return message + ("; " + "; ".join(extra) if extra else "")
@@ -446,11 +414,11 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
         # since a thread hop costs more than hashing a small file.
         if not hashing:
             input_hashes = output_hashes = None
-        elif sum(value[0] for value in (*ran.after.values(), *ran.outputs.values())) < INLINE_HASH_BYTES:
+        elif sum(value.size for value in (*ran.after.values(), *ran.outputs.values())) < INLINE_HASH_BYTES:
             input_hashes, output_hashes = _hash_both(dag, job)
         else:
             input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
-        record = RunRecord(fingerprint=job.fingerprint, parts=job.parts, inputs=job.keyed(ran.after), outputs=job.keyed(ran.outputs), checks=job.checks_key,
+        record = RunRecord(fingerprint=job.fingerprint, parts=job.parts, inputs=stored_each(job.keyed(ran.after)), outputs=stored_each(job.keyed(ran.outputs)), checks=job.checks_key,
                            input_hashes=input_hashes, output_hashes=output_hashes, seconds=round(ran.seconds, 3),
                            output_paths=job.output_paths)
         state.record(job_key(job), record)
@@ -465,7 +433,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             return Result(job, "input disappeared before execution")
         if not job.commands:
             return Result(job, "job has no command")
-        folder_entries = _folder_inputs(dag, job)
+        entries = folder_inputs(dag, job)
         path = log_path(logs, job)
         say(job, "start")
         started = time.monotonic()
@@ -493,7 +461,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             # outputs, unless they are kept. A cancelled command's process group is stopped before
             # the cancellation reaches this point.
             try:
-                made = await _make(dag, job, before, log, limit, folder_entries)
+                made = await _make(dag, job, before, log, limit, entries)
             except asyncio.CancelledError:
                 _remove_outputs(dag, job, log, keep_failed)
                 _settle_aside(moved, log, not keep_failed)
@@ -520,7 +488,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
             return Result(job, error, path)
         if record is not None:
             # A command could change a file under a check; record the stamps it passed on.
-            outputs, inputs = job.keyed(stamps(dag, job.outputs)), job.keyed(stamps(dag, job.inputs))
+            outputs, inputs = stored_each(job.keyed(stamps(dag, job.outputs))), stored_each(job.keyed(stamps(dag, job.inputs)))
             if outputs == record.outputs and inputs == record.inputs:
                 state.record(key, record.model_copy(update={"checks": job.checks_key}))
         say(job, "checked")

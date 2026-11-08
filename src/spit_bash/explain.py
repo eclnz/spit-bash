@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-from .content import content_hash
 from .dag import Dag, DagError, Job
 from .display import labels, name
-from .plan import changed_parts, Decision, State, Status, UPSTREAM, job_key, stamps
+from .files import Stamp, content_hash, stamps, stored
+from .plan import changed_parts, Decision, State, Status, UPSTREAM, job_key
 
 
-def _stamp(value: list[int] | None, folder: bool) -> str:
-    if value is None:
-        return "missing"
-    if folder:
-        return f"{value[0]} bytes in {value[2]} files, latest mtime_ns {value[1]}"
-    return f"{value[0]} bytes, mtime_ns {value[1]}"
+def _stamp(value: Stamp | None) -> str:
+    return "missing" if value is None else value.describe()
 
 
 def _content(dag: Dag, path: str, key: str, recorded: dict[str, str] | None, hashing: bool) -> str:
@@ -34,13 +30,12 @@ def _files(dag: Dag, job: Job, paths: tuple[str, ...], recorded: dict[str, list[
     current = stamps(dag, paths, seen)
     for path in paths:
         key = job.identities[path]
-        folder = path in dag.folders
         was, now = recorded.get(key), current[path]
-        if was == now:
+        if was == stored(now):
             continue
         lines.append(f"    {path}")
-        lines.append(f"      recorded: {_stamp(was, folder)}")
-        lines.append(f"      now:      {_stamp(now, folder)}")
+        lines.append(f"      recorded: {_stamp(None if was is None else Stamp.from_stored(was))}")
+        lines.append(f"      now:      {_stamp(now)}")
         if now is not None and was is not None:
             lines.append(f"      {_content(dag, path, key, recorded_hashes, hashing)}")
     return lines or ["    none differs from the record"]

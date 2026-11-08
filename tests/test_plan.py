@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.dag import load_dag
-from spit_bash import plan as planning
+from spit_bash import files
 from spit_bash.plan import AdoptStatus, Status, adopt, plan
 from support import FIXTURE, artifact, job, read, run, sample, state_at, UPPER
 
@@ -24,7 +24,7 @@ class PlanTests(unittest.TestCase):
             dag = read(sample(root))
             run(dag, state_at(root))
             # work/upper.txt is job 1's output and job 2's input.
-            with mock.patch.object(planning, "stamp", wraps=planning.stamp) as stamp:
+            with mock.patch.object(files, "stamp", wraps=files.stamp) as stamp:
                 self.assertEqual([d.status for d in plan(dag, state_at(root))], [Status.SKIP, Status.SKIP])
             read_paths = [call.args[0].relative_to(root).as_posix() for call in stamp.call_args_list]
             self.assertEqual(sorted(read_paths), ["final.txt", "source.txt", "work/upper.txt"])

@@ -6,7 +6,8 @@ import os
 from dataclasses import dataclass
 
 from .dag import Dag, DagError, Job
-from .plan import State, changed_parts, _unchanged, job_key, stamp, stamps
+from .files import stamp, stamps, stored, stored_each
+from .plan import State, changed_parts, _unchanged, job_key
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ def _plan_job(dag: Dag, job: Job, state: State, claimed: set[str], moving: set[s
     # A moved output is reused only if the job would be current but for the move.
     # An input an earlier job is moving arrives with the stamps it has, so it counts as present.
     in_paths = {job.identities[path]: path for path in job.inputs if path not in moving}
-    now = job.keyed(stamps(dag, tuple(in_paths.values())))
+    now = stored_each(job.keyed(stamps(dag, tuple(in_paths.values()))))
     if any(value is None for value in now.values()) or not _unchanged(
             dag, in_paths, now, record.inputs, record.input_hashes, True):
         return Migration(job, (), "an input is missing or changed since the run")
@@ -49,7 +50,7 @@ def _plan_job(dag: Dag, job: Job, state: State, claimed: set[str], moving: set[s
             return Migration(job, (), f"{new} already exists")
         if old in claimed:
             return Migration(job, (), f"{old} is a path the pipeline still uses")
-        if stamp(old_path, new in dag.folders) != record.outputs.get(key):
+        if stored(stamp(old_path, new in dag.folders)) != record.outputs.get(key):
             return Migration(job, (), f"{old} is missing or changed since the run")
         moves.append((old, new))
     moving.update(new for _, new in moves)
@@ -98,7 +99,7 @@ def apply(dag: Dag, state: State, migrations: tuple[Migration, ...]) -> tuple[Mi
                 os.rename(source, target)
                 done.append((old, new))
                 key = migration.job.identities[new]
-                if stamp(target, new in dag.folders) != record.outputs.get(key):
+                if stored(stamp(target, new in dag.folders)) != record.outputs.get(key):
                     raise OSError(f"{new} does not match the record after the move")
         except OSError as exc:
             try:

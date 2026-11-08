@@ -17,8 +17,9 @@ from pathlib import Path
 from .dag import Dag, DagError, Job, load_dag
 from .display import id_width, labels
 from .explain import explain
+from .files import stamp
 from .migrate import apply, find
-from .plan import State, Status, adopt, apply_refreshes, plan, reconcile, stamp
+from .plan import State, Status, adopt, apply_refreshes, plan, reconcile
 from .report import blocked_lines, counts, failure_groups, ids, job_line, jobs
 from .run import Result, execute, log_tail
 from .schedule import over_memory

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash import content
+from spit_bash import files
 from spit_bash.dag import DagError
 from spit_bash.plan import RunRecord, State, Status, apply_refreshes, plan
 from spit_bash.run import execute
@@ -146,17 +146,17 @@ class ContentTests(unittest.TestCase):
             (folder / "sub").mkdir(parents=True)
             (folder / "1.txt").write_text("one")
             (folder / "sub/2.txt").write_text("two")
-            first = content.content_hash(str(folder), folder=True)
+            first = files.content_hash(str(folder), folder=True)
             touch(folder / "1.txt")
-            self.assertEqual(content.content_hash(str(folder), folder=True), first)
+            self.assertEqual(files.content_hash(str(folder), folder=True), first)
             (folder / "1.txt").rename(folder / "3.txt")
-            self.assertNotEqual(content.content_hash(str(folder), folder=True), first)
+            self.assertNotEqual(files.content_hash(str(folder), folder=True), first)
             (folder / "3.txt").rename(folder / "1.txt")
             (folder / "sub/2.txt").write_text("TWO")
-            self.assertNotEqual(content.content_hash(str(folder), folder=True), first)
-            self.assertIsNone(content.content_hash(str(folder / "1.txt"), folder=True))
-            self.assertIsNone(content.content_hash(str(folder)))
-            self.assertIsNone(content.content_hash(str(folder / "missing")))
+            self.assertNotEqual(files.content_hash(str(folder), folder=True), first)
+            self.assertIsNone(files.content_hash(str(folder / "1.txt"), folder=True))
+            self.assertIsNone(files.content_hash(str(folder)))
+            self.assertIsNone(files.content_hash(str(folder / "missing")))
 
     def test_an_older_state_is_refused_with_advice_to_delete_it(self):
         with tempfile.TemporaryDirectory() as directory:
