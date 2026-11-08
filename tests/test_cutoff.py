@@ -11,7 +11,7 @@ from unittest import mock
 from spit_bash.cli import main
 from spit_bash.plan import Status, plan
 from spit_bash.reuse.evidence import Compare
-from support import EXCLAIM, job_entry, read, run, sample, state_at
+from support import EXCLAIM, error, job_entry, read, run, sample, state_at
 
 
 def chain(root):
@@ -54,7 +54,7 @@ class CutoffTests(unittest.TestCase):
         final = self.root / "last.txt"
         before = final.stat().st_mtime_ns
         _, results = run(self.dag, state_at(self.root))
-        self.assertFalse(any(r.error for r in results))
+        self.assertFalse(any(error(r) for r in results))
         self.assertEqual([r.settled for r in results], [None, Status.SKIP, Status.SKIP])
         self.assertEqual(final.stat().st_mtime_ns, before)
         # The stamps were stored, so the next plan has nothing left to settle.
@@ -122,8 +122,8 @@ class CutoffTests(unittest.TestCase):
         self.edit_source("Hello")
         self.data["jobs"][0]["commands"][0]["command"][2] = ["import sys; sys.exit(3)"]
         _, results = run(read(self.data), state_at(self.root))
-        self.assertEqual([bool(r.error) for r in results], [True, True, True])
-        self.assertEqual(results[1].error, "dependency 1 failed")
+        self.assertEqual([bool(error(r)) for r in results], [True, True, True])
+        self.assertEqual(error(results[1]), "dependency 1 failed")
 
 
 if __name__ == "__main__":

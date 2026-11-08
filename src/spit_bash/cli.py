@@ -15,17 +15,20 @@ from enum import Enum
 from pathlib import Path
 
 from .load import load_dag
-from .model import Dag, DagError, Job
+from .model import Dag, DagError
 from .display import id_width, labels
 from .explain import explain
 from .files import stamp
-from .plan import Decision, Status, adopt, plan, writes
+from .plan import Status, adopt, plan, writes
 from .reuse.evidence import Compare
 from .reuse.relabel import relabel
 from .reuse.relocate import apply, find
 from .state.store import Store
-from .report import blocked_lines, counts, failure_groups, ids, job_line, jobs
-from .run import Result, execute, log_tail
+from .execute.options import Options
+from .execute.scheduler import execute
+from .report import run_text
+from .report.plan_text import blocked_lines, counts, job_line, jobs
+from .report.summary import Summary, stale
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
 
@@ -174,52 +177,6 @@ def _selection(args: argparse.Namespace) -> Selection:
         raise DagError(str(exc)) from exc
 
 
-def _stale(everything: Dag, chosen: Dag, decisions: tuple[Decision, ...], results: tuple[Result, ...]) -> int:
-    """The jobs left out of a partial run that read an output the run rewrote."""
-    settled = {result.job.id: result.settled for result in results if result.error is None}
-    rewritten = set()
-    for decision in decisions:
-        if decision.job.id not in settled:
-            continue
-        status = settled[decision.job.id] or decision.status
-        if status is Status.RUN:
-            rewritten.update(decision.job.output_paths)
-    kept = {job.id for job in chosen.jobs}
-    return sum(1 for job in everything.jobs if job.id not in kept and rewritten.intersection(job.input_paths))
-
-
-def _report_failure(job: Job, error: str, log: Path | None) -> None:
-    job_id = job.id
-    print(f"[{job_id}] failed: {error}", file=sys.stderr)
-    for line in job.origin:
-        print(f"[{job_id}] {line}", file=sys.stderr)
-    if log is not None:
-        tail = log_tail(log)
-        if tail:
-            print(f"[{job_id}] last lines of {log}:", file=sys.stderr)
-            for line in tail:
-                print(f"    {line}", file=sys.stderr)
-        else:
-            print(f"[{job_id}] log: {log}", file=sys.stderr)
-
-
-def _report_failures(dag: Dag, own: list[Result], not_run: list[Result], verbose: bool) -> None:
-    """Print each distinct failure once, with what it held up, then with `verbose` the jobs that did not run."""
-    held = Counter(result.caused_by for result in not_run)
-    for group in failure_groups(dag.root, own):
-        first, others = group[0], group[1:]
-        _report_failure(first.job, first.error or "", first.log)
-        if others:
-            print(f"[{first.job.id}] the same failure in {len(others)} other job{'' if len(others) == 1 else 's'}: {ids(others)}", file=sys.stderr)
-        total = sum(held[result.job.id] for result in group)
-        if total:
-            lead = "together they held up" if others else "held up"
-            print(f"[{first.job.id}] {lead} {total} other job{'' if total == 1 else 's'}", file=sys.stderr)
-    if verbose:
-        for result in not_run:
-            print(f"[{result.job.id}] not run: job {result.caused_by} failed", file=sys.stderr)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -327,43 +284,23 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
 
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.layout.logs
+        options = Options(logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
+                          args.timestamp_logs)
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.cores, logs, compare, args.memory,
-                                          args.keep_failed, args.enforce_memory, args.timestamp_logs))
+            results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag)))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM
         except KeyboardInterrupt:
             print("interrupted; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGINT
-        failed = [result for result in results if result.error]
-        failed_ids = {result.job.id for result in failed}
-        # A job that did not run because one it needs failed is not a failure of its own.
-        own = [result for result in failed if result.caused_by is None]
-        not_run = [result for result in failed if result.caused_by is not None]
-        _report_failures(dag, own, not_run, args.verbose)
-        # What each job came to: a `maybe` job is whatever `run` settled it as.
-        outcome = {result.job.id: result.settled for result in results}
-        count = {status: 0 for status in Status}
-        cutoff = 0
-        for decision in decisions:
-            status = outcome.get(decision.job.id) or decision.status
-            if decision.job.id in failed_ids:
-                continue
-            count[status] += 1
-            cutoff += decision.status is Status.MAYBE and status is not Status.RUN
-        summary = (
-            f"{count[Status.RUN]} done, {count[Status.CHECK]} checked, {len(own)} failed, "
-            + (f"{len(not_run)} not run (an upstream job failed), " if not_run else "")
-            + f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked"
-        )
-        if cutoff:
-            summary += f", {cutoff} of the current ones not rerun because upstream output was unchanged"
-        print(summary, file=sys.stderr)
-        stale = _stale(everything, dag, decisions, results) if selection else 0
-        if stale:
-            print(f"{stale} job{'' if stale == 1 else 's'} outside the selection read outputs this run changed; "
-                  "run without the selection to bring them up to date", file=sys.stderr)
+        summary = Summary.of(decisions, results)
+        run_text.report_failures(dag, summary, args.verbose)
+        print(run_text.summary_line(summary), file=sys.stderr)
+        left = stale(everything, dag, decisions, results) if selection else 0
+        if left:
+            print(run_text.stale_line(left), file=sys.stderr)
+        failed = summary.failed or summary.not_run
         return 1 if failed or blocked else 0
     except (DagError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

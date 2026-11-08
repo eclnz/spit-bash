@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import IO
@@ -13,6 +14,8 @@ LINE_LIMIT = 64 * 1024
 # How long the runner waits for a command's output to end after the command has.
 # A process it started that outlives it can hold the pipes open.
 DRAIN_SECONDS = 1.0
+# How many of a failed job's last log lines its failure report shows.
+LOG_TAIL_LINES = 20
 
 
 def now() -> str:
@@ -43,6 +46,15 @@ class StampedLog:
 
     def flush(self) -> None:
         self.file.flush()
+
+
+def log_tail(path: Path, lines: int = LOG_TAIL_LINES) -> list[str]:
+    """A log's last lines, or none when it cannot be read."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            return list(deque((line.rstrip("\n") for line in stream), lines))
+    except OSError:
+        return []
 
 
 def open_log(path: Path, timestamps: bool) -> IO[bytes] | StampedLog:

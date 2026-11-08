@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .display import name
-from .plan import Decision, Status
-from .run import Result, log_tail
+from ..display import name
+from ..logs import log_tail
+from ..plan import Decision, Status
+
+if TYPE_CHECKING:
+    # A failed job as its report shows it, with its failure in words, which groups failures by what they say.
+    from .run_text import Shown as Result
 
 # The most causes or job ids listed before the rest are counted.
 LISTED = 10

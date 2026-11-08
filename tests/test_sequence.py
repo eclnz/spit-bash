@@ -7,8 +7,10 @@ from pathlib import Path
 
 from spit_bash.model import DagError
 from spit_bash.plan import Status, plan
-from spit_bash.run import execute, partial
-from support import command, document, job_entry, read, run, state_at
+from spit_bash.execute.options import Options
+from spit_bash.execute.process import partial
+from spit_bash.execute.scheduler import execute
+from support import command, document, error, job_entry, read, run, state_at
 
 # Write the input upper-cased to the output.
 UPPER = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().upper())"
@@ -44,7 +46,7 @@ class SequenceTests(unittest.TestCase):
     def test_runs_each_command_in_order_and_logs_each(self):
         dag = read(sequenced(self.root, step(UPPER, "source.txt", "work/upper.txt"), step(APPEND, "work/upper.txt")))
         _, results = run(dag, state_at(self.root))
-        self.assertEqual([r.error for r in results], [None])
+        self.assertEqual([error(r) for r in results], [None])
         self.assertEqual(self.output.read_text(), "HELLO\nindexed\n")
         lines = [line for line in self.log.read_text().splitlines() if line.startswith("$ ")]
         self.assertEqual(len(lines), 2)
@@ -60,7 +62,7 @@ class SequenceTests(unittest.TestCase):
             step("from pathlib import Path; import sys; Path(sys.argv[1]).write_text('x')", "third-ran"),
         ))
         _, results = run(dag, state_at(self.root))
-        self.assertEqual(results[0].error, "command 2 exited with status 1")
+        self.assertEqual(error(results[0]), "command 2 exited with status 1")
         self.assertFalse(marker.exists())
         # The first command wrote the output, which a failure after it removes.
         self.assertFalse(self.output.exists())
@@ -69,7 +71,7 @@ class SequenceTests(unittest.TestCase):
     def test_keep_failed_keeps_what_the_commands_before_the_failure_wrote(self):
         dag = read(sequenced(self.root, step(UPPER, "source.txt", "work/upper.txt"), step(FAIL)))
         _, results = run(dag, state_at(self.root), keep_failed=True)
-        self.assertEqual(results[0].error, "command 2 exited with status 1")
+        self.assertEqual(error(results[0]), "command 2 exited with status 1")
         self.assertEqual(self.output.read_text(), "HELLO\n")
 
     def test_a_command_reads_the_standard_output_of_one_before_it(self):
@@ -78,7 +80,7 @@ class SequenceTests(unittest.TestCase):
                          step(copy, "work/upper.txt", "work/upper.txt"))
         dag = read(data)
         _, results = run(dag, state_at(self.root))
-        self.assertEqual([r.error for r in results], [None])
+        self.assertEqual([error(r) for r in results], [None])
         self.assertEqual(self.output.read_text(), "hello\nagain\n")
         self.assertFalse(partial(dag, "work/upper.txt").exists())
         self.assertIn(" > work/upper.txt\n", self.log.read_text())
@@ -86,7 +88,7 @@ class SequenceTests(unittest.TestCase):
     def test_a_failure_after_the_standard_output_is_written_removes_it(self):
         dag = read(sequenced(self.root, step(CAT, "source.txt", stdout="work/upper.txt"), step(FAIL)))
         _, results = run(dag, state_at(self.root))
-        self.assertEqual(results[0].error, "command 2 exited with status 1")
+        self.assertEqual(error(results[0]), "command 2 exited with status 1")
         self.assertEqual(list(self.output.parent.iterdir()), [])
 
     def test_cancelling_a_later_command_removes_the_outputs(self):
@@ -95,7 +97,7 @@ class SequenceTests(unittest.TestCase):
         state = state_at(self.root)
 
         async def cancel_once_started():
-            task = asyncio.ensure_future(execute(dag, plan(dag, state), state, 1, self.root / "logs"))
+            task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(self.root / "logs")))
             while not started.exists():
                 await asyncio.sleep(0.01)
             task.cancel()
@@ -111,7 +113,7 @@ class SequenceTests(unittest.TestCase):
         data = sequenced(self.root, step(UPPER, "source.txt", "work/upper.txt"), step(greedy))
         data["jobs"][0]["memory"] = 64 * 2**20
         _, results = run(read(data), state_at(self.root))
-        self.assertRegex(results[0].error, r"^command 2 used .* of memory, more than the 64M its job declares")
+        self.assertRegex(error(results[0]), r"^command 2 used .* of memory, more than the 64M its job declares")
 
     def test_one_command_at_most_has_a_standard_output(self):
         data = sequenced(self.root, step(CAT, "source.txt", stdout="work/upper.txt"),
