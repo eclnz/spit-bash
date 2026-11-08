@@ -117,8 +117,9 @@ class StateHeader(BaseModel):
     # Version 4 records the hash of each file; an older record has none.
     # Version 5 records how long each job took; an older record has no time.
     # Version 6 keys a record by the identity of what the job makes, not its
-    # output paths. A state from an earlier version is not read.
-    version: Literal[6]
+    # output paths. Version 7 names a record's files by their place in the job,
+    # not by product and entities. A state from an earlier version is not read.
+    version: Literal[7]
 
 
 class StateEntry(BaseModel):
@@ -200,7 +201,7 @@ class State:
             self._log.close()
             self._log = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [StateHeader(version=6).model_dump_json()]
+        lines = [StateHeader(version=7).model_dump_json()]
         lines.extend(StateEntry(key=key, record=record).model_dump_json() for key, record in sorted(self.jobs.items()))
         fd, temporary = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:
@@ -219,6 +220,58 @@ class State:
         if self._lock is not None:
             self._lock.close()
             self._lock = None
+
+
+def reconcile(dag: Dag, state: State, everything: Dag, persist: bool = False) -> tuple[tuple[str, str], ...]:
+    """Give a record left by a renamed product, dimension, source or entity to the job that now does its work.
+
+    A job with no record under its key takes an unclaimed record of the same
+    work (the same fingerprint) when each input holds what the record's did, so
+    the same work on the same bytes is reused whatever things are called.
+    `everything` is the whole DAG, whose jobs claim their keys even when `dag`
+    holds only some. Returns (old key, new key) for each record handed over;
+    with `persist` the state file records the change, else only `state` does.
+    """
+    claimed = {job_key(job) for job in everything.jobs}
+    orphans: dict[str, list[str]] = {}
+    for key, record in sorted(state.jobs.items()):
+        if key not in claimed and record.input_hashes is not None and record.output_hashes is not None:
+            orphans.setdefault(record.fingerprint, []).append(key)
+    if not orphans:
+        return ()
+    # What each file holds: as read, or, for a file a handed-over job has yet to make
+    # at its new path, as that job's record says.
+    held: dict[str, str | None] = {}
+
+    def hash_of(job: Job, path: str) -> str | None:
+        if path not in held:
+            held[path] = content_hash(str(dag.path(path)), path in dag.folders)
+        return held[path]
+
+    handed = []
+    for job in dag.jobs:
+        key = job_key(job)
+        if key in state.jobs or not job.commands or not orphans.get(job.fingerprint):
+            continue
+        for old in orphans[job.fingerprint]:
+            record = state.jobs[old]
+            assert record.input_hashes is not None and record.output_hashes is not None
+            slots = {job.identities[path]: path for path in job.inputs}
+            if set(slots) != set(record.input_hashes) or any(
+                    hash_of(job, path) != record.input_hashes[slot] for slot, path in slots.items()):
+                continue
+            orphans[job.fingerprint].remove(old)
+            if persist:
+                state.forget(old)
+                state.record(key, record)
+            else:
+                del state.jobs[old]
+                state.jobs[key] = record
+            for slot, path in job.output_paths.items():
+                held[path] = record.output_hashes.get(slot)
+            handed.append((old, key))
+            break
+    return tuple(handed)
 
 
 class Status(Enum):

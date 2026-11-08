@@ -224,32 +224,46 @@ class IncrementalTests(unittest.TestCase):
         (self.root / "out/sorted/sub=s1.txt").write_text("tampered\n")
         self.assertReruns({"run": 3, "skip": 2}, 3)
 
-    # Renames of what a job makes: not yet reused.
+    # Renames of what a job makes or reads: the recorded work is reused.
 
-    @unittest.expectedFailure
     def test_renaming_a_product_reuses_its_outputs_with_move_files(self):
         self.edit("tally = ", "counts = ")
         self.assertReruns({"skip": 5}, 0, "--move-files")
 
-    @unittest.expectedFailure
     def test_renaming_a_dimension_reuses_its_outputs_with_move_files(self):
         self.edit("[sub]", "[id]")
         self.edit("input/{sub}", "input/{id}")
         self.edit("@vary(sub)", "@vary(id)")
         self.assertReruns({"skip": 5}, 0, "--move-files")
 
-    @unittest.expectedFailure
     def test_renaming_a_source_family_reuses_its_outputs_with_move_files(self):
         self.edit("source raw", "source scans")
         self.edit("path raw:", "path scans:")
         self.edit("sort_lines(raw)", "sort_lines(scans)")
         self.assertReruns({"skip": 5}, 0, "--move-files")
 
-    @unittest.expectedFailure
     def test_relabelling_entity_values_of_the_same_files_reuses_outputs_with_move_files(self):
         for old, new in (("s1", "p1"), ("s2", "p2")):
             (self.root / f"input/{old}.txt").rename(self.root / f"input/{new}.txt")
         self.assertReruns({"skip": 5}, 0, "--move-files")
+
+    def test_a_renamed_product_whose_input_changed_is_not_reused(self):
+        self.edit("tally = ", "counts = ")
+        (self.root / "input/s1.txt").write_text("q\nq\nw\n")
+        statuses, done = self.outcome("--move-files")
+        self.assertEqual(done, 3)
+
+    def test_a_renamed_product_without_move_files_reruns_only_it(self):
+        self.edit("tally = ", "counts = ")
+        self.assertReruns({"run": 2, "skip": 3}, 2)
+
+    def test_swapping_the_content_of_two_sources_reruns_what_reads_them(self):
+        a, b = (self.root / "input/s1.txt"), (self.root / "input/s2.txt")
+        first, second = a.read_text(), b.read_text()
+        a.write_text(second)
+        b.write_text(first)
+        statuses, done = self.outcome()
+        self.assertGreaterEqual(done, 2)
 
 
 if __name__ == "__main__":
