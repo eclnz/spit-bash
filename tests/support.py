@@ -80,8 +80,8 @@ def read(data, root=None):
     return load_dag(io.StringIO(json.dumps(data)), root)
 
 
-def run(dag, state, cores=2, force=False, memory=None, keep_failed=False, enforce_memory=True):
-    decisions = plan(dag, state, force)
+def run(dag, state, cores=2, force=False, memory=None, keep_failed=False, enforce_memory=True, move_files=False):
+    decisions = plan(dag, state, force, move_files=move_files)
     options = Options(dag.layout.logs, cores, memory, keep_failed=keep_failed, enforce_memory=enforce_memory)
     results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag)))
     state.close()

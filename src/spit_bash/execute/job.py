@@ -1,19 +1,22 @@
-"""Run one job on the files it has: its checks, `verify` commands and commands, and what it leaves at its outputs."""
+"""Run one job on the files it has: its checks, `verify` commands and commands, and what it leaves at its outputs;
+or move its recorded outputs into place."""
 
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Awaitable, Callable, Protocol, Union
 
-from ..files import FolderEntries, Stamps, folder_entries, folder_inputs, stamps
+from ..files import FolderEntries, Stamps, folder_entries, folder_inputs, stamp, stamps, stored
 from ..logs import StampedLog, open_log
-from ..model import Check, Dag, Job, Kind, Layout, Side
+from ..model import Check, Dag, DagError, Job, Kind, Layout, Side
+from ..reuse.relocate import Migration
 from .failure import (CheckArtifactMissing, CheckFailed, CommandFailed, Failure, InputChanged, InputDisappeared,
-                      NoCommand, OutputsMissing, Phase, StdoutNotMoved)
+                      NoCommand, OutputsMissing, Phase, PlaceFailed, StdoutNotMoved)
 from .options import Options
 from .process import CommandEnd, partial, run_command, succeeded
 
@@ -66,6 +69,37 @@ async def check_job(dag: Dag, job: Job, log: Path, options: Options, runner: Run
     """Run a current job's checks alone, on the files it already has, writing their output to `log`."""
     with open_log(log, options.timestamp_logs) as stream:
         return await _checks(dag, job.checks, stream, runner)
+
+
+def place_job(dag: Dag, placement: Migration) -> PlaceFailed | None:
+    """Move a job's recorded outputs to its current paths, all of them or none.
+
+    A file is renamed, so it keeps its size and time, and each one moved is
+    checked against the record's stamps. Nothing is overwritten: a destination
+    that appeared since the plan stops the move. A move that fails or does not
+    check puts back every file it moved.
+    """
+    assert placement.record is not None, "a placement with moves has a record"
+    done: list[tuple[str, str]] = []
+    try:
+        for old, new in placement.moves:
+            source, target = dag.checked(old), dag.checked(new)
+            if os.path.lexists(target):
+                raise OSError(f"{new} already exists")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(source, target)
+            done.append((old, new))
+            key = placement.job.identities[new]
+            if stored(stamp(target, new in dag.folders)) != placement.record.outputs.get(key):
+                raise OSError(f"{new} does not match the record after the move")
+    except (OSError, DagError) as exc:
+        try:
+            for old, new in reversed(done):
+                os.rename(dag.checked(new), dag.checked(old))
+        except (OSError, DagError) as undo:
+            return PlaceFailed(str(undo), False)
+        return PlaceFailed(str(exc), True)
+    return None
 
 
 def _clear(path: Path) -> None:

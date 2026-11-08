@@ -81,6 +81,18 @@ class OutputsMissing:
 
 
 @dataclass(frozen=True)
+class PlaceFailed:
+    """A job planned `place` could not have its outputs moved: `error` says why.
+
+    With `put_back`, every file moved was put back where it was; without, putting
+    them back failed too, and `error` is that failure.
+    """
+
+    error: str
+    put_back: bool
+
+
+@dataclass(frozen=True)
 class DependencyFailed:
     """The job did not run because a job it needs failed; `first` is the job whose own failure it is."""
 
@@ -95,4 +107,4 @@ class Blocked:
 
 
 Failure = Union[InputDisappeared, NoCommand, CheckArtifactMissing, CheckFailed, CommandFailed, StdoutNotMoved,
-                InputChanged, OutputsMissing, DependencyFailed, Blocked]
+                InputChanged, OutputsMissing, PlaceFailed, DependencyFailed, Blocked]

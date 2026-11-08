@@ -19,7 +19,7 @@ from ..state.store import Store
 from . import events
 from .events import Event
 from .failure import Blocked, DependencyFailed, Failure
-from .job import Failed, check_job, log_path, run_job
+from .job import Failed, check_job, log_path, place_job, run_job
 from .options import Options
 
 # Files this small, all of a job's together, are hashed on the event loop.
@@ -46,11 +46,12 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, options: Options,
                   on_event: Callable[[Event], None] = lambda event: None) -> tuple[Result, ...]:
-    """Run every job planned to run, check or maybe run; stop them all if the process gets SIGTERM.
+    """Run every job planned to run, check or maybe run, and move the outputs of each planned `place`;
+    stop them all if the process gets SIGTERM.
 
-    Each job that succeeds is recorded in `state` as it ends. `on_event` hears,
-    in order, what the run is about to do and each job's progress; the run
-    itself prints nothing.
+    Each job that succeeds is recorded in `state` as it ends, and a placed job
+    as soon as its files are moved. `on_event` hears, in order, what the run is
+    about to do and each job's progress; the run itself prints nothing.
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
     options.logs.mkdir(parents=True, exist_ok=True)
@@ -78,7 +79,24 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
             return Result(job, DependencyFailed(failed))
         if decision.status is Status.MAYBE:
             return await settle(job)
+        if decision.status is Status.PLACE:
+            return await place(decision)
         return await perform(decision)
+
+    async def place(decision: Decision) -> Result:
+        """Move a job's recorded outputs to its paths, record them there at once, then run its checks if it needs them."""
+        job, placement = decision.job, decision.placement
+        assert placement is not None, "a job planned `place` has its moves"
+        # Off the event loop: checking a moved folder reads every file under it.
+        failure = await asyncio.to_thread(place_job, dag, placement)
+        if failure is not None:
+            return Result(job, failure)
+        # Recorded before anything else happens, so a run stopped from here on finds the files.
+        state.apply(decision.writes)
+        on_event(events.Placed(job, placement.moves))
+        if decision.needs_checks:
+            return await perform(decision)
+        return Result(job, None)
 
     async def settle(job: Job) -> Result:
         """Judge a job planned `maybe` again, now that its upstream jobs have finished."""
@@ -99,7 +117,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
         job = decision.job
         log = log_path(options.logs, job)
         async with queue.slot(job):
-            if decision.status is Status.CHECK:
+            if decision.needs_checks:
                 return await check_one(job, log)
             progress.started(job)
 
@@ -155,15 +173,17 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
             previous[job.id] = record.seconds
     progress = Progress.of(to_run, dag.jobs, previous, options.cores)
     # Every job that will take cores and memory, ranked by the longest chain of work it heads.
-    slotted = [decision.job for decision in decisions if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE)]
+    slotted = [decision.job for decision in decisions
+               if decision.status in (Status.RUN, Status.MAYBE) or decision.needs_checks]
     queue = ReadyQueue(options.cores, options.memory, ranks(slotted, progress.expected, previous))
     for job in slotted:
         over = too_big(job, options.cores, options.memory)
         if over is not None:
             on_event(events.RunsAlone(job, over))
-    if to_run:
+    places = sum(1 for decision in decisions if decision.status is Status.PLACE)
+    if to_run or places:
         maybe = sum(1 for decision in decisions if decision.status is Status.MAYBE)
-        on_event(events.Running(len(to_run) - maybe, maybe, progress.remaining()))
+        on_event(events.Running(len(to_run) - maybe, maybe, progress.remaining(), places))
 
     loop = asyncio.get_running_loop()
     main = asyncio.current_task()
@@ -171,7 +191,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
     loop.add_signal_handler(signal.SIGTERM, main.cancel)
     try:
         for decision in decisions:
-            if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE):
+            if decision.status in (Status.RUN, Status.CHECK, Status.MAYBE, Status.PLACE):
                 tasks[decision.job.id] = asyncio.create_task(run_one(decision))
         return tuple(await asyncio.gather(*tasks.values()))
     finally:

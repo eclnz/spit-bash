@@ -13,19 +13,17 @@ from enum import Enum
 from pathlib import Path
 
 from .load import load_dag
-from .model import Dag, DagError
-from .files import stamp
+from .model import Dag, DagError, Layout
 from .plan import Status, adopt, explained, plan, writes
 from .reuse.evidence import Compare
 from .reuse.relabel import relabel
-from .reuse.relocate import apply, find
 from .state.store import Store
 from .execute.options import Options
 from .execute.scheduler import execute
 from .report import run_text
 from .report.explain import explain
 from .report.plan_json import document
-from .report.plan_text import adoption_line, listing, move_lines, move_notes, nothing_run
+from .report.plan_text import adoption_line, listing, nothing_run
 from .report.summary import Summary, stale
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
@@ -33,6 +31,9 @@ from .selection import Selection, parse_only, parse_stage, select
 SPIT_SUFFIXES = (".spitin", ".spit", ".spitout")
 # The units of --memory, as SPIT's `resources` line takes them.
 UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+
+# The default paths `--state` and `--logs` name in their help.
+DEFAULT = Layout(Path("ROOT"))
 
 FILES_HELP = """\
 what to run: a .spitdag (or - for one on stdin), or what `spit dag` takes,
@@ -76,7 +77,7 @@ def _parser() -> argparse.ArgumentParser:
         choose.add_argument("--product", action="append", default=[], metavar="NAME", help="outputs of this product")
         choose.add_argument("--stage", action="append", default=[], metavar="NAME[/NAME...]",
                             help="jobs in this stage, or a stage inside it, such as preprocess/combine")
-        command.add_argument("--state", help="state file (default: ROOT/.spit-bash/state.jsonl)")
+        command.add_argument("--state", help=f"state file (default: {DEFAULT.state})")
         if action is not Action.ADOPT:
             command.add_argument("--force", action="store_true",
                                  help="rerun selected command jobs even if current")
@@ -89,8 +90,8 @@ def _parser() -> argparse.ArgumentParser:
         if action is not Action.ADOPT:
             command.add_argument("--move-files", action="store_true",
                                  help="move outputs the state records at other paths to the paths the pipeline now gives,\n"
-                                      "instead of rerunning their jobs; `plan` lists the moves. A tool that writes its own\n"
-                                      "paths into its output is not rerun, so use this only if yours do not")
+                                      "instead of rerunning their jobs, which `plan` lists as `place`. A tool that writes\n"
+                                      "its own paths into its output is not rerun, so use this only if yours do not")
         if action is not Action.ADOPT:
             command.add_argument("--verbose", action="store_true",
                                  help="list every job, current ones too, and with `run` each job that did not run\n"
@@ -107,7 +108,7 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--memory", type=_memory, default=_machine_memory(), metavar="SIZE",
                                  help="memory to use, as 512M or 32G: run jobs at once while\n"
                                       "the memory they declare fits (default: the machine's)")
-            command.add_argument("--logs", help="folder for job logs (default: ROOT/.spit-bash/logs)")
+            command.add_argument("--logs", help=f"folder for job logs (default: {DEFAULT.logs})")
             command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
                                  help="let a job hold more memory than it declares, and run a job\n"
                                       "declaring more than --memory alone, rather than refusing it")
@@ -213,26 +214,8 @@ def main(argv: list[str] | None = None) -> int:
                 state.apply(handed)
             else:
                 state.assume(handed)
-        decisions = plan(dag, state, forced, compare)
-        if args.move_files and not args.force:
-            # A job that is current as it stands has nothing to move; `find` leaves out one whose
-            # inputs changed, which a moved output would not save from running.
-            migrations = find(dag, state.jobs, {d.job.id for d in decisions if d.status in (Status.RUN, Status.MAYBE)})
-            if args.action is Action.RUN:
-                migrations = apply(dag, migrations, state.apply)
-            else:
-                # Judge the jobs as if the files were already where the pipeline wants them.
-                pending = {new: stamp(dag.checked(old), new in dag.folders)
-                           for m in migrations for old, new in m.moves}
-                if pending:
-                    decisions = plan(dag, state, forced, compare, pending)
-            made = args.action is Action.RUN
-            for line in move_lines(migrations, made):
-                print(line)
-            for line in move_notes(migrations, made):
-                print(line, file=sys.stderr)
-            if made and any(m.moves for m in migrations):
-                decisions = plan(dag, state, forced, compare)
+        # Under --force, no outputs are moved: the forced jobs run, and the rest are judged as they stand.
+        decisions = plan(dag, state, forced, compare, args.move_files and not args.force)
         if args.action is Action.RUN:
             state.apply(writes(decisions))
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
@@ -274,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
             return 128 + signal.SIGINT
         summary = Summary.of(decisions, results)
         run_text.report_failures(dag, summary, args.verbose)
+        if summary.placed:
+            print(run_text.moved_note(), file=sys.stderr)
         print(run_text.summary_line(summary), file=sys.stderr)
         left = stale(everything, dag, decisions, results) if selection else 0
         if left:

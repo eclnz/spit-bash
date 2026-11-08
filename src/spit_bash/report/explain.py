@@ -7,7 +7,7 @@ from ..files import Stamp
 from ..model import Dag
 from ..plan import Decision, UPSTREAM
 from ..reuse.evidence import Content, Evidence, FileDiff
-from .causes import cause, parts
+from .causes import cause, decided, parts
 
 CONTENT = {
     Content.NOT_COMPARED: "content not compared (--compare stat)",
@@ -43,7 +43,7 @@ def explain(dag: Dag, decisions: tuple[Decision, ...], decision: Decision, found
     by_id = {each.job.id: each for each in decisions}
     job = decision.job
     lines = [f"Job {job.id}: {name(job, labels(dag.jobs)[job.id])}",
-             f"  decision: {decision.status.value}, {cause(decision.cause)}"]
+             f"  decision: {decision.status.value}, {decided(decision)}"]
     if decision.caused_by is not None:
         lines.append(f"  blocked by job {decision.caused_by}: {cause(by_id[decision.caused_by].cause)}")
     record = found.record

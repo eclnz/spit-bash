@@ -12,7 +12,8 @@ from ..display import id_width, labels, name
 from ..execute import events
 from ..execute.events import Event
 from ..execute.failure import (Blocked, CheckArtifactMissing, CheckFailed, CommandFailed, DependencyFailed, Failure,
-                               InputChanged, InputDisappeared, NoCommand, OutputsMissing, Phase, StdoutNotMoved)
+                               InputChanged, InputDisappeared, NoCommand, OutputsMissing, Phase, PlaceFailed,
+                               StdoutNotMoved)
 from ..execute.process import CommandEnd, Exited, KilledMemory, KilledSignal, NotStarted
 from ..execute.scheduler import Result
 from ..files import stored
@@ -81,6 +82,10 @@ def failure_words(job: Job, failure: Failure) -> str:
             return _input_changes(failure)
         case OutputsMissing(missing):
             return "command succeeded but did not create " + ", ".join(f"output {port} {path}" for port, path in missing)
+        case PlaceFailed(error, True):
+            return f"could not move its outputs, so they were put back: {error}"
+        case PlaceFailed(error, False):
+            return f"could not move its outputs, and putting them back failed: {error}"
         case DependencyFailed(first):
             return f"dependency {first} failed"
         case Blocked(decision):
@@ -100,14 +105,19 @@ def printer(dag: Dag) -> Callable[[Event], None]:
         match event:
             case events.RunsAlone(job, over):
                 print(f"[{job.id}] needs {over}; it will run alone, once no other job is running", flush=True)
-            case events.Running(runs, maybe, remaining):
+            case events.Running(0, 0, _, places):
+                print(f"\nMoving the outputs of {places} job{'' if places == 1 else 's'}", flush=True)
+            case events.Running(runs, maybe, remaining, places):
                 estimate = "" if remaining is None else f", {about(remaining)}"
                 more = f", and {maybe} more that may" if maybe else ""
-                print(f"\nRunning {runs} job{'' if runs == 1 else 's'}{more}{estimate}", flush=True)
+                moving = f", and moving the outputs of {places}" if places else ""
+                print(f"\nRunning {runs} job{'' if runs == 1 else 's'}{more}{estimate}{moving}", flush=True)
             case events.Started(job):
                 say(job, "start")
             case events.Done(job, seconds, progress):
                 say(job, "done", f" in {duration(seconds)}; {progress}")
+            case events.Placed(job, moves):
+                say(job, "moved", ": " + ", ".join(f"{old} -> {new}" for old, new in moves))
             case events.Checking(job):
                 say(job, "check")
             case events.Checked(job):
@@ -168,16 +178,24 @@ def report_failures(dag: Dag, summary: Summary, verbose: bool) -> None:
 
 
 def summary_line(summary: Summary) -> str:
-    """How many jobs were done, checked, failed, not run, current and blocked."""
+    """How many jobs were done, moved, checked, failed, not run, current and blocked."""
     not_run = len(summary.not_run)
     line = (
-        f"{summary.done} done, {summary.checked} checked, {len(summary.failed)} failed, "
+        f"{summary.done} done, "
+        + (f"{summary.placed} moved, " if summary.placed else "")
+        + f"{summary.checked} checked, {len(summary.failed)} failed, "
         + (f"{not_run} not run (an upstream job failed), " if not_run else "")
         + f"{summary.current} current, {summary.blocked} blocked"
     )
     if summary.cutoff:
         line += f", {summary.cutoff} of the current ones not rerun because upstream output was unchanged"
     return line
+
+
+def moved_note() -> str:
+    """What a run that moved outputs leaves unchecked."""
+    return ("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths into "
+            "its output is not rerun")
 
 
 def stale_line(stale: int) -> str:

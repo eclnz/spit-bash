@@ -12,6 +12,8 @@ from ..plan import Decision, Status
 @dataclass(frozen=True)
 class Summary:
     done: int
+    # The jobs whose outputs were moved to their new paths, their checks run too where they needed them.
+    placed: int
     checked: int
     # The jobs that failed of their own accord, in DAG order.
     failed: tuple[Result, ...]
@@ -37,7 +39,7 @@ class Summary:
             count[status] += 1
             cutoff += decision.status is Status.MAYBE and status is not Status.RUN
         return cls(
-            done=count[Status.RUN], checked=count[Status.CHECK],
+            done=count[Status.RUN], placed=count[Status.PLACE], checked=count[Status.CHECK],
             failed=tuple(result for result in failures if result.caused_by is None),
             not_run=tuple(result for result in failures if result.caused_by is not None),
             current=count[Status.SKIP], blocked=count[Status.BLOCKED], cutoff=cutoff,

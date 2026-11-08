@@ -21,12 +21,17 @@ class RunsAlone:
 
 @dataclass(frozen=True)
 class Running:
-    """Before the run, when any job is to run: `runs` jobs will, `maybe` more may, in about `remaining` seconds."""
+    """Before the run, when any job is to run or move its outputs.
+
+    `runs` jobs will run, `maybe` more may, in about `remaining` seconds, and
+    `places` jobs will move their outputs.
+    """
 
     runs: int
     maybe: int
     # None when some job has no estimate.
     remaining: float | None
+    places: int = 0
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,14 @@ class Done:
     job: Job
     seconds: float
     progress: str
+
+
+@dataclass(frozen=True)
+class Placed:
+    """A job planned `place` has moved its outputs, each as (recorded path, current path), and its record with them."""
+
+    job: Job
+    moves: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -76,4 +89,4 @@ class NotRun:
     result: Result
 
 
-Event = Union[RunsAlone, Running, Started, Done, Checking, Checked, SkippedUnchanged, JobFailed, NotRun]
+Event = Union[RunsAlone, Running, Started, Done, Placed, Checking, Checked, SkippedUnchanged, JobFailed, NotRun]

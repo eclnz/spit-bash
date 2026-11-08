@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from ..cause import Cause, Why
-from ..plan import AdoptCause
+from ..plan import AdoptCause, Decision, Status
 from ..reuse.relocate import Migration, MoveCause
+
+# The most moves a reason names before it counts them instead.
+MOVES_NAMED = 3
 
 # The words for each of `reuse.identity.PARTS`, in the order they are named.
 PART_NAMES = {"commands": "command", "verify": "verify commands",
@@ -64,6 +67,24 @@ def cause(found: Cause) -> str:
             return "dependency blocked: " + ", ".join(map(str, found.jobs))
 
 
+def moves(placement: Migration) -> str:
+    """The moves of a job planned `place`, as `moves a -> b`."""
+    if len(placement.moves) > MOVES_NAMED:
+        return f"moves {len(placement.moves)} outputs to the paths the pipeline now gives them"
+    return "moves " + ", ".join(f"{old} -> {new}" for old, new in placement.moves)
+
+
+def decided(decision: Decision) -> str:
+    """A decision's reason: its cause, with a placed job's moves, or why a job's outputs are not moved."""
+    placement = decision.placement
+    if decision.status is Status.PLACE:
+        assert placement is not None, "a job planned `place` has its moves"
+        return moves(placement) + ("" if decision.cause.why is Why.CURRENT else f"; {cause(decision.cause)}")
+    if placement is not None:
+        return f"{cause(decision.cause)}; not moved: {move(placement)}"
+    return cause(decision.cause)
+
+
 def adoption(found: AdoptCause) -> str:
     """Why `adopt` recorded a job or left it."""
     match found:
@@ -78,7 +99,7 @@ def adoption(found: AdoptCause) -> str:
 
 
 def move(migration: Migration) -> str:
-    """Why a job's recorded outputs are moved, or why not."""
+    """Why a job's recorded outputs can be moved, or why not."""
     match migration.cause:
         case MoveCause.MOVABLE:
             return "outputs recorded at other paths"
@@ -98,7 +119,3 @@ def move(migration: Migration) -> str:
             return f"{migration.detail} is a path the pipeline still uses"
         case MoveCause.OUTPUT_CHANGED:
             return f"{migration.detail} is missing or changed since the run"
-        case MoveCause.MOVE_FAILED:
-            return f"not moved: {migration.detail}"
-        case MoveCause.UNDO_FAILED:
-            return f"partly moved, and putting it back failed: {migration.detail}"

@@ -1,4 +1,4 @@
-"""What `plan` prints: counts, the causes that need action, each job's line, and what `adopt` and `--move-files` did."""
+"""What `plan` prints: counts, the causes that need action, each job's line, and what `adopt` did."""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ from collections import Counter
 from ..display import id_width, labels, name
 from ..model import Dag
 from ..plan import Adoption, Decision, Status
-from ..reuse.relocate import Migration
 from . import LISTED
-from .causes import adoption, cause, move
+from .causes import adoption, cause, decided, move
 
 
 def jobs(count: int) -> str:
@@ -17,7 +16,8 @@ def jobs(count: int) -> str:
 
 
 def counts(decisions: tuple[Decision, ...]) -> str:
-    """One line: how many jobs can start, will wait, may run, only need checks, are blocked or are current."""
+    """One line: how many jobs can start, will wait, may run, will move their outputs, only need checks, are blocked
+    or are current."""
     kinds: Counter[str] = Counter()
     for decision in decisions:
         match decision.status:
@@ -25,6 +25,8 @@ def counts(decisions: tuple[Decision, ...]) -> str:
                 kinds["wait" if decision.waits_for else "start"] += 1
             case Status.MAYBE:
                 kinds["maybe"] += 1
+            case Status.PLACE:
+                kinds["place"] += 1
             case Status.CHECK:
                 kinds["check"] += 1
             case Status.BLOCKED:
@@ -46,6 +48,9 @@ def counts(decisions: tuple[Decision, ...]) -> str:
         parts.append(f"{jobs(kinds['wait'])} will wait{waits_for}")
     if kinds["maybe"]:
         parts.append(f"{jobs(kinds['maybe'])} may run if an upstream output changes")
+    if kinds["place"]:
+        one = kinds["place"] == 1
+        parts.append(f"{jobs(kinds['place'])} will move {'its' if one else 'their'} outputs")
     if kinds["check"]:
         one = kinds["check"] == 1
         parts.append(f"{jobs(kinds['check'])} {'needs' if one else 'need'} only {'its' if one else 'their'} checks")
@@ -84,7 +89,7 @@ def _word(decision: Decision) -> str:
             return "may run"
         case Status.SKIP:
             return "current"
-        case Status.CHECK | Status.BLOCKED:
+        case Status.CHECK | Status.BLOCKED | Status.PLACE:
             return decision.status.value
 
 
@@ -92,7 +97,7 @@ def _reason(decision: Decision) -> str:
     if decision.status is Status.RUN and decision.waits_for:
         waits = decision.waits_for
         return "waits for " + (", ".join(map(str, waits)) if len(waits) <= 3 else f"{len(waits)} jobs")
-    return cause(decision.cause)
+    return decided(decision)
 
 
 def job_line(decision: Decision, work: dict[int, str], width: int) -> str:
@@ -100,12 +105,25 @@ def job_line(decision: Decision, work: dict[int, str], width: int) -> str:
     return f"[{job.id:>{width}}] {_word(decision):7} {name(job, work[job.id])}: {_reason(decision)}"
 
 
+def not_moved_lines(decisions: tuple[Decision, ...]) -> list[str]:
+    """Under `--move-files`, a line for each job whose outputs are recorded at other paths but are not moved, with why."""
+    refused = [(decision.job.id, decision.placement) for decision in decisions
+               if decision.status is not Status.PLACE and decision.placement is not None]
+    lines = [f"[{job_id}] not moved: {move(placement)}" for job_id, placement in refused[:LISTED]]
+    if len(refused) > LISTED:
+        lines.append(f"... and {len(refused) - LISTED} more not moved; `--verbose` lists every job")
+    return lines
+
+
 def listing(dag: Dag, decisions: tuple[Decision, ...], verbose: bool) -> list[str]:
-    """What `plan` and `run` print of a plan: the counts, a line for each cause that blocks jobs, and with `verbose` every job."""
+    """What `plan` and `run` print of a plan: the counts, a line for each cause that blocks jobs, and with `verbose`
+    every job, or without it each job whose outputs are not moved."""
     lines = [counts(decisions), *blocked_lines(decisions)]
     if verbose:
         work, width = labels(dag.jobs), id_width(dag.jobs)
         lines += [job_line(decision, work, width) for decision in decisions]
+    else:
+        lines += not_moved_lines(decisions)
     return lines
 
 
@@ -118,26 +136,3 @@ def nothing_run(decisions: tuple[Decision, ...]) -> str:
 
 def adoption_line(adopted: Adoption) -> str:
     return f"[{adopted.job.id}] {adopted.status.value:7} {adopted.job.operation}: {adoption(adopted.cause)}"
-
-
-def move_lines(migrations: tuple[Migration, ...], made: bool) -> list[str]:
-    """For stdout: each move, made or that would be made as `made` says, and each job not moved with why."""
-    lines = []
-    for migration in migrations:
-        for old, new in migration.moves:
-            lines.append(f"[{migration.job.id}] {'moved' if made else 'would move'} {old} -> {new}")
-        if not migration.moves:
-            lines.append(f"[{migration.job.id}] not moved: {move(migration)}")
-    return lines
-
-
-def move_notes(migrations: tuple[Migration, ...], made: bool) -> list[str]:
-    """For stderr: how many jobs reuse moved outputs, and once moves are made, what that leaves unchecked."""
-    moved = sum(1 for migration in migrations if migration.moves)
-    if not moved:
-        return []
-    notes = [f"{moved} job(s) reuse outputs by moving them to their new paths"]
-    if made:
-        notes.append("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
-                     "into its output is not rerun")
-    return notes
