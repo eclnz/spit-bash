@@ -117,9 +117,19 @@ class OutputTests(unittest.TestCase):
         after = next(item for item in data["jobs"] if item["id"] == 11)
         after["commands"][0]["command"] = command(
             f"from pathlib import Path; Path({str(marker)!r}).write_text('x')", "made0.txt", "after0.txt")
-        call("run", self.write(data))
+        call("run", self.write(data), "--skip-blocked")
         self.assertFalse(marker.exists())
         self.assertTrue((self.root / "a.txt").exists())
+
+    def test_run_starts_nothing_while_a_job_is_blocked(self):
+        code, out, err = call("run", self.write(self.blocked_chain()))
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "2 jobs can start, 4 jobs are blocked\n"
+                              f"blocked: tool x2: program not found: {MISSING} (2 more depend on them)\n")
+        self.assertEqual(err, "nothing was run: 4 jobs are blocked. Fix the cause, or pass --skip-blocked "
+                              "to run the jobs that are not.\n")
+        self.assertFalse((self.root / "a.txt").exists())
+        self.assertFalse((self.root / ".spit-bash/logs").exists())
 
 
 if __name__ == "__main__":

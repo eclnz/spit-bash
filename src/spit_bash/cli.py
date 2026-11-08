@@ -19,7 +19,7 @@ from .display import id_width, labels
 from .explain import explain
 from .migrate import apply, find
 from .plan import State, Status, adopt, apply_refreshes, plan, reconcile, stamp
-from .report import blocked_lines, counts, failure_groups, ids, job_line
+from .report import blocked_lines, counts, failure_groups, ids, job_line, jobs
 from .run import Result, execute, log_tail
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
@@ -103,6 +103,9 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--timestamp-logs", action="store_true",
                                  help="start each line of a job's log with the date, time and UTC offset at which\n"
                                       "the runner received it; a tool that buffers its output may have written it earlier")
+            command.add_argument("--skip-blocked", action="store_true",
+                                 help="run the jobs that can start even when others are blocked, leaving the blocked ones\n"
+                                      "(default: run nothing while any job is blocked)")
             command.add_argument("--keep-failed", action="store_true",
                                  help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
@@ -296,6 +299,11 @@ def main(argv: list[str] | None = None) -> int:
                     print(job_line(decision, work, width))
         if args.action is Action.PLAN:
             return 1 if blocked else 0
+        if blocked and not args.skip_blocked:
+            held = sum(decision.status is Status.BLOCKED for decision in decisions)
+            print(f"nothing was run: {jobs(held)} {'is' if held == 1 else 'are'} blocked. Fix the cause, or pass "
+                  "--skip-blocked to run the jobs that are not.", file=sys.stderr)
+            return 1
 
         if args.enforce_memory:
             running = [d.job for d in decisions if d.status in (Status.RUN, Status.MAYBE)]

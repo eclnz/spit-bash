@@ -79,7 +79,7 @@ class CliTests(unittest.TestCase):
     def test_blocked_job_does_not_stop_independent_jobs(self):
         self.data["external_inputs"].append(artifact("missing.txt"))
         self.data["jobs"].append(job(3, ["missing.txt"], "other.txt", UPPER))
-        code, out, err = call("run", self.write())
+        code, out, err = call("run", self.write(), "--skip-blocked")
         self.assertEqual(code, 1)
         self.assertIn("blocked: op3: missing external input: missing.txt", out)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
