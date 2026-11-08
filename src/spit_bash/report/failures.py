@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..run import Result, log_tail
+from ..logs import log_tail
 from . import LISTED
+
+if TYPE_CHECKING:
+    # A failed job as its report shows it, with its failure in words, which groups failures by what they say.
+    from .run_text import Shown as Result
 
 
 def _normalised(job_files: tuple[str, ...], root: Path, lines: list[str]) -> tuple[str, ...]:

@@ -11,7 +11,9 @@ from spit_bash.model import Artifact, Job, Kind, Port, Run, Work
 from spit_bash.plan import plan
 from spit_bash.reuse import identity
 from spit_bash.state.store import Store
-from spit_bash.run import execute
+from spit_bash.execute.options import Options
+from spit_bash.execute.scheduler import execute
+from spit_bash.report import run_text
 
 FIXTURE = Path(__file__).parent / "fixtures" / "command_demo.spitdag"
 
@@ -80,10 +82,15 @@ def read(data, root=None):
 
 def run(dag, state, cores=2, force=False, memory=None, keep_failed=False, enforce_memory=True):
     decisions = plan(dag, state, force)
-    results = asyncio.run(execute(dag, decisions, state, cores, dag.layout.logs, memory=memory,
-                                  keep_failed=keep_failed, enforce_memory=enforce_memory))
+    options = Options(dag.layout.logs, cores, memory, keep_failed=keep_failed, enforce_memory=enforce_memory)
+    results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag)))
     state.close()
     return decisions, results
+
+
+def error(result):
+    """Why a run's job failed, in the words its report gives, or None when it did not."""
+    return None if result.failure is None else run_text.failure_words(result.job, result.failure)
 
 
 def state_at(root):

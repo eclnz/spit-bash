@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash.schedule import ReadyQueue, longest_paths, ranks, size, too_big
-from support import UPPER, document, job, job_entry, read, run, state_at
+from support import UPPER, document, error, job, job_entry, read, run, state_at
 
 
 async def admitted_order(cores, ranks, ids):
@@ -194,7 +194,7 @@ class RunOrderTests(unittest.TestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 _, results = run(dag, state_at(root), cores=1)
-            self.assertFalse(any(result.error for result in results))
+            self.assertFalse(any(error(result) for result in results))
             starts = [line.split()[0] for line in out.getvalue().splitlines() if " start " in line]
             # Without times, each job counts as 1s: job 2 heads 2s of work, job 1 only 1s,
             # and job 1 comes before job 3 by id.
@@ -214,7 +214,7 @@ class RunOrderTests(unittest.TestCase):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     _, results = run(read(data), state_at(root), cores=cores, force=True)
-                self.assertFalse(any(result.error for result in results))
+                self.assertFalse(any(error(result) for result in results))
                 return [line.split()[1] for line in out.getvalue().splitlines() if line.lstrip().startswith("[") and "Plan" not in line]
 
             # Three cores hold one two-core job at a time; four hold both.

@@ -9,7 +9,7 @@ from spit_bash.cause import Cause, Why
 from spit_bash.model import DagError
 from spit_bash.files import stamp
 from spit_bash.plan import Status, plan
-from support import artifact, command, document, read, run, state_at
+from support import artifact, command, document, error, read, run, state_at
 
 # Copy every file of the input folder into the output folder, upper-cased.
 COPY_UPPER = (
@@ -75,7 +75,7 @@ class FolderTests(unittest.TestCase):
             dag = read(folders_dag(root))
             decisions, results = run(dag, state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
-            self.assertFalse(any(r.error for r in results), [r.error for r in results])
+            self.assertFalse(any(error(r) for r in results), [error(r) for r in results])
             self.assertEqual((root / "book.txt").read_text(), "ONE TWO")
             self.assertEqual([d.status for d in plan(dag, state_at(root))], [Status.SKIP, Status.SKIP])
 
@@ -94,7 +94,7 @@ class FolderTests(unittest.TestCase):
             dag = read(folders_dag(root))
             decisions, results = run(dag, state_at(root))
             self.assertEqual(decisions[0].cause, Cause(Why.NO_RECORD))
-            self.assertFalse(any(r.error for r in results), [r.error for r in results])
+            self.assertFalse(any(error(r) for r in results), [error(r) for r in results])
             # The folder was made again, empty, for the tool: the stale file is gone.
             self.assertFalse((root / "work/upper/stale.txt").exists())
             self.assertEqual((root / "book.txt").read_text(), "ONE TWO")
@@ -106,7 +106,7 @@ class FolderTests(unittest.TestCase):
             data = folders_dag(root)
             data["jobs"][0]["commands"][0]["command"][2] = [COPY_UPPER + "sys.exit(2)\n"]
             _, results = run(read(data), state_at(root))
-            self.assertEqual(results[0].error, "command exited with status 2")
+            self.assertEqual(error(results[0]), "command exited with status 2")
             self.assertFalse((root / "work/upper").exists())
             self.assertTrue((root / "work").is_dir())
             self.assertIn("removed failed output work/upper", results[0].log.read_text())
@@ -125,7 +125,7 @@ class FolderTests(unittest.TestCase):
             data["jobs"][0]["commands"][0]["command"] = command("pass")
             decisions, results = run(read(data), state_at(root))
             # The runner made the folder, and an empty one is a finished output.
-            self.assertIsNone(results[0].error)
+            self.assertIsNone(error(results[0]))
             self.assertEqual(list((root / "work/upper").iterdir()), [])
 
     def test_a_folder_stamp_follows_the_files_under_it(self):
