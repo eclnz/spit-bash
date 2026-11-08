@@ -21,7 +21,8 @@ EXAMPLES = SPIT_REPOSITORY / "examples" / "runnable"
 
 
 def spit_bash(*args, stdin=None):
-    env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"), SPIT=SPIT or "spit")
+    # COPYFILE_DISABLE stops macOS `tar` adding `._` files for extended attributes to the archives it makes.
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"), SPIT=SPIT or "spit", COPYFILE_DISABLE="1")
     return subprocess.run([sys.executable, "-m", "spit_bash", *args], input=stdin, env=env,
                           capture_output=True, text=True)
 

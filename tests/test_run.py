@@ -252,7 +252,7 @@ class RunTests(unittest.TestCase):
 
     def test_job_output_goes_to_its_log(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             (root / "source.txt").write_text("hello")
             data = sample(root)
             data["jobs"][0]["commands"][0]["command"][2] = ["import sys; print('to stdout'); print('to stderr', file=sys.stderr); " + data["jobs"][0]["commands"][0]["command"][2][0]]
