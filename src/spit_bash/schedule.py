@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from statistics import median
 
-from .dag import Job
+from .model import Job
 
 
 def longest_paths(jobs: Sequence[Job], weight: Callable[[Job], float]) -> tuple[dict[int, float], dict[int, float]]:

@@ -4,151 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Iterator, TextIO, TypeVar
+from typing import Iterator, TextIO
 
 from pydantic import ValidationError
 
-from .schema import Artifact, Command, CommandPart, DirPart, HerePart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
-
-
-T = TypeVar("T")
-
-
-class DagError(ValueError):
-    """The DAG cannot be run as supplied."""
-
-
-@dataclass(frozen=True)
-class Output:
-    """One produced artifact and the port that names it."""
-
-    port: str
-    path: str
-    product: str
-    entities: tuple[tuple[str, str], ...]
-
-
-@dataclass(frozen=True)
-class Check:
-    """A check of one artifact: `before` the command on an input, or `after` it on an output."""
-
-    when: str
-    name: str
-    port: str
-    path: str
-    command: tuple[str, ...]
-
-    def describe(self) -> str:
-        side = "input" if self.when == "before" else "output"
-        return f"check {self.name} on {side} {self.port} {self.path}"
-
-
-@dataclass(frozen=True)
-class Run:
-    """One of a job's commands: its arguments, and the input file it reads on its
-    standard input and the output file its standard output is written to,
-    relative to the root, or None when it does not redirect."""
-
-    arguments: tuple[str, ...]
-    stdin: str | None = None
-    stdout: str | None = None
-
-    def describe(self, index: int, of: int) -> str:
-        """The command as an error names it: `command`, or `command 2` of several."""
-        return "command" if of == 1 else f"command {index}"
-
-
-@dataclass(frozen=True)
-class Job:
-    id: int
-    operation: str
-    stage: tuple[str, ...]
-    fingerprint: str
-    inputs: tuple[str, ...]
-    produced: tuple[Output, ...]
-    depends_on: tuple[int, ...]
-    # The commands that make the outputs, run in order until one fails; empty
-    # for an operation with none.
-    commands: tuple[Run, ...]
-    verify: tuple[tuple[str, ...], ...]
-    checks: tuple[Check, ...] = ()
-    # Where a job made by a call to an operation carried out by steps comes
-    # from, innermost first; empty for a step written in the pipeline.
-    origin: tuple[str, ...] = ()
-    # What the job needs while its commands run: cores, and memory in bytes,
-    # None when it claims none.
-    cores: int = 1
-    memory: int | None = None
-    # Each input and output path's place in the job (see `_slots`), which a state
-    # record keys its stamps and hashes by, so a record survives a change of path
-    # or name.
-    identities: dict[str, str] = field(default_factory=dict, compare=False)
-    # `fingerprint`'s parts, each hashed on its own, by name.
-    parts: dict[str, str] = field(default_factory=dict, compare=False)
-
-    def keyed(self, by_path: dict[str, T]) -> dict[str, T]:
-        """Values read by path, re-keyed by artifact identity."""
-        return {self.identities[path]: value for path, value in by_path.items()}
-
-    @property
-    def output_paths(self) -> dict[str, str]:
-        """Each output's path by identity."""
-        return {self.identities[path]: path for path in self.outputs}
-
-    @property
-    def outputs(self) -> tuple[str, ...]:
-        """Output paths in DAG order, for planning and state records."""
-        return tuple(output.path for output in self.produced)
-
-    @property
-    def stdout(self) -> str | None:
-        """The output file a command's standard output is written to, of which a job has one at most."""
-        return next((run.stdout for run in self.commands if run.stdout is not None), None)
-
-    @property
-    def before(self) -> tuple[Check, ...]:
-        return tuple(check for check in self.checks if check.when == "before")
-
-    @property
-    def after(self) -> tuple[Check, ...]:
-        return tuple(check for check in self.checks if check.when == "after")
-
-    @property
-    def checks_key(self) -> str | None:
-        """What a successful run records of the checks it passed; None without checks."""
-        if not self.checks:
-            return None
-        # The tested artifact stands as its identity and its path in the command as a
-        # placeholder, so moving the file does not change what was checked.
-        text = json.dumps([[c.when, c.name, self.identities[c.path], [a.replace(c.path, "{@path}") for a in c.command]]
-                           for c in self.checks], separators=(",", ":"))
-        return hashlib.sha256(text.encode()).hexdigest()[:16]
-
-
-@dataclass(frozen=True)
-class Dag:
-    root: Path
-    jobs: tuple[Job, ...]
-    external_inputs: tuple[str, ...]
-    executables: tuple[str, ...]
-    left_out: tuple[str, ...]
-    # The paths of artifacts that are folders rather than files.
-    folders: frozenset[str] = frozenset()
-    # Each artifact's path under the root, joined and checked once by `load_dag`.
-    absolute: dict[str, Path] = field(default_factory=dict, compare=False)
-
-    def path(self, relative: str) -> Path:
-        path = self.absolute.get(relative)
-        return self.checked(relative) if path is None else path
-
-    def checked(self, relative: str) -> Path:
-        """The path under the root, resolved now, so a link made since loading cannot lead outside it."""
-        path = self.root.joinpath(*PurePosixPath(relative).parts)
-        if not path.resolve().is_relative_to(self.root):
-            raise DagError(f"path escapes dataset root: {relative}")
-        return path
+from . import schema
+from .model import Artifact, Check, Dag, DagError, Job, Kind, Port, Run, Side
+from .schema import Command, CommandPart, DirPart, HerePart, JobCommand, PathPart, SpitDag, SpitJob, StemPart
 
 
 def _here(part: HerePart, folder: str | None) -> str:
@@ -183,11 +46,10 @@ def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
 
 
 def _slots(item: SpitJob) -> dict[str, str]:
-    """Each input and output path's place in the job, which is its identity.
+    """Each input and output path's slot, as `Artifact.slot` gives it.
 
     An artifact is the same work whatever it is called, so a record names a file
-    by where the job holds it (its port and place among that port's items), not by
-    product or entities. A path fed to two ports takes its first place.
+    by where the job holds it, not by product or entities.
     """
     slots: dict[str, str] = {}
     for port, artifacts in enumerate(item.inputs.values()):
@@ -198,13 +60,24 @@ def _slots(item: SpitJob) -> dict[str, str]:
     return slots
 
 
-def _fingerprint(item: SpitJob) -> tuple[str, dict[str, str]]:
+def _artifact(declared: schema.Artifact, slots: dict[str, str]) -> Artifact:
+    return Artifact(slots[declared.path], declared.path, Kind(declared.kind), declared.product,
+                    tuple(sorted(declared.entities.items())))
+
+
+def _ports(item: SpitJob, slots: dict[str, str]) -> tuple[tuple[Port, ...], tuple[Port, ...]]:
+    """The job's input ports and output ports, in DAG order."""
+    inputs = tuple(Port(name, tuple(_artifact(a, slots) for a in artifacts)) for name, artifacts in item.inputs.items())
+    outputs = tuple(Port(name, (_artifact(a, slots),)) for name, a in item.outputs.items())
+    return inputs, outputs
+
+
+def _fingerprint(item: SpitJob, slots: dict[str, str]) -> tuple[str, dict[str, str]]:
     """The job's work as the runner identifies it: the shape of what it reads and
     writes, and its commands, with every path replaced by its place in the job.
     Names, storage paths, checks, scheduling and where the job came from are left
     out, so renaming or moving things changes nothing here. What the inputs hold
     is checked against the record's hashes, not here."""
-    slots = _slots(item)
 
     def of(path: str) -> str:
         return slots.get(path, path)
@@ -241,7 +114,7 @@ def _fingerprint(item: SpitJob) -> tuple[str, dict[str, str]]:
     return digest(work), {name: digest(value) for name, value in work.items()}
 
 
-def _artifacts(document: SpitDag) -> Iterator[Artifact]:
+def _artifacts(document: SpitDag) -> Iterator[schema.Artifact]:
     """Every artifact the document names, wherever it appears."""
     yield from document.external_inputs
     yield from document.targets
@@ -341,19 +214,16 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         if item.id in seen_ids:
             raise DagError(f"duplicate job id: {item.id}")
         _check_streams(item, folders)
-        inputs = tuple(artifact.path for port in item.inputs.values() for artifact in port)
-        produced = tuple(
-            Output(port, artifact.path, artifact.product, tuple(sorted(artifact.entities.items())))
-            for port, artifact in item.outputs.items()
-        )
-        outputs = tuple(output.path for output in produced)
+        outputs = tuple(artifact.path for artifact in item.outputs.values())
         if len(item.depends_on) != len(set(item.depends_on)) or any(dep not in seen_ids for dep in item.depends_on):
             raise DagError(f"job {item.id} dependencies must name earlier jobs once each")
         for path in outputs:
             if path in producers or path in external_set:
                 raise DagError(f"multiple jobs or sources claim path: {path}")
             producers[path] = item.id
-        fingerprint, parts = _fingerprint(item)
+        slots = _slots(item)
+        fingerprint, parts = _fingerprint(item, slots)
+        inputs, produced = _ports(item, slots)
         jobs.append(Job(
             id=item.id,
             operation=item.operation,
@@ -361,16 +231,15 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             fingerprint=fingerprint,
             parts=parts,
             inputs=inputs,
-            produced=produced,
+            outputs=produced,
             depends_on=tuple(item.depends_on),
             commands=tuple(_run(command, document.pipeline_folder) for command in item.commands),
             verify=tuple(_command(command, document.pipeline_folder) for command in item.verify),
             checks=tuple(
-                Check(check.when, check.check, check.port, check.path, _command(check.command, document.pipeline_folder))
+                Check(Side(check.when), check.check, check.port, check.path, _command(check.command, document.pipeline_folder))
                 for check in item.checks
             ),
             origin=_origin(document, item),
-            identities=_slots(item),
             cores=item.cores,
             memory=item.memory,
         ))
@@ -382,10 +251,10 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         seen_ids.add(item.id)
 
     for job in jobs:
-        expected = {producers[path] for path in job.inputs if path in producers}
+        expected = {producers[path] for path in job.input_paths if path in producers}
         if set(job.depends_on) != expected:
             raise DagError(f"job {job.id} dependencies do not match its input producers")
-        for path in job.inputs:
+        for path in job.input_paths:
             if path not in producers and path not in external_set:
                 raise DagError(f"job {job.id} input is neither produced nor external: {path}")
     dag = Dag(
@@ -396,7 +265,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         tuple(item.identity for item in document.left_out),
         folders,
     )
-    for path in (*external_paths, *(path for job in jobs for path in (*job.inputs, *job.outputs))):
+    for path in (*external_paths, *(path for job in jobs for path in (*job.input_paths, *job.output_paths))):
         if path not in dag.absolute:
             dag.absolute[path] = dag.checked(path)
     return dag

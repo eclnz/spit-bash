@@ -21,7 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.cli import main
-from support import EXCLAIM, artifact, command, document, job, sample, UPPER
+from support import EXCLAIM, artifact, command, document, job_entry, sample, UPPER
 
 MISSING = "no-such-spit-bash-program"
 FAILS = "import sys; print('boom'); sys.exit(3)"
@@ -59,10 +59,10 @@ class OutputTests(unittest.TestCase):
             root, after = 10 + 2 * n, 11 + 2 * n
             inputs.append(f"in{n}.txt")
             (self.root / f"in{n}.txt").write_text("x")
-            blocked = named(job(root, [f"in{n}.txt"], f"made{n}.txt", UPPER, dependents=[after]), "tool")
+            blocked = named(job_entry(root, [f"in{n}.txt"], f"made{n}.txt", UPPER, dependents=[after]), "tool")
             blocked["commands"][0]["command"][0] = [MISSING]
-            jobs += [blocked, named(job(after, [f"made{n}.txt"], f"after{n}.txt", UPPER, depends_on=[root]), "after")]
-        jobs += [named(job(1, ["source.txt"], "a.txt", UPPER), "ok"), named(job(2, ["source.txt"], "b.txt", UPPER), "ok")]
+            jobs += [blocked, named(job_entry(after, [f"made{n}.txt"], f"after{n}.txt", UPPER, depends_on=[root]), "after")]
+        jobs += [named(job_entry(1, ["source.txt"], "a.txt", UPPER), "ok"), named(job_entry(2, ["source.txt"], "b.txt", UPPER), "ok")]
         data = document(self.root, sorted(jobs, key=lambda item: item["id"]), inputs)
         data["executables"] = [MISSING]
         return data
@@ -107,7 +107,7 @@ class OutputTests(unittest.TestCase):
         self.assertIn("0 done, 0 checked, 1 failed, 1 not run (an upstream job failed), 0 current, 0 blocked", err)
 
     def test_identical_failures_are_grouped(self):
-        jobs = [named(job(n, ["source.txt"], f"out{n}.txt", FAILS), "import") for n in (1, 2, 3)]
+        jobs = [named(job_entry(n, ["source.txt"], f"out{n}.txt", FAILS), "import") for n in (1, 2, 3)]
         code, _, err = call("run", self.write(document(self.root, jobs, ["source.txt"])))
         self.assertEqual(err.count("last lines of"), 1)
         self.assertIn("[1] the same failure in 2 other jobs: 2, 3", err)
@@ -182,20 +182,20 @@ def chain(root):
     """`source.txt -> work/upper.txt -> final.txt -> last.txt`"""
     data = sample(root)
     data["jobs"][1]["dependents"] = [3]
-    data["jobs"].append(job(3, ["final.txt"], "last.txt", EXCLAIM, depends_on=[2]))
+    data["jobs"].append(job_entry(3, ["final.txt"], "last.txt", EXCLAIM, depends_on=[2]))
     return data
 
 
 def blocked(root):
     """A job missing its external input and one missing its program, each with a job after it, and one that can start."""
-    missing = named(job(3, ["source.txt"], "tool.txt", UPPER, dependents=[4]), "tool")
+    missing = named(job_entry(3, ["source.txt"], "tool.txt", UPPER, dependents=[4]), "tool")
     missing["commands"][0]["command"][0] = [MISSING]
     data = document(root, [
-        named(job(1, ["absent.txt"], "read.txt", UPPER, dependents=[2]), "reader"),
-        named(job(2, ["read.txt"], "after_read.txt", UPPER, depends_on=[1]), "after"),
+        named(job_entry(1, ["absent.txt"], "read.txt", UPPER, dependents=[2]), "reader"),
+        named(job_entry(2, ["read.txt"], "after_read.txt", UPPER, depends_on=[1]), "after"),
         missing,
-        named(job(4, ["tool.txt"], "after_tool.txt", UPPER, depends_on=[3]), "after"),
-        named(job(5, ["source.txt"], "fine.txt", UPPER), "fine"),
+        named(job_entry(4, ["tool.txt"], "after_tool.txt", UPPER, depends_on=[3]), "after"),
+        named(job_entry(5, ["source.txt"], "fine.txt", UPPER), "fine"),
     ], ["source.txt", "absent.txt"])
     data["executables"] = [MISSING]
     return data

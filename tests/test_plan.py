@@ -4,10 +4,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from spit_bash.dag import load_dag
+from spit_bash.load import load_dag
 from spit_bash import files
 from spit_bash.plan import AdoptStatus, Status, adopt, plan
-from support import FIXTURE, artifact, job, read, run, sample, state_at, UPPER
+from support import FIXTURE, artifact, job_entry, read, run, sample, state_at, UPPER
 
 
 class PlanTests(unittest.TestCase):
@@ -60,7 +60,7 @@ class PlanTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("hello")
             data = sample(root)
-            data["jobs"].append(job(3, ["source.txt"], "other.txt", UPPER))
+            data["jobs"].append(job_entry(3, ["source.txt"], "other.txt", UPPER))
             data["executables"] = ["spit-bash-no-such-program"]
             data["jobs"][0]["commands"][0]["command"][0] = ["spit-bash-no-such-program"]
             data["jobs"][1]["verify"] = [[["bin/missing-check"]]]

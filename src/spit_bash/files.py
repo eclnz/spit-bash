@@ -8,7 +8,7 @@ import stat
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .dag import Dag, Job
+from .model import Dag, Job
 
 try:
     import xxhash
@@ -149,7 +149,7 @@ def folder_entries(root: Path) -> FolderEntries:
 
 def folder_inputs(dag: Dag, job: Job) -> dict[str, FolderEntries]:
     """The entries of each of the job's inputs that is a folder, by path."""
-    return {path: folder_entries(dag.path(path)) for path in job.inputs if path in dag.folders}
+    return {path: folder_entries(dag.path(path)) for path in job.input_paths if path in dag.folders}
 
 
 def _file_digest(path: str) -> bytes:

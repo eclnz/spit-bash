@@ -6,7 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-from spit_bash.dag import load_dag
+from spit_bash.load import load_dag
+from spit_bash.model import Artifact, Job, Kind, Port, Run
 from spit_bash.plan import plan
 from spit_bash.state.store import Store
 from spit_bash.run import execute
@@ -22,7 +23,7 @@ def command(script, *paths):
     return [[sys.executable], ["-c"], [script], *[[{"path": path}] for path in paths]]
 
 
-def job(id, inputs, output, script, depends_on=(), dependents=()):
+def job_entry(id, inputs, output, script, depends_on=(), dependents=()):
     return {
         "id": id, "operation": f"op{id}",
         "stage": [], "dependents": list(dependents),
@@ -32,6 +33,14 @@ def job(id, inputs, output, script, depends_on=(), dependents=()):
         "commands": [{"command": command(script, *inputs, output), "stdin": None, "stdout": None}],
         "cores": 1, "memory": None,
     }
+
+
+def job(id, depends_on=(), cores=1, memory=None, operation=None, product="p"):
+    """A `Job` that reads nothing and runs `true` to make `{id}.txt`, for tests that need no DAG."""
+    made = Artifact("out0", f"{id}.txt", Kind.FILE, product, ())
+    return Job(id=id, operation=operation or f"op{id}", stage=(), fingerprint="0" * 16, inputs=(),
+               outputs=(Port("output", (made,)),), depends_on=tuple(depends_on), commands=(Run(("true",)),),
+               verify=(), cores=cores, memory=memory)
 
 
 def document(root, jobs, external_inputs):
@@ -58,8 +67,8 @@ EXCLAIM = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Pa
 def sample(root):
     """source.txt -> work/upper.txt -> final.txt"""
     data = document(root, [
-        job(1, ["source.txt"], "work/upper.txt", UPPER, dependents=[2]),
-        job(2, ["work/upper.txt"], "final.txt", EXCLAIM, depends_on=[1]),
+        job_entry(1, ["source.txt"], "work/upper.txt", UPPER, dependents=[2]),
+        job_entry(2, ["work/upper.txt"], "final.txt", EXCLAIM, depends_on=[1]),
     ], ["source.txt"])
     return data
 
@@ -70,7 +79,7 @@ def read(data, root=None):
 
 def run(dag, state, cores=2, force=False, memory=None, keep_failed=False, enforce_memory=True):
     decisions = plan(dag, state, force)
-    results = asyncio.run(execute(dag, decisions, state, cores, dag.root / ".spit-bash" / "logs", memory=memory,
+    results = asyncio.run(execute(dag, decisions, state, cores, dag.layout.logs, memory=memory,
                                   keep_failed=keep_failed, enforce_memory=enforce_memory))
     state.close()
     return decisions, results

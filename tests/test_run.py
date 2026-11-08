@@ -13,13 +13,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from spit_bash.dag import load_dag
+from spit_bash.load import load_dag
 from spit_bash.files import Stamp
 from spit_bash.plan import Status, plan
 from spit_bash.state.store import Store
 from spit_bash import run as run_module
 from spit_bash.run import execute
-from support import FIXTURE, artifact, command, document, job, read, run, sample, state_at
+from support import FIXTURE, artifact, command, document, job_entry, read, run, sample, state_at
 
 # Each job writes its own marker, then waits for the other's: they finish only
 # if both run at once.
@@ -189,7 +189,7 @@ class RunTests(unittest.TestCase):
             }
             dag = read(data)
             self.assertEqual(
-                [(output.port, output.path) for output in dag.jobs[0].produced],
+                [(port.name, artifact.path) for port in dag.jobs[0].outputs for artifact in port.artifacts],
                 [("image", "work/upper.txt"), ("meta", "work/upper.json"),
                  ("log", "work/conversion.log")],
             )
@@ -266,7 +266,7 @@ class RunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "source.txt").write_text("")
-            jobs = [job(1, ["source.txt"], "a.txt", MEET), job(2, ["source.txt"], "b.txt", MEET)]
+            jobs = [job_entry(1, ["source.txt"], "a.txt", MEET), job_entry(2, ["source.txt"], "b.txt", MEET)]
             jobs[0]["commands"][0]["command"].append(["b.txt.here"])
             jobs[1]["commands"][0]["command"].append(["a.txt.here"])
             _, results = run(read(document(root, jobs, ["source.txt"])), state_at(root), cores=2)
@@ -284,7 +284,7 @@ class RunTests(unittest.TestCase):
                 "open(sys.argv[2] + '.pid', 'w').write(str(os.getpid()))\n"
                 "time.sleep(60)\n"
             )
-            dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
+            dag = read(document(root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
             state = state_at(root)
             pid_file = root / "out.txt.pid"
 
@@ -318,7 +318,7 @@ class RunTests(unittest.TestCase):
                 "open(sys.argv[2] + '.pid', 'w').write(f'{os.getpid()} {child.pid}')\n"
                 "time.sleep(60)\n"
             )
-            dag = read(document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
+            dag = read(document(root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"]))
             state = state_at(root)
             pid_file = root / "out.txt.pid"
 
@@ -381,7 +381,7 @@ class SignalTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("")
             script = "import os, sys, time; open(sys.argv[2] + '.pid', 'w').write(str(os.getpid())); time.sleep(60)"
-            data = document(root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"])
+            data = document(root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"])
             (root / "dag.json").write_text(json.dumps(data))
             env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"))
             process = subprocess.Popen(
@@ -421,7 +421,7 @@ class EarlierOutputTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def run_job(self, script, keep_failed=False):
-        dag = load_dag(io.StringIO(json.dumps(document(self.root, [job(1, ["in.txt"], "out.txt", script)], ["in.txt"]))), None)
+        dag = load_dag(io.StringIO(json.dumps(document(self.root, [job_entry(1, ["in.txt"], "out.txt", script)], ["in.txt"]))), None)
         state = Store(self.root / "state.jsonl")
         decisions = plan(dag, state, False)
         with contextlib.redirect_stdout(io.StringIO()):

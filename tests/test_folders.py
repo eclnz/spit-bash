@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import DagError
+from spit_bash.model import DagError
 from spit_bash.files import stamp
 from spit_bash.plan import Status, plan
 from support import artifact, command, document, read, run, state_at

@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import DagError
+from spit_bash.model import DagError
 from spit_bash.selection import Selection, parse_only, parse_stage, select
-from support import document, job, read, UPPER
+from support import document, job_entry, read, UPPER
 
 
 def made(data, id, product, entities, stage=()):
@@ -17,13 +17,13 @@ def made(data, id, product, entities, stage=()):
 def study(root):
     """A template, a per-subject step that reads it, a stage inside per subject, and a group mean."""
     data = document(root, [
-        job(1, ["source.txt"], "template.txt", UPPER, dependents=[2, 3]),
-        job(2, ["template.txt"], "sub-01.txt", UPPER, depends_on=[1], dependents=[4, 5]),
-        job(3, ["template.txt"], "sub-02.txt", UPPER, depends_on=[1], dependents=[6]),
-        job(4, ["sub-01.txt"], "sub-01-clean.txt", UPPER, depends_on=[2], dependents=[7]),
-        job(5, ["sub-01.txt"], "sub-01-qc.txt", UPPER, depends_on=[2]),
-        job(6, ["sub-02.txt"], "sub-02-clean.txt", UPPER, depends_on=[3], dependents=[7]),
-        job(7, ["sub-01-clean.txt", "sub-02-clean.txt"], "mean.txt", UPPER, depends_on=[4, 6]),
+        job_entry(1, ["source.txt"], "template.txt", UPPER, dependents=[2, 3]),
+        job_entry(2, ["template.txt"], "sub-01.txt", UPPER, depends_on=[1], dependents=[4, 5]),
+        job_entry(3, ["template.txt"], "sub-02.txt", UPPER, depends_on=[1], dependents=[6]),
+        job_entry(4, ["sub-01.txt"], "sub-01-clean.txt", UPPER, depends_on=[2], dependents=[7]),
+        job_entry(5, ["sub-01.txt"], "sub-01-qc.txt", UPPER, depends_on=[2]),
+        job_entry(6, ["sub-02.txt"], "sub-02-clean.txt", UPPER, depends_on=[3], dependents=[7]),
+        job_entry(7, ["sub-01-clean.txt", "sub-02-clean.txt"], "mean.txt", UPPER, depends_on=[4, 6]),
     ], ["source.txt"])
     made(data, 1, "template", {})
     made(data, 2, "aligned", {"sub": "01"}, ["pre"])

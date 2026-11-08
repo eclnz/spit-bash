@@ -118,7 +118,7 @@ def failure_groups(root: Path, failures: list[Result]) -> list[list[Result]]:
     """The failed jobs grouped by what went wrong: the same error and the same last lines of the log."""
     groups: dict[tuple, list[Result]] = {}
     for result in failures:
-        files = (*result.job.inputs, *result.job.outputs)
+        files = (*result.job.input_paths, *result.job.output_paths)
         tail = log_tail(result.log) if result.log is not None else []
         groups.setdefault((result.error, _normalised(files, root, tail)), []).append(result)
     return list(groups.values())

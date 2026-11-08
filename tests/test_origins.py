@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import DagError
+from spit_bash.model import DagError
 from support import read, sample
 from test_cli import call
 

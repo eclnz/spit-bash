@@ -10,14 +10,14 @@ from unittest import mock
 
 from spit_bash.cli import main
 from spit_bash.plan import Status, plan
-from support import EXCLAIM, job, read, run, sample, state_at
+from support import EXCLAIM, job_entry, read, run, sample, state_at
 
 
 def chain(root):
     """source.txt -> work/upper.txt -> final.txt -> last.txt"""
     data = sample(root)
     data["jobs"][1]["dependents"] = [3]
-    data["jobs"].append(job(3, ["final.txt"], "last.txt", EXCLAIM, depends_on=[2]))
+    data["jobs"].append(job_entry(3, ["final.txt"], "last.txt", EXCLAIM, depends_on=[2]))
     return data
 
 

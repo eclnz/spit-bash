@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
-from .dag import Dag, DagError, Job
+from .model import Dag, DagError, Job
 from .files import Stamps, content_hash, stamps, stored_each
 from .state.record import Record
 from .state.store import StateWrite, Store
@@ -19,8 +19,8 @@ def job_key(job: Job) -> str:
     # Job IDs may change when SPIT resolves a different inventory, and paths
     # change when the pipeline's path rules do. What a job makes is its outputs'
     # products and entities, which neither changes.
-    identities = sorted([output.product, output.entities] for output in job.produced)
-    return json.dumps(identities, separators=(",", ":"))
+    made = sorted([output.product, output.entities] for output in job.output_artifacts)
+    return json.dumps(made, separators=(",", ":"))
 
 
 def reconcile(dag: Dag, state: Store, everything: Dag, persist: bool = False) -> tuple[tuple[str, str], ...]:
@@ -57,7 +57,7 @@ def reconcile(dag: Dag, state: Store, everything: Dag, persist: bool = False) ->
         for old in orphans[job.fingerprint]:
             record = state.jobs[old]
             assert record.input_hashes is not None and record.output_hashes is not None
-            slots = {job.identities[path]: path for path in job.inputs}
+            slots = job.input_paths_by_slot
             if set(slots) != set(record.input_hashes) or any(
                     hash_of(job, path) != record.input_hashes[slot] for slot, path in slots.items()):
                 continue
@@ -68,7 +68,7 @@ def reconcile(dag: Dag, state: Store, everything: Dag, persist: bool = False) ->
             else:
                 del state.jobs[old]
                 state.jobs[key] = record
-            for slot, path in job.output_paths.items():
+            for slot, path in job.output_paths_by_slot.items():
                 held[path] = record.output_hashes.get(slot)
             handed.append((old, key))
             break
@@ -157,9 +157,9 @@ def changed_parts(record: Record, job: Job) -> str:
 def _missing(dag: Dag, job: Job, state: Store) -> str:
     """'output missing', and where an earlier run left the file if a change of path rules stranded it."""
     record = state.jobs.get(job_key(job))
-    here = {job.identities[path]: path for path in job.outputs}
+    here = job.output_paths_by_slot
     for key, old in sorted((record.output_paths or {}).items() if record else ()):
-        if key in here and old != here[key] and old not in job.outputs:
+        if key in here and old != here[key] and old not in job.output_paths:
             try:
                 present = dag.checked(old).exists()
             except DagError:
@@ -177,7 +177,7 @@ def judge(dag: Dag, job: Job, state: Store, force: bool, hashing: bool, seen: St
     `seen`, and `run` asks it again for a job planned `maybe`, once the jobs it
     waits for have finished, with none, as those jobs changed the files.
     """
-    now_in, now_out = stamps(dag, job.inputs, seen), stamps(dag, job.outputs, seen)
+    now_in, now_out = stamps(dag, job.input_paths, seen), stamps(dag, job.output_paths, seen)
     if any(value is None for value in now_out.values()):
         return Decision(job, Status.RUN, _missing(dag, job, state))
     if any(value is None for value in now_in.values()):
@@ -191,8 +191,8 @@ def judge(dag: Dag, job: Job, state: Store, force: bool, hashing: bool, seen: St
         return Decision(job, Status.RUN, changed_parts(record, job))
     # A record holds its files by identity, so files moved to new paths are
     # the same files when their stamps or contents match.
-    in_paths = {job.identities[path]: path for path in job.inputs}
-    out_paths = {job.identities[path]: path for path in job.outputs}
+    in_paths = job.input_paths_by_slot
+    out_paths = job.output_paths_by_slot
     now_in, now_out = stored_each(job.keyed(now_in)), stored_each(job.keyed(now_out))
     if not _unchanged(dag, in_paths, now_in, record.inputs, record.input_hashes, hashing, verify):
         return Decision(job, Status.RUN, "input changed")
@@ -209,7 +209,7 @@ def judge(dag: Dag, job: Job, state: Store, force: bool, hashing: bool, seen: St
 
 def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamps) -> Decision:
     """A job with no command is current only when its outputs exist and are newer than its inputs."""
-    outputs = stamps(dag, job.outputs, seen)
+    outputs = stamps(dag, job.output_paths, seen)
     if any(value is None for value in outputs.values()):
         return Decision(job, Status.BLOCKED, "no command and output is missing")
     # It cannot be rerun, so any change upstream would leave its outputs stale.
@@ -217,10 +217,10 @@ def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamp
         return Decision(job, Status.BLOCKED, "no command and dependency will run")
     if any(by_id[dep].status is Status.MAYBE for dep in job.depends_on):
         return Decision(job, Status.BLOCKED, "no command and dependency may run")
-    inputs = stamps(dag, job.inputs, seen)
+    inputs = stamps(dag, job.input_paths, seen)
     if any(value is None for value in inputs.values()):
         return Decision(job, Status.BLOCKED, "input is missing")
-    if job.inputs and max(value.mtime_ns for value in inputs.values()) > min(value.mtime_ns for value in outputs.values()):
+    if job.input_paths and max(value.mtime_ns for value in inputs.values()) > min(value.mtime_ns for value in outputs.values()):
         return Decision(job, Status.BLOCKED, "no command and output is older than an input")
     if job.checks:
         return Decision(job, Status.CHECK, "no command; outputs exist, checking them")
@@ -230,7 +230,7 @@ def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamp
 def _below_rerun(dag: Dag, job: Job, state: Store, force: bool, hashing: bool, seen: Stamps,
                  verify: bool = False) -> Decision:
     """A job that reads from one that will or may run: `maybe` when it is current as it stands."""
-    if not hashing or any(value is None for value in stamps(dag, job.inputs, seen).values()):
+    if not hashing or any(value is None for value in stamps(dag, job.input_paths, seen).values()):
         return Decision(job, Status.RUN, "dependency will run")
     decision = judge(dag, job, state, force, hashing, seen, verify)
     if decision.status in (Status.SKIP, Status.CHECK):
@@ -276,7 +276,7 @@ def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, hashing: 
 
     def decide(job: Job) -> Decision:
         forced = force is True or (not isinstance(force, bool) and job.id in force)
-        missing = [path for path in job.inputs if path in missing_external]
+        missing = [path for path in job.input_paths if path in missing_external]
         if missing:
             return Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
         blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
@@ -320,8 +320,8 @@ def adopt(dag: Dag, state: Store) -> tuple[Adoption, ...]:
     """
     adoptions = []
     for job in dag.jobs:
-        inputs = stamps(dag, job.inputs)
-        outputs = stamps(dag, job.outputs)
+        inputs = stamps(dag, job.input_paths)
+        outputs = stamps(dag, job.output_paths)
         if not job.commands:
             adoption = Adoption(job, AdoptStatus.LEFT, "no command")
         elif any(value is None for value in outputs.values()):
@@ -332,7 +332,7 @@ def adopt(dag: Dag, state: Store) -> tuple[Adoption, ...]:
             state.record(job_key(job), Record(fingerprint=job.fingerprint, parts=job.parts,
                                                  inputs=stored_each(job.keyed(inputs)),
                                                  outputs=stored_each(job.keyed(outputs)),
-                                                 output_paths=job.output_paths))
+                                                 output_paths=job.output_paths_by_slot))
             adoption = Adoption(job, AdoptStatus.ADOPTED, "outputs exist")
         adoptions.append(adoption)
     return tuple(adoptions)

@@ -11,7 +11,7 @@ from typing import IO, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from ..dag import DagError
+from ..model import DagError
 from .record import Record
 
 # The one version of the state file this store reads and writes.

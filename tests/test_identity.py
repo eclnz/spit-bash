@@ -15,7 +15,7 @@ from pathlib import Path
 from spit_bash import cli, migrate
 from spit_bash.migrate import Migration
 from spit_bash.plan import Status, job_key, plan
-from support import command, job, document, read, run, sample, state_at
+from support import command, job_entry, document, read, run, sample, state_at
 
 
 def artifact_of(path):
@@ -42,7 +42,7 @@ class IdentityTests(unittest.TestCase):
         after = read(moved(copy.deepcopy(self.data), lambda path: "derivatives/" + path)).jobs
         self.assertEqual([j.fingerprint for j in before], [j.fingerprint for j in after])
         self.assertEqual([job_key(j) for j in before], [job_key(j) for j in after])
-        self.assertNotEqual(before[0].outputs, after[0].outputs)
+        self.assertNotEqual(before[0].output_paths, after[0].output_paths)
 
     def test_a_changed_command_changes_the_fingerprint_but_a_renamed_artifact_does_not(self):
         base = read(self.data).jobs[0].fingerprint
@@ -255,7 +255,7 @@ class OutputShapeTests(unittest.TestCase):
     def build(self, script, outputs, kind):
         self.root = Path(tempfile.mkdtemp())
         (self.root / "source.txt").write_text("hello")
-        item = job(1, ["source.txt"], outputs[0], script)
+        item = job_entry(1, ["source.txt"], outputs[0], script)
         item["outputs"] = {f"o{i}": dict(artifact_of(path), kind=kind) for i, path in enumerate(outputs)}
         item["commands"][0]["command"] = command(script, "source.txt", *outputs)
         data = document(self.root, [item], ["source.txt"])

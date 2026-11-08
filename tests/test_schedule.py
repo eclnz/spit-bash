@@ -5,15 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import Job, Output, Run
 from spit_bash.schedule import ReadyQueue, longest_paths, ranks, size, too_big
-from support import UPPER, document, job, read, run, state_at
-
-
-def chain_job(id, depends_on=(), cores=1, memory=None):
-    return Job(id=id, operation=f"op{id}", stage=(), fingerprint="0" * 16, inputs=(),
-               produced=(Output("output", f"{id}.txt", "p", ()),), depends_on=depends_on, commands=(Run(("true",)),), verify=(),
-               cores=cores, memory=memory)
+from support import UPPER, document, job, job_entry, read, run, state_at
 
 
 async def admitted_order(cores, ranks, ids):
@@ -22,7 +15,7 @@ async def admitted_order(cores, ranks, ids):
     order = []
 
     async def one(id):
-        async with queue.slot(chain_job(id)):
+        async with queue.slot(job(id)):
             order.append(id)
             await asyncio.sleep(0)
 
@@ -33,28 +26,28 @@ async def admitted_order(cores, ranks, ids):
 class LongestPathTests(unittest.TestCase):
     def test_a_job_heading_a_chain_ranks_above_one_with_nothing_after_it(self):
         # 1 -> 2 -> 3, and 4 alone.
-        jobs = [chain_job(1), chain_job(2, (1,)), chain_job(3, (2,)), chain_job(4)]
+        jobs = [job(1), job(2, (1,)), job(3, (2,)), job(4)]
         start, after = longest_paths(jobs, lambda job: {1: 1.0, 2: 2.0, 3: 3.0, 4: 5.0}[job.id])
         self.assertEqual(start, {1: 6.0, 2: 5.0, 3: 3.0, 4: 5.0})
         self.assertEqual(after, {1: 5.0, 2: 3.0, 3: 0.0, 4: 0.0})
 
     def test_the_longest_of_several_dependents_counts(self):
-        jobs = [chain_job(1), chain_job(2, (1,)), chain_job(3, (1,))]
+        jobs = [job(1), job(2, (1,)), job(3, (1,))]
         start, _ = longest_paths(jobs, lambda job: float(job.id))
         self.assertEqual(start[1], 1.0 + 3.0)
 
     def test_a_dependency_outside_the_jobs_is_ignored(self):
-        start, _ = longest_paths([chain_job(2, (1,))], lambda job: 2.0)
+        start, _ = longest_paths([job(2, (1,))], lambda job: 2.0)
         self.assertEqual(start, {2: 2.0})
 
     def test_a_job_with_no_time_counts_as_the_median_or_one_second(self):
-        jobs = [chain_job(1), chain_job(2, (1,))]
+        jobs = [job(1), job(2, (1,))]
         self.assertEqual(ranks(jobs, lambda job: None, {}), {1: 2.0, 2: 1.0})
         self.assertEqual(ranks(jobs, lambda job: None, {7: 4.0, 8: 6.0, 9: 100.0}), {1: 12.0, 2: 6.0})
         self.assertEqual(ranks(jobs, lambda job: 3.0 if job.id == 2 else None, {7: 4.0}), {1: 7.0, 2: 3.0})
 
     def test_a_long_chain_needs_no_recursion(self):
-        jobs = [chain_job(1)] + [chain_job(n, (n - 1,)) for n in range(2, 100_001)]
+        jobs = [job(1)] + [job(n, (n - 1,)) for n in range(2, 100_001)]
         start, _ = longest_paths(jobs, lambda job: 1.0)
         self.assertEqual(start[1], 100_000.0)
 
@@ -75,7 +68,7 @@ class ReadyQueueTests(unittest.TestCase):
 
             async def one(id):
                 nonlocal holding, most
-                async with queue.slot(chain_job(id)):
+                async with queue.slot(job(id)):
                     holding += 1
                     most = max(most, holding)
                     await asyncio.sleep(0.01)
@@ -93,7 +86,7 @@ class ReadyQueueTests(unittest.TestCase):
             release = asyncio.Event()
 
             async def one(id):
-                async with queue.slot(chain_job(id)):
+                async with queue.slot(job(id)):
                     order.append(id)
                     if id == 1:
                         await release.wait()
@@ -130,7 +123,7 @@ async def overlaps(queue, jobs, hold=0.01):
 class ResourceTests(unittest.TestCase):
     def test_jobs_start_only_while_their_cores_fit(self):
         # Four cores: the 3-core job and a 1-core job fit together, the 2-core jobs do not fit beside the 3.
-        jobs = [chain_job(1, cores=3), chain_job(2, cores=2), chain_job(3, cores=2), chain_job(4)]
+        jobs = [job(1, cores=3), job(2, cores=2), job(3, cores=2), job(4)]
         queue = ReadyQueue(4, None, {1: 4.0, 2: 3.0, 3: 2.0, 4: 1.0})
         order, together = asyncio.run(overlaps(queue, jobs))
         self.assertEqual(order, [1, 2, 3, 4])
@@ -140,7 +133,7 @@ class ResourceTests(unittest.TestCase):
 
     def test_jobs_start_only_while_their_memory_fits(self):
         gib = 1024**3
-        jobs = [chain_job(1, memory=3 * gib), chain_job(2, memory=2 * gib), chain_job(3, memory=gib), chain_job(4)]
+        jobs = [job(1, memory=3 * gib), job(2, memory=2 * gib), job(3, memory=gib), job(4)]
         queue = ReadyQueue(8, 4 * gib, {1: 4.0, 4: 3.0, 2: 2.0, 3: 1.0})
         _, together = asyncio.run(overlaps(queue, jobs))
         for running in together:
@@ -151,19 +144,19 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(queue.free_memory, 4 * gib)
 
     def test_without_a_memory_limit_memory_does_not_hold_a_job_back(self):
-        jobs = [chain_job(1, memory=2**53), chain_job(2, memory=2**53)]
+        jobs = [job(1, memory=2**53), job(2, memory=2**53)]
         _, together = asyncio.run(overlaps(ReadyQueue(2, None, {}), jobs))
         self.assertIn(frozenset({1, 2}), together)
 
     def test_a_job_waiting_at_the_head_holds_back_smaller_jobs_behind_it(self):
         # Job 2 needs both cores; job 3 would fit beside job 1 but waits its turn.
-        jobs = [chain_job(1), chain_job(2, cores=2), chain_job(3)]
+        jobs = [job(1), job(2, cores=2), job(3)]
         _, together = asyncio.run(overlaps(ReadyQueue(2, None, {1: 3.0, 2: 2.0, 3: 1.0}), jobs))
         self.assertEqual(together, [frozenset({1}), frozenset({2}), frozenset({3})])
 
     def test_a_job_needing_more_than_the_run_has_runs_alone(self):
         gib = 1024**3
-        jobs = [chain_job(1), chain_job(2, cores=16), chain_job(3), chain_job(4, memory=64 * gib), chain_job(5)]
+        jobs = [job(1), job(2, cores=16), job(3), job(4, memory=64 * gib), job(5)]
         queue = ReadyQueue(4, 8 * gib, {1: 5.0, 2: 4.0, 3: 3.0, 4: 2.0, 5: 1.0})
         order, together = asyncio.run(overlaps(queue, jobs))
         self.assertEqual(sorted(order), [1, 2, 3, 4, 5])
@@ -173,16 +166,16 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual((queue.free_cores, queue.free_memory), (4, 8 * gib))
 
     def test_oversized_jobs_one_after_another_do_not_deadlock(self):
-        jobs = [chain_job(id, cores=8, memory=2**40) for id in range(1, 5)]
+        jobs = [job(id, cores=8, memory=2**40) for id in range(1, 5)]
         order, together = asyncio.run(overlaps(ReadyQueue(2, 2**30, {}), jobs, hold=0))
         self.assertEqual(order, [1, 2, 3, 4])
         self.assertTrue(all(len(running) == 1 for running in together))
 
     def test_what_a_job_needs_beyond_the_run_is_named(self):
-        self.assertIsNone(too_big(chain_job(1, cores=4, memory=2**30), 4, 2**30))
-        self.assertIsNone(too_big(chain_job(1, memory=2**40), 4, None))
-        self.assertEqual(too_big(chain_job(1, cores=16), 8, None), "16 cores where the run has 8")
-        self.assertEqual(too_big(chain_job(1, cores=16, memory=64 * 2**30), 8, 3 * 2**29),
+        self.assertIsNone(too_big(job(1, cores=4, memory=2**30), 4, 2**30))
+        self.assertIsNone(too_big(job(1, memory=2**40), 4, None))
+        self.assertEqual(too_big(job(1, cores=16), 8, None), "16 cores where the run has 8")
+        self.assertEqual(too_big(job(1, cores=16, memory=64 * 2**30), 8, 3 * 2**29),
                          "16 cores where the run has 8, and 64G of memory where the run has 1.5G")
         self.assertEqual([size(n) for n in (512, 1024, 64 * 2**20, 2**53)], ["512", "1K", "64M", "8192T"])
 
@@ -194,9 +187,9 @@ class RunOrderTests(unittest.TestCase):
             (root / "source.txt").write_text("hello")
             # Job 1 stands alone; job 2 heads a chain of 2 -> 3.
             dag = read(document(root, [
-                job(1, ["source.txt"], "alone.txt", UPPER),
-                job(2, ["source.txt"], "head.txt", UPPER, dependents=[3]),
-                job(3, ["head.txt"], "tail.txt", UPPER, depends_on=[2]),
+                job_entry(1, ["source.txt"], "alone.txt", UPPER),
+                job_entry(2, ["source.txt"], "head.txt", UPPER, dependents=[3]),
+                job_entry(3, ["head.txt"], "tail.txt", UPPER, depends_on=[2]),
             ], ["source.txt"]))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
@@ -212,7 +205,7 @@ class RunOrderTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.txt").write_text("hello")
             slow = "import time; time.sleep(0.2); " + UPPER
-            data = document(root, [job(1, ["source.txt"], "a.txt", slow), job(2, ["source.txt"], "b.txt", slow)],
+            data = document(root, [job_entry(1, ["source.txt"], "a.txt", slow), job_entry(2, ["source.txt"], "b.txt", slow)],
                             ["source.txt"])
             for item in data["jobs"]:
                 item["cores"] = 2

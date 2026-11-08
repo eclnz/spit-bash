@@ -14,7 +14,8 @@ from collections import Counter
 from enum import Enum
 from pathlib import Path
 
-from .dag import Dag, DagError, Job, load_dag
+from .load import load_dag
+from .model import Dag, DagError, Job
 from .display import id_width, labels
 from .explain import explain
 from .files import stamp
@@ -180,9 +181,9 @@ def _stale(everything: Dag, chosen: Dag, decisions: tuple[Decision, ...], result
             continue
         status = settled[decision.job.id] or decision.status
         if status is Status.RUN:
-            rewritten.update(decision.job.outputs)
+            rewritten.update(decision.job.output_paths)
     kept = {job.id for job in chosen.jobs}
-    return sum(1 for job in everything.jobs if job.id not in kept and rewritten.intersection(job.inputs))
+    return sum(1 for job in everything.jobs if job.id not in kept and rewritten.intersection(job.input_paths))
 
 
 def _report_failure(job: Job, error: str, log: Path | None) -> None:
@@ -233,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         if selection:
             needed = f", and {selected.needed} they need" if selected.needed else ""
             print(f"chose {selected.matched} of {total} jobs{needed}", file=sys.stderr)
-        state = Store(Path(args.state).expanduser().resolve() if args.state else dag.root / ".spit-bash" / "state.jsonl",
+        state = Store(Path(args.state).expanduser().resolve() if args.state else dag.layout.state,
                       args.action is not Action.PLAN)
         if args.action is not Action.PLAN:
             state.lock()
@@ -318,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
                       "or pass --no-enforce-memory to run it alone", file=sys.stderr)
                 return 2
 
-        logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
+        logs = Path(args.logs).expanduser().resolve() if args.logs else dag.layout.logs
         try:
             results = asyncio.run(execute(dag, decisions, state, args.cores, logs, hashing, args.memory,
                                           args.keep_failed, args.enforce_memory, args.timestamp_logs, verify))

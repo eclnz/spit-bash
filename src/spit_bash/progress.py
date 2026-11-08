@@ -6,7 +6,7 @@ import heapq
 import time
 from dataclasses import dataclass, field
 
-from .dag import Job
+from .model import Job
 from .schedule import longest_paths
 
 # How often, at most, the longest path through the jobs left is worked out

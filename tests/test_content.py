@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash import files
-from spit_bash.dag import DagError
+from spit_bash.model import DagError
 from spit_bash.plan import Status, apply_refreshes, plan
 from spit_bash.state.store import Store
 from spit_bash.run import execute

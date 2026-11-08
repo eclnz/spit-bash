@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import DagError
+from spit_bash.model import DagError
 from spit_bash.plan import Status, plan
 from spit_bash.run import execute, partial
-from support import command, document, job, read, run, state_at
+from support import command, document, job_entry, read, run, state_at
 
 # Write the input upper-cased to the output.
 UPPER = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().upper())"
@@ -27,7 +27,7 @@ def step(script, *paths, stdin=None, stdout=None):
 
 def sequenced(root, *commands):
     """source.txt -> work/upper.txt, by each of `commands` in turn."""
-    item = job(1, ["source.txt"], "work/upper.txt", UPPER)
+    item = job_entry(1, ["source.txt"], "work/upper.txt", UPPER)
     item["commands"] = list(commands)
     return document(root, [item], ["source.txt"])
 

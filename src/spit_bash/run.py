@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO
 
-from .dag import Check, Dag, Job
+from .model import Check, Dag, Job, Kind, Layout, Side
 from .display import id_width, labels, name
 from .files import FolderEntries, Stamps, folder_entries, folder_inputs, hashes, stamps, stored, stored_each
 from .logs import StampedLog, drain, open_log, pump
@@ -71,8 +71,7 @@ def log_tail(path: Path, lines: int = LOG_TAIL_LINES) -> list[str]:
 
 def partial(dag: Dag, stdout: str) -> Path:
     """The temporary file a command writes its standard output to, beside the output `stdout` it becomes."""
-    path = dag.checked(stdout)
-    return path.with_name(f".{path.name}.spit-bash-partial")
+    return Layout.partial(dag.checked(stdout))
 
 
 async def _command(dag: Dag, args: tuple[str, ...], kind: str, log: IO[bytes] | StampedLog,
@@ -200,7 +199,7 @@ async def _stop(process: asyncio.subprocess.Process) -> None:
 async def _checks(dag: Dag, checks: tuple[Check, ...], log: IO[bytes] | StampedLog) -> str | None:
     """Run checks in order, stopping at the first that fails."""
     for check in checks:
-        if check.when == "before" and stamps(dag, (check.path,))[check.path] is None:
+        if check.side is Side.BEFORE and stamps(dag, (check.path,))[check.path] is None:
             return f"{check.describe()}: the artifact is missing"
         error = await _command(dag, check.command, check.describe(), log)
         if error:
@@ -230,7 +229,7 @@ def _remove_outputs(dag: Dag, job: Job, log: IO[bytes] | StampedLog, keep: bool 
     still writing to them. With `keep`, as for `--keep-failed`, the log names
     what is left instead.
     """
-    for output in job.outputs:
+    for output in job.output_paths:
         path = dag.checked(output)
         if not (path.is_symlink() or path.exists()):
             continue
@@ -258,11 +257,6 @@ def _remove_outputs(dag: Dag, job: Job, log: IO[bytes] | StampedLog, keep: bool 
     log.flush()
 
 
-def _aside(path: Path) -> Path:
-    """Where an output's earlier version waits while its job runs, beside it so a move keeps it on one disk."""
-    return path.with_name(f".{path.name}.spit-bash-previous")
-
-
 def _set_aside(dag: Dag, job: Job, log: IO[bytes] | StampedLog) -> list[tuple[str, Path, Path]]:
     """Move what an earlier run left at each of the job's outputs out of the way, so the job starts
     from the state a first run does. Some tools refuse to write over a file that exists.
@@ -271,11 +265,11 @@ def _set_aside(dag: Dag, job: Job, log: IO[bytes] | StampedLog) -> list[tuple[st
     written, so it is the version to keep. Gives each output moved with its path and its place aside.
     """
     moved = []
-    for output in job.outputs:
+    for output in job.output_paths:
         path = dag.checked(output)
         if not (path.is_symlink() or path.exists()):
             continue
-        waiting = _aside(path)
+        waiting = Layout.previous(path)
         if waiting.is_symlink() or waiting.exists():
             _clear(path)
         else:
@@ -321,7 +315,7 @@ async def _make(dag: Dag, job: Job, before: Stamps, log: IO[bytes] | StampedLog,
                 partial(dag, run.stdout).replace(dag.checked(run.stdout))
             except OSError as exc:
                 return f"could not move standard output onto {run.stdout}: {exc}"
-    after = stamps(dag, job.inputs)
+    after = stamps(dag, job.input_paths)
     changed_folders = {
         path for path, listed in entries.items()
         if listed != folder_entries(dag.path(path))
@@ -331,9 +325,9 @@ async def _make(dag: Dag, job: Job, before: Stamps, log: IO[bytes] | StampedLog,
         extra = [f"{path}: directory entries or file metadata changed" for path in sorted(changed_folders)
                  if before[path] == after[path]]
         return message + ("; " + "; ".join(extra) if extra else "")
-    outputs = stamps(dag, job.outputs)
-    missing = [f"output {output.port} {output.path}" for output in job.produced
-               if outputs[output.path] is None]
+    outputs = stamps(dag, job.output_paths)
+    missing = [f"output {port.name} {artifact.path}" for port in job.outputs for artifact in port.artifacts
+               if outputs[artifact.path] is None]
     if missing:
         return "command succeeded but did not create " + ", ".join(missing)
     error = await _checks(dag, job.after, log)
@@ -343,7 +337,7 @@ async def _make(dag: Dag, job: Job, before: Stamps, log: IO[bytes] | StampedLog,
 
 
 def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
-    return job.keyed(hashes(dag, job.inputs)), job.keyed(hashes(dag, job.outputs))
+    return job.keyed(hashes(dag, job.input_paths)), job.keyed(hashes(dag, job.output_paths))
 
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores: int, logs: Path,
@@ -422,7 +416,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
             input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
         record = Record(fingerprint=job.fingerprint, parts=job.parts, inputs=stored_each(job.keyed(ran.after)), outputs=stored_each(job.keyed(ran.outputs)), checks=job.checks_key,
                         input_hashes=input_hashes, output_hashes=output_hashes, seconds=round(ran.seconds, 3),
-                        output_paths=job.output_paths)
+                        output_paths=job.output_paths_by_slot)
         state.record(job_key(job), record)
         progress.finished(job, ran.seconds)
         say(job, "done", f" in {duration(ran.seconds)}; {progress.report()}")
@@ -430,7 +424,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
 
     async def attempt(job: Job) -> Result | _Ran:
         """Run one job: its input checks and `verify` commands, its commands, then its output checks."""
-        before = stamps(dag, job.inputs)
+        before = stamps(dag, job.input_paths)
         if any(value is None for value in before.values()):
             return Result(job, "input disappeared before execution")
         if not job.commands:
@@ -452,9 +446,9 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
             # An earlier run's files would mix with this run's, and some tools refuse to write over
             # them: the job starts with nothing at its outputs, as a first run does.
             moved = _set_aside(dag, job, log)
-            for output in job.outputs:
-                written = dag.checked(output)
-                if output in dag.folders:
+            for output in job.output_artifacts:
+                written = dag.checked(output.path)
+                if output.kind is Kind.FOLDER:
                     # The tool writes into an empty folder.
                     written.mkdir(parents=True)
                 else:
@@ -490,7 +484,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, cores
             return Result(job, error, path)
         if record is not None:
             # A command could change a file under a check; record the stamps it passed on.
-            outputs, inputs = stored_each(job.keyed(stamps(dag, job.outputs))), stored_each(job.keyed(stamps(dag, job.inputs)))
+            outputs, inputs = stored_each(job.keyed(stamps(dag, job.output_paths))), stored_each(job.keyed(stamps(dag, job.input_paths)))
             if outputs == record.outputs and inputs == record.inputs:
                 state.record(key, record.model_copy(update={"checks": job.checks_key}))
         say(job, "checked")

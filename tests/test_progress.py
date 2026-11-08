@@ -5,17 +5,14 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash import progress as timing
-from spit_bash.dag import Job, Output, Run
 from spit_bash.plan import job_key
 from spit_bash.state.store import Store
 from spit_bash.progress import Progress, duration
-from support import read, run, sample, state_at
+from support import job, read, run, sample, state_at
 
 
 def jobs(*operations):
-    return [Job(id=n, operation=op, stage=(), fingerprint="0" * 16, inputs=(),
-                produced=(Output("output", f"{n}.txt", op, ()),), depends_on=(), commands=(Run(("true",)),), verify=())
-            for n, op in enumerate(operations, 1)]
+    return [job(n, operation=op, product=op) for n, op in enumerate(operations, 1)]
 
 
 class ProgressTests(unittest.TestCase):

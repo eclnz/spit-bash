@@ -2,7 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import DagError, load_dag
+from spit_bash.load import load_dag
+from spit_bash.model import DagError
 from support import FIXTURE, read, sample
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from spit_bash.plan import plan
 from spit_bash.run import execute
-from support import command, document, job, read, state_at
+from support import command, document, job_entry, read, state_at
 
 STAMP = re.compile(rb"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d ")
 # Writes to both streams, the last line with no newline.
@@ -36,7 +36,7 @@ class LogTests(unittest.TestCase):
         (self.root / "source.txt").write_text("in")
 
     def one(self, script=NOISY):
-        return document(self.root, [job(1, ["source.txt"], "out.txt", script)], ["source.txt"])
+        return document(self.root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"])
 
     def log(self, name="1-op1.log"):
         return (self.root / "logs" / name).read_bytes()
@@ -84,7 +84,7 @@ class LogTests(unittest.TestCase):
         self.assertIn(b"checking", [strip(line) for line in lines])
 
     def test_concurrent_jobs_keep_their_own_lines(self):
-        jobs = [job(i, ["source.txt"], f"out{i}.txt", f"import time; print('job {i}'); time.sleep(0.2);"
+        jobs = [job_entry(i, ["source.txt"], f"out{i}.txt", f"import time; print('job {i}'); time.sleep(0.2);"
                                                       f" open(__import__('sys').argv[2], 'w').write('x')")
                 for i in (1, 2)]
         execute_all(self.root, document(self.root, jobs, ["source.txt"]), True)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .dag import Dag, DagError, Job
+from .model import Dag, DagError, Job
 from .display import labels, name
 from .files import Stamp, content_hash, stamps, stored
 from .plan import changed_parts, Decision, Status, UPSTREAM, job_key
@@ -65,9 +65,9 @@ def explain(dag: Dag, state: Store, decisions: tuple[Decision, ...], job_id: int
                      f"(recorded {record.checks or 'none'}, now {job.checks_key or 'none'})")
         seen: dict = {}
         lines.append("  inputs that differ from the record:")
-        lines += _files(dag, job, job.inputs, record.inputs, record.input_hashes, hashing, seen)
+        lines += _files(dag, job, job.input_paths, record.inputs, record.input_hashes, hashing, seen)
         lines.append("  outputs that differ from the record:")
-        lines += _files(dag, job, job.outputs, record.outputs, record.output_hashes, hashing, seen)
+        lines += _files(dag, job, job.output_paths, record.outputs, record.output_hashes, hashing, seen)
     upstream = [dep for dep in job.depends_on if by_id[dep].status in UPSTREAM]
     if upstream:
         lines.append("  upstream jobs that will or may rewrite its inputs: "

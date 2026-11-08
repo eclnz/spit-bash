@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spit_bash.dag import DagError
+from spit_bash.model import DagError
 from spit_bash.plan import Status, plan
 from spit_bash.run import execute, partial
-from support import command, document, job, read, run, state_at
+from support import command, document, job_entry, read, run, state_at
 
 # Upper-case standard input onto standard output, and say so on standard error.
 UPPER = "import sys; sys.stdout.write(sys.stdin.read().upper()); sys.stderr.write('upper-cased\\n')"
@@ -23,7 +23,7 @@ WAIT = ("import sys, time; from pathlib import Path\n"
 
 def streamed(root, script, *args, stdin="source.txt"):
     """source.txt -> work/upper.txt, through the command's standard input and output."""
-    item = job(1, ["source.txt"], "work/upper.txt", script)
+    item = job_entry(1, ["source.txt"], "work/upper.txt", script)
     item["commands"][0]["command"] = command(script) + [[arg] for arg in args]
     item["commands"][0]["stdin"] = stdin
     item["commands"][0]["stdout"] = "work/upper.txt"
