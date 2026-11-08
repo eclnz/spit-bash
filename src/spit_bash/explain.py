@@ -19,7 +19,7 @@ def _stamp(value: list[int] | None, folder: bool) -> str:
 def _content(dag: Dag, path: str, key: str, recorded: dict[str, str] | None, hashing: bool) -> str:
     """Whether a file whose stamp differs still holds what the record saw."""
     if not hashing:
-        return "content not compared (--stat-only)"
+        return "content not compared (--compare stat)"
     if not recorded or key not in recorded:
         return "no content hash recorded, so it counts as changed"
     now = content_hash(str(dag.path(path)), path in dag.folders)

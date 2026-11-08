@@ -308,12 +308,15 @@ def hashes(dag: Dag, paths: tuple[str, ...]) -> dict[str, str]:
 
 
 def _unchanged(dag: Dag, paths: dict[str, str], now: dict[str, list[int] | None],
-               recorded: dict[str, list[int]], recorded_hashes: dict[str, str] | None, hashing: bool) -> bool:
+               recorded: dict[str, list[int]], recorded_hashes: dict[str, str] | None, hashing: bool,
+               verify: bool = False) -> bool:
     """Whether these files are as the record has them: by stamp, else, where they differ, by content.
 
-    `paths` gives each artifact's current path by identity, as do `now` and the record.
+    `paths` gives each artifact's current path by identity, as do `now` and the record. With
+    `verify`, every file is compared by content, whatever its stamp, and a record without
+    hashes counts as changed.
     """
-    differing = [key for key in paths if now[key] != recorded.get(key)]
+    differing = list(paths) if verify else [key for key in paths if now[key] != recorded.get(key)]
     if not differing:
         return True
     if not hashing or not recorded_hashes:
@@ -369,7 +372,8 @@ def _missing(dag: Dag, job: Job, state: State) -> str:
     return "output missing"
 
 
-def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: Stamps | None = None) -> Decision:
+def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: Stamps | None = None,
+          verify: bool = False) -> Decision:
     """Whether a command job is current on the files it has now, ignoring the jobs upstream.
 
     `plan` asks it for every job, with the stamps it has read so far as
@@ -393,9 +397,9 @@ def judge(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: St
     in_paths = {job.identities[path]: path for path in job.inputs}
     out_paths = {job.identities[path]: path for path in job.outputs}
     now_in, now_out = job.keyed(now_in), job.keyed(now_out)
-    if not _unchanged(dag, in_paths, now_in, record.inputs, record.input_hashes, hashing):
+    if not _unchanged(dag, in_paths, now_in, record.inputs, record.input_hashes, hashing, verify):
         return Decision(job, Status.RUN, "input changed")
-    if not _unchanged(dag, out_paths, now_out, record.outputs, record.output_hashes, hashing):
+    if not _unchanged(dag, out_paths, now_out, record.outputs, record.output_hashes, hashing, verify):
         return Decision(job, Status.RUN, "output changed")
     # Touched files hold what they held: keep the new stamps.
     refresh = None if (now_in, now_out, out_paths) == (record.inputs, record.outputs, record.output_paths) else record.model_copy(
@@ -426,11 +430,12 @@ def _without_command(dag: Dag, job: Job, by_id: dict[int, Decision], seen: Stamp
     return Decision(job, Status.SKIP, "no command; outputs exist")
 
 
-def _below_rerun(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: Stamps) -> Decision:
+def _below_rerun(dag: Dag, job: Job, state: State, force: bool, hashing: bool, seen: Stamps,
+                 verify: bool = False) -> Decision:
     """A job that reads from one that will or may run: `maybe` when it is current as it stands."""
     if not hashing or any(value is None for value in stamps(dag, job.inputs, seen).values()):
         return Decision(job, Status.RUN, "dependency will run")
-    decision = judge(dag, job, state, force, hashing, seen)
+    decision = judge(dag, job, state, force, hashing, seen, verify)
     if decision.status in (Status.SKIP, Status.CHECK):
         return Decision(job, Status.MAYBE, "runs if an upstream output changes")
     return decision
@@ -462,9 +467,10 @@ def _located(decision: Decision, by_id: dict[int, Decision]) -> Decision:
 
 
 def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: bool = True,
-         seen: Stamps | None = None) -> tuple[Decision, ...]:
+         seen: Stamps | None = None, verify: bool = False) -> tuple[Decision, ...]:
     """Decide every job. `seen` may hold stamps to take as the files' own; `plan --move-files`'s
-    listing gives the stamps the files would have once moved."""
+    listing gives the stamps the files would have once moved. Without `hashing`, files are
+    compared by stamp alone; with `verify`, by content alone."""
     decisions: list[Decision] = []
     by_id: dict[int, Decision] = {}
     seen = {} if seen is None else seen
@@ -482,8 +488,8 @@ def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: 
         if not job.commands:
             return _without_command(dag, job, by_id, seen)
         if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
-            return _below_rerun(dag, job, state, forced, hashing, seen)
-        return judge(dag, job, state, forced, hashing, seen)
+            return _below_rerun(dag, job, state, forced, hashing, seen, verify)
+        return judge(dag, job, state, forced, hashing, seen, verify)
 
     for job in dag.jobs:
         decision = _located(_with_programs(decide(job), missing_programs), by_id)

@@ -75,8 +75,11 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--force", action="store_true",
                                  help="rerun selected command jobs even if current")
         if action is not Action.ADOPT:
-            command.add_argument("--stat-only", action="store_true",
-                                 help="judge files by size and modification time alone, never by content")
+            command.add_argument("--compare", choices=("stat", "content", "full"), default="content",
+                                 help="how a file counts as unchanged since its record: stat, by size and modification\n"
+                                      "time alone, with no stop at an unchanged output and no reuse after a rename;\n"
+                                      "content, by size and time, then by content where those differ (default);\n"
+                                      "full, by content always, trusting no size or time")
         if action is not Action.ADOPT:
             command.add_argument("--move-files", action="store_true",
                                  help="move outputs the state records at other paths to the paths the pipeline now gives,\n"
@@ -92,7 +95,7 @@ def _parser() -> argparse.ArgumentParser:
                                       "the files that differ from the record, and the upstream jobs that will rewrite its inputs")
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
-            command.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1, metavar="CORES",
+            command.add_argument("-j", "--cores", type=int, default=os.cpu_count() or 1, metavar="CORES",
                                  help="cores to use: run jobs at once while the cores\n"
                                       "they declare fit (default: the number of CPUs)")
             command.add_argument("--memory", type=_memory, default=_machine_memory(), metavar="SIZE",
@@ -215,8 +218,8 @@ def _report_failures(dag: Dag, own: list[Result], not_run: list[Result], verbose
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if args.action is Action.RUN and args.jobs < 1:
-        parser.error("--jobs must be at least 1")
+    if args.action is Action.RUN and args.cores < 1:
+        parser.error("--cores must be at least 1")
     state: State | None = None
     try:
         selection = _selection(args)
@@ -242,9 +245,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         forced = selected.matched_ids if args.force else False
-        if not args.stat_only:
+        hashing, verify = args.compare != "stat", args.compare == "full"
+        if hashing:
             reconcile(dag, state, everything, args.action is Action.RUN)
-        decisions = plan(dag, state, forced, not args.stat_only)
+        decisions = plan(dag, state, forced, hashing, verify=verify)
         if args.move_files and not args.force:
             # A job that is current as it stands has nothing to move; `find` leaves out one whose
             # inputs changed, which a moved output would not save from running.
@@ -256,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
                 pending = {new: stamp(dag.checked(old), new in dag.folders)
                            for m in migrations for old, new in m.moves}
                 if pending:
-                    decisions = plan(dag, state, forced, not args.stat_only, pending)
+                    decisions = plan(dag, state, forced, hashing, pending, verify)
             for migration in migrations:
                 for old, new in migration.moves:
                     print(f"[{migration.job.id}] {'moved' if args.action is Action.RUN else 'would move'} {old} -> {new}")
@@ -268,13 +272,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.action is Action.RUN and any(m.moves for m in migrations):
                 print("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths "
                       "into its output is not rerun", file=sys.stderr)
-                decisions = plan(dag, state, forced, not args.stat_only)
+                decisions = plan(dag, state, forced, hashing, verify=verify)
         if args.action is Action.RUN:
             apply_refreshes(decisions, state)
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
         work, width = labels(dag.jobs), id_width(dag.jobs)
         if args.action is Action.PLAN and args.job is not None:
-            print("\n".join(explain(dag, state, decisions, args.job, not args.stat_only)))
+            print("\n".join(explain(dag, state, decisions, args.job, hashing)))
             return 1 if any(d.job.id == args.job and d.status is Status.BLOCKED for d in decisions) else 0
         if args.action is Action.PLAN and args.json:
             held = Counter(d.caused_by for d in decisions if d.caused_by is not None)
@@ -314,8 +318,8 @@ def main(argv: list[str] | None = None) -> int:
 
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.root / ".spit-bash" / "logs"
         try:
-            results = asyncio.run(execute(dag, decisions, state, args.jobs, logs, not args.stat_only, args.memory,
-                                          args.keep_failed, args.enforce_memory, args.timestamp_logs))
+            results = asyncio.run(execute(dag, decisions, state, args.cores, logs, hashing, args.memory,
+                                          args.keep_failed, args.enforce_memory, args.timestamp_logs, verify))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM

@@ -379,7 +379,7 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores: int, logs: Path,
                   hashing: bool = True, memory: int | None = None,
                   keep_failed: bool = False, enforce_memory: bool = True,
-                  timestamp_logs: bool = False) -> tuple[Result, ...]:
+                  timestamp_logs: bool = False, verify: bool = False) -> tuple[Result, ...]:
     """Run every job planned to run, within `cores` and `memory` bytes; stop them all if the process gets SIGTERM.
 
     `memory` None sets no limit on memory. A job that declares memory has each
@@ -387,6 +387,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
     `enforce_memory` is off. A job that fails once its first command has started
     loses its outputs, unless `keep_failed` keeps them for debugging. With
     `timestamp_logs`, each line of a job's log starts with the time it was received.
+    `hashing` and `verify` are as for `plan.plan`, for the jobs planned `maybe`.
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
     logs.mkdir(parents=True, exist_ok=True)
@@ -417,7 +418,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: State, cores
     async def settle(job: Job) -> Result:
         """Judge a job planned `maybe` again, now that its upstream jobs have finished."""
         # Off the event loop: it may hash files the upstream jobs rewrote.
-        settled = await asyncio.to_thread(judge, dag, job, state, False, hashing)
+        settled = await asyncio.to_thread(judge, dag, job, state, False, hashing, None, verify)
         if settled.status is not Status.RUN:
             progress.dropped(job)
         if settled.status is Status.BLOCKED:
