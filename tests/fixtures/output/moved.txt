@@ -1,0 +1,86 @@
+$ spit-bash plan jobs.spitdag --move-files
+exit 0
+--- stdout
+[1] would move work/upper.txt -> moved/upper.txt
+all 2 jobs are current
+--- stderr
+1 job(s) reuse outputs by moving them to their new paths
+
+$ spit-bash plan jobs.spitdag --verbose --move-files
+exit 0
+--- stdout
+[1] would move work/upper.txt -> moved/upper.txt
+all 2 jobs are current
+[1] current op1: current
+[2] current op2: current
+--- stderr
+1 job(s) reuse outputs by moving them to their new paths
+
+$ spit-bash plan jobs.spitdag --json --move-files
+exit 0
+--- stdout
+[1] would move work/upper.txt -> moved/upper.txt
+{
+  "left_out": [],
+  "jobs": [
+    {
+      "id": 1,
+      "operation": "op1",
+      "status": "skip",
+      "reason": "current",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    },
+    {
+      "id": 2,
+      "operation": "op2",
+      "status": "skip",
+      "reason": "current",
+      "waits_for": [],
+      "caused_by": null,
+      "holds_up": 0
+    }
+  ]
+}
+--- stderr
+1 job(s) reuse outputs by moving them to their new paths
+
+$ spit-bash plan jobs.spitdag --job 2 --move-files
+exit 0
+--- stdout
+[1] would move work/upper.txt -> moved/upper.txt
+Job 2: op2
+  decision: skip, current
+  fingerprint: same (recorded 3959901bb9a60cd2, now 3959901bb9a60cd2)
+  checks: same (recorded none, now none)
+  inputs that differ from the record:
+    moved/upper.txt
+      recorded: 5 bytes, mtime_ns <mtime>
+      now:      missing
+  outputs that differ from the record:
+    none differs from the record
+--- stderr
+1 job(s) reuse outputs by moving them to their new paths
+
+$ spit-bash run jobs.spitdag --cores 1 --move-files
+exit 0
+--- stdout
+[1] moved work/upper.txt -> moved/upper.txt
+all 2 jobs are current
+--- stderr
+1 job(s) reuse outputs by moving them to their new paths
+outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths into its output is not rerun
+0 done, 0 checked, 0 failed, 2 current, 0 blocked
+
+$ spit-bash run jobs.spitdag --cores 1 --verbose --move-files
+exit 0
+--- stdout
+[1] moved work/upper.txt -> moved/upper.txt
+all 2 jobs are current
+[1] current op1: current
+[2] current op2: current
+--- stderr
+1 job(s) reuse outputs by moving them to their new paths
+outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths into its output is not rerun
+0 done, 0 checked, 0 failed, 2 current, 0 blocked
