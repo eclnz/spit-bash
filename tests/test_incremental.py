@@ -238,6 +238,19 @@ class IncrementalTests(unittest.TestCase):
         self.edit("@vary(sub)", "@vary(id)")
         self.assertReruns({"skip": 5}, 0, "--move-files")
 
+    @unittest.expectedFailure
+    def test_renaming_a_source_family_reuses_its_outputs_with_move_files(self):
+        self.edit("source raw", "source scans")
+        self.edit("path raw:", "path scans:")
+        self.edit("sort_lines(raw)", "sort_lines(scans)")
+        self.assertReruns({"skip": 5}, 0, "--move-files")
+
+    @unittest.expectedFailure
+    def test_relabelling_entity_values_of_the_same_files_reuses_outputs_with_move_files(self):
+        for old, new in (("s1", "p1"), ("s2", "p2")):
+            (self.root / f"input/{old}.txt").rename(self.root / f"input/{new}.txt")
+        self.assertReruns({"skip": 5}, 0, "--move-files")
+
 
 if __name__ == "__main__":
     unittest.main()
