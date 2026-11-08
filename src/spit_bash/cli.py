@@ -10,14 +10,16 @@ import os
 import signal
 import subprocess
 import sys
+from collections import Counter
 from enum import Enum
 from pathlib import Path
 
 from .dag import Dag, DagError, Job, load_dag
-from .display import id_width, labels, name
+from .display import id_width, labels
 from .explain import explain
 from .migrate import apply, find
 from .plan import State, Status, adopt, apply_refreshes, plan, reconcile, stamp
+from .report import blocked_lines, counts, failure_groups, ids, job_line
 from .run import Result, execute, log_tail
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
@@ -78,6 +80,10 @@ def _parser() -> argparse.ArgumentParser:
                                  help="move outputs the state records at other paths to the paths the pipeline now gives,\n"
                                       "instead of rerunning their jobs; `plan` lists the moves. A tool that writes its own\n"
                                       "paths into its output is not rerun, so use this only if yours do not")
+        if action is not Action.ADOPT:
+            command.add_argument("--verbose", action="store_true",
+                                 help="list every job, current ones too, and with `run` each job that did not run\n"
+                                      "(default: counts, and a line for each cause that blocks jobs)")
         if action is Action.PLAN:
             command.add_argument("--job", type=int, metavar="ID",
                                  help="explain one job's decision: recorded and current fingerprint and checks,\n"
@@ -90,8 +96,6 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--memory", type=_memory, default=_machine_memory(), metavar="SIZE",
                                  help="memory to use, as 512M or 32G: run jobs at once while\n"
                                       "the memory they declare fits (default: the machine's)")
-            command.add_argument("--verbose", action="store_true",
-                                 help="list every job before running, current ones too (default: counts, and the jobs that will do something)")
             command.add_argument("--logs", help="folder for job logs (default: ROOT/.spit-bash/logs)")
             command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
                                  help="let a job hold more memory than it declares, and run a job\n"
@@ -162,33 +166,6 @@ def _selection(args: argparse.Namespace) -> Selection:
         raise DagError(str(exc)) from exc
 
 
-# How many jobs `run` lists before it counts the rest.
-LISTED_JOBS = 20
-
-
-def _line(decision: Decision, work: dict[int, str], width: int, indent: str = "") -> str:
-    job = decision.job
-    return f"{indent}[{job.id:>{width}}] {decision.status.value:7} {name(job, work[job.id])}: {decision.reason}"
-
-
-def _summarize(decisions: tuple[Decision, ...], work: dict[int, str], width: int) -> None:
-    """Print the plan for `run` as counts, then a line for each job that will do something, up to a limit.
-
-    Current jobs are only counted: `plan` and `run --verbose` list them.
-    """
-    count = {status: 0 for status in Status}
-    for decision in decisions:
-        count[decision.status] += 1
-    order = (Status.RUN, Status.MAYBE, Status.CHECK, Status.BLOCKED, Status.SKIP)
-    print("Plan")
-    print("  " + (", ".join(f"{count[status]} {status.value}" for status in order if count[status]) or "no jobs"))
-    active = [decision for decision in decisions if decision.status is not Status.SKIP]
-    for decision in active[:LISTED_JOBS]:
-        print(_line(decision, work, width, "  "))
-    if len(active) > LISTED_JOBS:
-        print(f"  ... and {len(active) - LISTED_JOBS} more; `plan` or `run --verbose` lists every job")
-
-
 def _stale(everything: Dag, chosen: Dag, decisions: tuple[Decision, ...], results: tuple[Result, ...]) -> int:
     """The jobs left out of a partial run that read an output the run rewrote."""
     settled = {result.job.id: result.settled for result in results if result.error is None}
@@ -216,6 +193,23 @@ def _report_failure(job: Job, error: str, log: Path | None) -> None:
                 print(f"    {line}", file=sys.stderr)
         else:
             print(f"[{job_id}] log: {log}", file=sys.stderr)
+
+
+def _report_failures(dag: Dag, own: list[Result], not_run: list[Result], verbose: bool) -> None:
+    """Print each distinct failure once, with what it held up, then with `verbose` the jobs that did not run."""
+    held = Counter(result.caused_by for result in not_run)
+    for group in failure_groups(dag.root, own):
+        first, others = group[0], group[1:]
+        _report_failure(first.job, first.error or "", first.log)
+        if others:
+            print(f"[{first.job.id}] the same failure in {len(others)} other job{'' if len(others) == 1 else 's'}: {ids(others)}", file=sys.stderr)
+        total = sum(held[result.job.id] for result in group)
+        if total:
+            lead = "together they held up" if others else "held up"
+            print(f"[{first.job.id}] {lead} {total} other job{'' if total == 1 else 's'}", file=sys.stderr)
+    if verbose:
+        for result in not_run:
+            print(f"[{result.job.id}] not run: job {result.caused_by} failed", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -283,25 +277,23 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(explain(dag, state, decisions, args.job, not args.stat_only)))
             return 1 if any(d.job.id == args.job and d.status is Status.BLOCKED for d in decisions) else 0
         if args.action is Action.PLAN and args.json:
+            held = Counter(d.caused_by for d in decisions if d.caused_by is not None)
             json.dump({
                 "left_out": list(dag.left_out),
                 "jobs": [
-                    {"id": d.job.id, "operation": d.job.operation, "status": d.status.value, "reason": d.reason}
+                    {"id": d.job.id, "operation": d.job.operation, "status": d.status.value, "reason": d.reason,
+                     "waits_for": list(d.waits_for), "caused_by": d.caused_by, "holds_up": held[d.job.id]}
                     for d in decisions
                 ],
             }, sys.stdout, indent=2)
             print()
-        elif args.action is Action.RUN and not args.verbose:
-            _summarize(decisions, work, width)
         else:
-            if args.action is Action.RUN:
-                print("Plan")
-            for decision in decisions:
-                print(_line(decision, work, width, "  " if args.action is Action.RUN else ""))
-        maybe = sum(decision.status is Status.MAYBE for decision in decisions)
-        if maybe:
-            certain = sum(decision.status is Status.RUN for decision in decisions)
-            print(f"{certain} will run, {maybe} more may, if an upstream output changes", file=sys.stderr)
+            print(counts(decisions))
+            for line in blocked_lines(decisions):
+                print(line)
+            if args.verbose:
+                for decision in decisions:
+                    print(job_line(decision, work, width))
         if args.action is Action.PLAN:
             return 1 if blocked else 0
 
@@ -327,8 +319,10 @@ def main(argv: list[str] | None = None) -> int:
             return 128 + signal.SIGINT
         failed = [result for result in results if result.error]
         failed_ids = {result.job.id for result in failed}
-        for result in failed:
-            _report_failure(result.job, result.error or "", result.log)
+        # A job that did not run because one it needs failed is not a failure of its own.
+        own = [result for result in failed if result.caused_by is None]
+        not_run = [result for result in failed if result.caused_by is not None]
+        _report_failures(dag, own, not_run, args.verbose)
         # What each job came to: a `maybe` job is whatever `run` settled it as.
         outcome = {result.job.id: result.settled for result in results}
         count = {status: 0 for status in Status}
@@ -340,8 +334,9 @@ def main(argv: list[str] | None = None) -> int:
             count[status] += 1
             cutoff += decision.status is Status.MAYBE and status is not Status.RUN
         summary = (
-            f"{count[Status.RUN]} done, {count[Status.CHECK]} checked, {len(failed)} failed, "
-            f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked"
+            f"{count[Status.RUN]} done, {count[Status.CHECK]} checked, {len(own)} failed, "
+            + (f"{len(not_run)} not run (an upstream job failed), " if not_run else "")
+            + f"{count[Status.SKIP]} current, {count[Status.BLOCKED]} blocked"
         )
         if cutoff:
             summary += f", {cutoff} of the current ones not rerun because upstream output was unchanged"

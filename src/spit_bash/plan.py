@@ -8,7 +8,7 @@ import os
 import shutil
 import stat
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import IO, Annotated, Literal
@@ -293,6 +293,14 @@ class Decision:
     # A current job whose files were touched but not changed: its record with the
     # files' new stamps, which `run` stores so the next plan need not hash them.
     refresh: RunRecord | None = None
+    # The jobs upstream that will or may rewrite what this job reads, which it has to wait for.
+    waits_for: tuple[int, ...] = ()
+    # For a job blocked only because a job upstream is, the id of the job whose own cause it is.
+    caused_by: int | None = None
+
+
+# The start of the reason of a job blocked by a job upstream, which `Decision.caused_by` follows.
+DEPENDENCY_BLOCKED = "dependency blocked: "
 
 
 def hashes(dag: Dag, paths: tuple[str, ...]) -> dict[str, str]:
@@ -442,6 +450,17 @@ def _with_programs(decision: Decision, missing_programs: set[str]) -> Decision:
     return Decision(job, Status.BLOCKED, "program not found: " + ", ".join(programs))
 
 
+def _located(decision: Decision, by_id: dict[int, Decision]) -> Decision:
+    """The decision with what it waits for, or the blocked job whose cause is its own."""
+    job = decision.job
+    waits = tuple(dep for dep in job.depends_on if by_id[dep].status in UPSTREAM)
+    cause = None
+    if decision.status is Status.BLOCKED and decision.reason.startswith(DEPENDENCY_BLOCKED):
+        first = next(dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED)
+        cause = by_id[first].caused_by or first
+    return replace(decision, waits_for=waits if decision.status in UPSTREAM else (), caused_by=cause)
+
+
 def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: bool = True,
          seen: Stamps | None = None) -> tuple[Decision, ...]:
     """Decide every job. `seen` may hold stamps to take as the files' own; `plan --move-files`'s
@@ -459,7 +478,7 @@ def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: 
             return Decision(job, Status.BLOCKED, "missing external input: " + ", ".join(missing))
         blocked = [dep for dep in job.depends_on if by_id[dep].status is Status.BLOCKED]
         if blocked:
-            return Decision(job, Status.BLOCKED, "dependency blocked: " + ", ".join(map(str, blocked)))
+            return Decision(job, Status.BLOCKED, DEPENDENCY_BLOCKED + ", ".join(map(str, blocked)))
         if not job.commands:
             return _without_command(dag, job, by_id, seen)
         if any(by_id[dep].status in UPSTREAM for dep in job.depends_on):
@@ -467,7 +486,7 @@ def plan(dag: Dag, state: State, force: bool | frozenset[int] = False, hashing: 
         return judge(dag, job, state, forced, hashing, seen)
 
     for job in dag.jobs:
-        decision = _with_programs(decide(job), missing_programs)
+        decision = _located(_with_programs(decide(job), missing_programs), by_id)
         decisions.append(decision)
         by_id[job.id] = decision
     return tuple(decisions)

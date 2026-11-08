@@ -46,9 +46,9 @@ class ExampleTests(unittest.TestCase):
         output = self.examples / "lines/output/merged"
         self.assertEqual((output / "group=alpha.txt").read_text(), "apple\nbanana\npear\n")
         self.assertEqual((output / "group=beta.txt").read_text(), "yak\nzebra\n")
-        result = spit_bash("plan", "-", stdin=self.dag_json("lines/lines.spitin"))
+        result = spit_bash("plan", "-", "--verbose", stdin=self.dag_json("lines/lines.spitin"))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count(" skip "), 5, result.stdout)
+        self.assertEqual(result.stdout.count(" current "), 5, result.stdout)
 
     def test_steps(self):
         result = spit_bash("run", str(self.examples / "steps/steps.spitin"))
@@ -64,10 +64,10 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual((output / "group=beta.txt").read_text(), "yak\nzebra\n")
         self.assertFalse((output / "group=alpha.txt").exists())
 
-        result = spit_bash("plan", str(lines / "lines.spit"), "--root", str(lines), "--product", "merged")
+        result = spit_bash("plan", str(lines / "lines.spit"), "--root", str(lines), "--product", "merged", "--verbose")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[5] skip    merge group=beta: current", result.stdout)
-        self.assertIn("[4] run     merge group=alpha: dependency will run", result.stdout)
+        self.assertIn("[5] current merge group=beta: current", result.stdout)
+        self.assertIn("[4] waits   merge group=alpha: waits for", result.stdout)
 
         inventory = subprocess.run([SPIT, "inputs", str(lines / "lines.spitin")],
                                    check=True, capture_output=True, text=True).stdout
@@ -107,15 +107,15 @@ class ExampleTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((folder / "out/result.txt").read_text(), "HELLO\n")
-        result = spit_bash("plan", str(pipeline), "--root", str(folder))
-        self.assertIn("[1] skip    prepare: current", result.stdout)
-        self.assertIn("[2] skip    process: current", result.stdout)
+        result = spit_bash("plan", str(pipeline), "--root", str(folder), "--verbose")
+        self.assertIn("[1] current prepare: current", result.stdout)
+        self.assertIn("[2] current process: current", result.stdout)
 
         script = folder / "scripts/transform.py"
         script.write_text(script.read_text().replace(".upper()", ".lower()"))
-        result = spit_bash("plan", str(pipeline), "--root", str(folder))
-        self.assertIn("[1] skip    prepare: current", result.stdout)
-        self.assertIn("[2] run     process: input changed", result.stdout)
+        result = spit_bash("plan", str(pipeline), "--root", str(folder), "--verbose")
+        self.assertIn("[1] current prepare: current", result.stdout)
+        self.assertIn("[2] ready   process: input changed", result.stdout)
         result = spit_bash("run", str(pipeline), "--root", str(folder))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((folder / "out/result.txt").read_text(), "hello\n")
@@ -152,10 +152,10 @@ class ExampleTests(unittest.TestCase):
         # A changed check is run on the files that exist, without copying again.
         pipeline = self.examples / "checks/notes.spit"
         pipeline.write_text(pipeline.read_text().replace("contains(today)", "contains(for)"))
-        result = spit_bash("plan", recipe)
+        result = spit_bash("plan", recipe, "--verbose")
         self.assertIn("[1] check   copy day=monday: checks changed", result.stdout)
         # The failed job's record was dropped, so it runs again.
-        self.assertIn("[2] run     copy day=tuesday: no successful run recorded", result.stdout)
+        self.assertIn("[2] ready   copy day=tuesday: no successful run recorded", result.stdout)
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 1)
         self.assertIn("0 done, 1 checked, 1 failed", result.stderr)
@@ -202,8 +202,8 @@ class ExampleTests(unittest.TestCase):
             "$ sort -o output/sorted/plot=allotment.txt input/allotment.txt",
             "$ uniq -c output/sorted/plot=allotment.txt > output/counts/plot=allotment.txt",
         ])
-        result = spit_bash("plan", str(self.examples / "sequence/sequence.spitin"))
-        self.assertEqual(result.stdout.count(" skip "), 2, result.stdout)
+        result = spit_bash("plan", str(self.examples / "sequence/sequence.spitin"), "--verbose")
+        self.assertEqual(result.stdout.count(" current "), 2, result.stdout)
 
     def test_folders(self):
         recipe = str(self.examples / "folders/albums.spitin")
@@ -215,10 +215,10 @@ class ExampleTests(unittest.TestCase):
             self.assertEqual(sorted(archive.getnames()), [".", "./day1", "./day1/morning.txt", "./evening.txt"])
 
         (self.examples / "folders/input/alpha/day1/morning.txt").write_text("harbour at dawn\n")
-        result = spit_bash("plan", recipe)
+        result = spit_bash("plan", recipe, "--verbose")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[1] run     copy trip=alpha: input changed", result.stdout)
-        self.assertIn("[2] skip    copy trip=beta: current", result.stdout)
+        self.assertIn("[1] ready   copy trip=alpha: input changed", result.stdout)
+        self.assertIn("[2] current copy trip=beta: current", result.stdout)
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((album / "day1/morning.txt").read_text(), "harbour at dawn\n")

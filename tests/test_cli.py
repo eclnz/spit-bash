@@ -33,29 +33,29 @@ class CliTests(unittest.TestCase):
         return str(self.dag)
 
     def test_plan_then_run_then_plan(self):
-        code, out, _ = call("plan", self.write())
+        code, out, _ = call("plan", self.write(), "--verbose")
         self.assertEqual(code, 0)
-        self.assertIn("[1] run     op1: output missing", out)
+        self.assertIn("[1] ready   op1: output missing", out)
         code, out, err = call("run", str(self.dag))
         self.assertEqual(code, 0, err)
         self.assertIn("2 done, 0 checked, 0 failed, 0 current, 0 blocked", err)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
-        self.assertEqual(call("plan", str(self.dag))[1].count("skip"), 2)
+        self.assertEqual(call("plan", str(self.dag))[1], "all 2 jobs are current\n")
 
     def test_run_counts_current_jobs_and_lists_them_only_when_asked(self):
         call("run", self.write())
         code, out, _ = call("run", str(self.dag))
         self.assertEqual(code, 0)
-        self.assertEqual(out.splitlines()[:2], ["Plan", "  2 skip"])
+        self.assertEqual(out.splitlines()[0], "all 2 jobs are current")
         self.assertNotIn("op1", out)
         _, out, _ = call("run", str(self.dag), "--verbose")
-        self.assertIn("[1] skip    op1", out)
-        self.assertIn("[2] skip    op2", out)
+        self.assertIn("[1] current op1", out)
+        self.assertIn("[2] current op2", out)
 
-    def test_run_lists_the_jobs_that_will_do_something_up_to_a_limit(self):
+    def test_run_counts_the_jobs_that_will_do_something_and_lists_them_only_when_asked(self):
         code, out, _ = call("run", self.write())
-        self.assertEqual(out.splitlines()[:2], ["Plan", "  2 run"])
-        self.assertIn("[1] run     op1: output missing", out)
+        self.assertEqual(out.splitlines()[0], "1 job can start, 1 job will wait for it")
+        self.assertNotIn("output missing", out)
 
     def test_a_partial_run_says_which_jobs_it_left_out_of_date(self):
         call("run", self.write())
@@ -74,14 +74,14 @@ class CliTests(unittest.TestCase):
         self.assertIn("pass --root", err)
         code, out, _ = call("plan", "-", "--root", str(self.root), stdin=json.dumps(self.data))
         self.assertEqual(code, 0)
-        self.assertIn("[2] run", out)
+        self.assertIn("1 job can start, 1 job will wait for it", out)
 
     def test_blocked_job_does_not_stop_independent_jobs(self):
         self.data["external_inputs"].append(artifact("missing.txt"))
         self.data["jobs"].append(job(3, ["missing.txt"], "other.txt", UPPER))
         code, out, err = call("run", self.write())
         self.assertEqual(code, 1)
-        self.assertIn("[3] blocked op3: missing external input: missing.txt", out)
+        self.assertIn("blocked: op3: missing external input: missing.txt", out)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
         self.assertIn("2 done, 0 checked, 0 failed, 0 current, 1 blocked", err)
 
@@ -91,7 +91,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("[1] failed: command exited with status 4", err)
         self.assertIn("    something broke", err)
-        self.assertIn("[2] failed: dependency 1 failed", err)
+        self.assertIn("[1] held up 1 other job", err)
+        self.assertNotIn("[2] failed", err)
 
     def test_plan_json_and_partial_dag(self):
         self.data["left_out"] = [{"identity": "report[id=1]", "reasons": ["missing input"]}]
@@ -100,7 +101,8 @@ class CliTests(unittest.TestCase):
         self.assertIn("partial DAG: 1 output(s) left out", err)
         plan = json.loads(out)
         self.assertEqual(plan["left_out"], ["report[id=1]"])
-        self.assertEqual(plan["jobs"][0], {"id": 1, "operation": "op1", "status": "run", "reason": "output missing"})
+        self.assertEqual(plan["jobs"][0], {"id": 1, "operation": "op1", "status": "run", "reason": "output missing",
+                                           "waits_for": [], "caused_by": None, "holds_up": 0})
 
     def test_adopt(self):
         (self.root / "work").mkdir()
@@ -109,7 +111,7 @@ class CliTests(unittest.TestCase):
         code, out, _ = call("adopt", self.write())
         self.assertEqual(code, 0)
         self.assertEqual(out.count("adopted"), 2)
-        self.assertEqual(call("plan", str(self.dag))[1].count("current"), 2)
+        self.assertEqual(call("plan", str(self.dag))[1], "all 2 jobs are current\n")
 
     def test_only_runs_the_chosen_jobs_and_what_they_need(self):
         self.data["jobs"][1]["outputs"]["output"]["entities"] = {"id": "final"}
@@ -133,7 +135,7 @@ class CliTests(unittest.TestCase):
         code, out, err = call("run", str(self.dag), "--only", "id=final", "--force")
 
         self.assertEqual(code, 0, err)
-        self.assertIn("1 run, 1 skip", out)
+        self.assertIn("1 job can start, 1 job is current", out)
         self.assertEqual(upstream.stat().st_mtime_ns, upstream_stamp)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
 
@@ -145,7 +147,7 @@ class CliTests(unittest.TestCase):
         code, out, err = call("run", str(self.dag), "--only", "id=final", "--force")
 
         self.assertEqual(code, 0, err)
-        self.assertIn("2 run", out)
+        self.assertIn("1 job can start, 1 job will wait for it", out)
         self.assertEqual((self.root / "work/upper.txt").read_text(), "GOODBYE")
         self.assertEqual((self.root / "final.txt").read_text(), "GOODBYE!")
 
@@ -155,7 +157,7 @@ class CliTests(unittest.TestCase):
         code, out, err = call("run", str(self.dag), "--force")
 
         self.assertEqual(code, 0, err)
-        self.assertIn("2 run", out)
+        self.assertIn("1 job can start, 1 job will wait for it", out)
 
     def test_force_with_product_or_stage_only_forces_matching_jobs(self):
         self.data["jobs"][1]["outputs"]["output"]["product"] = "final"
@@ -167,7 +169,7 @@ class CliTests(unittest.TestCase):
             with self.subTest(selection=selection):
                 code, out, err = call("run", str(self.dag), *selection, "--force")
                 self.assertEqual(code, 0, err)
-                self.assertIn("1 run, 1 skip", out)
+                self.assertIn("1 job can start, 1 job is current", out)
 
     def test_options_for_spit_need_a_recipe_or_pipeline(self):
         code, _, err = call("plan", self.write(), "--partial")
@@ -202,7 +204,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("[2] op2 needs 64M of memory where the run has 32M", err)
         self.assertIn("pass --no-enforce-memory to run it alone", err)
-        self.assertNotIn("start", out)
+        self.assertNotIn("Running", out)
         self.assertFalse((self.root / "work/upper.txt").exists())
         # Without enforcement it runs alone, as a job needing more cores does.
         code, out, err = call("run", self.write(), "--memory", "32M", "--no-enforce-memory")
