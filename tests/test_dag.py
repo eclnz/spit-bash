@@ -53,6 +53,19 @@ class LoadTests(unittest.TestCase):
                                        f"outside the dataset root {root}.")
             self.assertEqual(lines[1], "  Job 1 (op1) writes it.")
 
+    def test_a_link_leading_outside_the_root_is_rejected_when_loading(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory).resolve()
+            data = sample(root)
+            (root / "work").symlink_to(outside)
+            with self.assertRaisesRegex(DagError, "^work/upper.txt leads through the link work to "):
+                read(data)
+            (root / "work").unlink()
+            (root / "work").mkdir()
+            (root / "work" / "upper.txt").symlink_to(Path(outside) / "upper.txt")
+            with self.assertRaisesRegex(DagError, "^work/upper.txt is a link to "):
+                read(data)
+
     def test_pydantic_rejects_missing_and_wrong_typed_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             data = sample(Path(directory))

@@ -243,6 +243,7 @@ class Dag:
         """The path under its root, resolved now, so a link made since loading cannot lead outside it.
 
         `use` says what reads or writes the path, for the error when it does lead outside.
+        Keep in step with `load._absolute`, which makes the same check for every path when the DAG is loaded.
         """
         base = self.base(relative)
         path = base.joinpath(*PurePosixPath(relative).parts)
