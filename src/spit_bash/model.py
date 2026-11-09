@@ -225,7 +225,10 @@ class Dag:
         return self.checked(relative) if path is None else path
 
     def checked(self, relative: str) -> Path:
-        """The path under the root, resolved now, so a link made since loading cannot lead outside it."""
+        """The path under the root, resolved now, so a link made since loading cannot lead outside it.
+
+        Keep in step with `load._absolute`, which makes the same check for every path when the DAG is loaded.
+        """
         path = self.root.joinpath(*PurePosixPath(relative).parts)
         if not path.resolve().is_relative_to(self.root):
             raise DagError(f"path escapes dataset root: {relative}")
