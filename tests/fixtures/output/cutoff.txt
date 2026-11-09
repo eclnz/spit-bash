@@ -86,7 +86,7 @@ Running 1 job, and 2 more that may, <time>
   [2] skip    op2: upstream output unchanged
   [3] skip    op3: upstream output unchanged
 --- stderr
-1 done, 0 checked, 0 failed, 2 current, 0 blocked, 2 of the current ones not rerun because upstream output was unchanged
+1 done, 0 checked, 0 failed, 0 current, 2 kept (upstream reran with unchanged output), 0 blocked
 
 $ spit-bash run jobs.spitdag --cores 1 --verbose
 exit 0
@@ -102,4 +102,4 @@ Running 1 job, and 2 more that may, <time>
   [2] skip    op2: upstream output unchanged
   [3] skip    op3: upstream output unchanged
 --- stderr
-1 done, 0 checked, 0 failed, 2 current, 0 blocked, 2 of the current ones not rerun because upstream output was unchanged
+1 done, 0 checked, 0 failed, 0 current, 2 kept (upstream reran with unchanged output), 0 blocked

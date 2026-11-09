@@ -105,8 +105,8 @@ class CutoffTests(unittest.TestCase):
         self.assertIn("1 job can start, 2 jobs may run if an upstream output changes", out)
         code, _, err = call("run", str(path))
         self.assertEqual(code, 0, err)
-        self.assertIn("1 done, 0 checked, 0 failed, 2 current, 0 blocked, "
-                      "2 of the current ones not rerun because upstream output was unchanged", err)
+        self.assertIn("1 done, 0 checked, 0 failed, 0 current, 2 kept (upstream reran with unchanged output), "
+                      "0 blocked", err)
 
     def test_the_estimate_counts_a_maybe_job_until_it_is_skipped(self):
         self.edit_source("Hello")
