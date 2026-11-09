@@ -79,7 +79,7 @@ exit 1
 }
 --- stderr
 
-$ spit-bash plan jobs.spitdag --job 4
+$ spit-bash explain 4 jobs.spitdag
 exit 1
 --- stdout
 Job 4: after after_tool.txt

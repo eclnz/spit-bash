@@ -253,7 +253,7 @@ class Scenario:
 
     def commands(self) -> list[tuple[str, ...]]:
         # `run` takes one core, so that its progress lines come in one order.
-        return [("plan",), ("plan", "--verbose"), ("plan", "--json"), ("plan", "--job", str(self.explained)),
+        return [("plan",), ("plan", "--verbose"), ("plan", "--json"), ("explain", str(self.explained)),
                 RUN, (*RUN, "--verbose"), *self.extra]
 
 
@@ -284,7 +284,9 @@ def scenario_output(scenario):
             if scenario.change is not None:
                 scenario.change(root, data)
                 dag.write_text(json.dumps(portable(data)))
-            argv = [command[0], "jobs.spitdag", *command[1:], *scenario.flags]
+            # `explain` takes the job's id before the files.
+            head = 2 if command[0] == "explain" else 1
+            argv = [*command[:head], "jobs.spitdag", *command[head:], *scenario.flags]
             code, out, err = call(*[str(dag) if part == "jobs.spitdag" else part for part in argv])
             sections.append(f"$ spit-bash {' '.join(argv)}\nexit {code}\n"
                             f"--- stdout\n{normalise(out, root, directory)}"

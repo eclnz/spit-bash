@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash.model import DagError
-from spit_bash.selection import Selection, parse_only, parse_stage, select
+from spit_bash.selection import Selection, parse_entities, parse_stage, select
 from support import document, job_entry, read, UPPER
 
 
@@ -48,23 +48,23 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(self.ids(), [1, 2, 3, 4, 5, 6, 7])
 
     def test_entities_keep_matching_jobs_and_what_they_need_but_nothing_downstream(self):
-        selected = select(self.dag, Selection(only=(parse_only("sub=01"),)))
+        selected = select(self.dag, Selection(entities=(parse_entities("sub=01"),)))
         self.assertEqual([job.id for job in selected.dag.jobs], [1, 2, 4, 5])
         self.assertEqual((selected.matched, selected.needed), (3, 1))
         self.assertEqual(selected.matched_ids, frozenset({2, 4, 5}))
-        self.assertEqual(self.ids(only=(parse_only("sub=01"), parse_only("sub=02"))), [1, 2, 3, 4, 5, 6])
+        self.assertEqual(self.ids(entities=(parse_entities("sub=01"), parse_entities("sub=02"))), [1, 2, 3, 4, 5, 6])
 
     def test_product_and_stage_combine_with_entities(self):
         self.assertEqual(self.ids(products=("clean",)), [1, 2, 3, 4, 6])
-        self.assertEqual(self.ids(products=("clean",), only=(parse_only("sub=02"),)), [1, 3, 6])
+        self.assertEqual(self.ids(products=("clean",), entities=(parse_entities("sub=02"),)), [1, 3, 6])
         self.assertEqual(self.ids(stages=(parse_stage("pre"),)), [1, 2, 3, 4, 6])
-        self.assertEqual(self.ids(stages=(parse_stage("pre/denoise"),), only=(parse_only("sub=01"),)), [1, 2, 4])
+        self.assertEqual(self.ids(stages=(parse_stage("pre/denoise"),), entities=(parse_entities("sub=01"),)), [1, 2, 4])
         self.assertEqual(self.ids(products=("mean",)), [1, 2, 3, 4, 6, 7])
 
     def test_names_what_cannot_match(self):
         cases = [
-            (Selection(only=(parse_only("subject=01"),)), "no output has dimension `subject`; dimensions: sub"),
-            (Selection(only=(parse_only("sub=03"),)), "no output has sub=03; sub takes 01, 02"),
+            (Selection(entities=(parse_entities("subject=01"),)), "no output has dimension `subject`; dimensions: sub"),
+            (Selection(entities=(parse_entities("sub=03"),)), "no output has sub=03; sub takes 01, 02"),
             (Selection(products=("cleaned",)), "products: aligned, clean, mean, qc, template"),
             (Selection(stages=(parse_stage("denoise"),)), "stages: pre, pre/denoise"),
             (Selection(products=("qc",), stages=(parse_stage("pre"),)), "no job's outputs match every criterion"),
@@ -74,11 +74,11 @@ class SelectionTests(unittest.TestCase):
                 select(self.dag, selection)
 
     def test_parsing(self):
-        self.assertEqual(parse_only("ses=2,sub=01"), (("ses", "2"), ("sub", "01")))
-        self.assertEqual(parse_only("run=a=b"), (("run", "a=b"),))
+        self.assertEqual(parse_entities("ses=2,sub=01"), (("ses", "2"), ("sub", "01")))
+        self.assertEqual(parse_entities("run=a=b"), (("run", "a=b"),))
         for text in ["sub", "=01", "sub=", "sub=01,sub=02", "sub=01,"]:
             with self.subTest(text), self.assertRaises(ValueError):
-                parse_only(text)
+                parse_entities(text)
         self.assertEqual(parse_stage("pre/denoise"), ("pre", "denoise"))
         with self.assertRaises(ValueError):
             parse_stage("pre/")
