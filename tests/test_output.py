@@ -93,6 +93,7 @@ class OutputTests(unittest.TestCase):
         jobs = {item["id"]: item for item in json.loads(out)["jobs"]}
         self.assertEqual((jobs[10]["caused_by"], jobs[10]["holds_up"]), (None, 1))
         self.assertEqual((jobs[11]["caused_by"], jobs[11]["holds_up"]), (10, 0))
+        self.assertEqual((jobs[10]["code"], jobs[11]["code"]), ("program_not_found", "dependency_blocked"))
 
     # Run.
 

@@ -23,6 +23,7 @@ exit 0
       "operation": "op1",
       "status": "run",
       "reason": "output missing",
+      "code": "output_missing",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 0
@@ -32,6 +33,7 @@ exit 0
       "operation": "op2",
       "status": "run",
       "reason": "dependency will run",
+      "code": "dependency_will_run",
       "waits_for": [
         1
       ],
