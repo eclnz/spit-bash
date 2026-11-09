@@ -125,7 +125,7 @@ def evidence(dag: Dag, job: Job, record: Record | None, now: Stamps, compare: Co
     Unless `every`, it compares only as far as a verdict needs: no files once
     the work has changed, and no outputs once an input has, so as to hash no
     more than it must. With `every`, it compares each input and output whatever
-    else differs, as `plan --job` shows them.
+    else differs, as `explain` shows them.
     """
     if record is None:
         return Evidence(job, None, now)

@@ -44,7 +44,7 @@ exit 0
 }
 --- stderr
 
-$ spit-bash plan jobs.spitdag --job 1
+$ spit-bash explain 1 jobs.spitdag
 exit 0
 --- stdout
 Job 1: op1

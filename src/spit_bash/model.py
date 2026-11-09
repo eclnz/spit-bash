@@ -175,22 +175,17 @@ class Job:
 
 @dataclass(frozen=True)
 class Layout:
-    """Where the runner keeps its own files: under the output root, and beside each output."""
+    """Where the runner keeps its own files: in its folder, and beside each output."""
 
-    root: Path
-
-    @property
-    def folder(self) -> Path:
-        return self.root / ".spit-bash"
+    # `.spit-bash` under the output root, unless `--dir` names another.
+    folder: Path
 
     @property
     def state(self) -> Path:
-        """The state file, unless `--state` names another."""
         return self.folder / "state.jsonl"
 
     @property
     def logs(self) -> Path:
-        """The folder of job logs, unless `--logs` names another."""
         return self.folder / "logs"
 
     @staticmethod
@@ -229,7 +224,8 @@ class Dag:
 
     @property
     def layout(self) -> Layout:
-        return Layout(self.outputs)
+        """The runner's folder under the output root, which `--dir` replaces."""
+        return Layout(self.outputs / ".spit-bash")
 
     def base(self, relative: str) -> Path:
         """The root that `relative` is under."""

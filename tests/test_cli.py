@@ -32,6 +32,23 @@ class CliTests(unittest.TestCase):
         self.dag.write_text(json.dumps(placed(self.data)))
         return str(self.dag)
 
+    def test_dir_holds_the_state_and_the_logs(self):
+        folder = self.root / "elsewhere"
+        code, _, err = call("run", self.write(), "--dir", str(folder))
+        self.assertEqual(code, 0, err)
+        self.assertTrue((folder / "state.jsonl").exists())
+        self.assertTrue(any((folder / "logs").iterdir()))
+        self.assertFalse((self.root / ".spit-bash").exists())
+        # The state there is the one a later plan reads, so nothing runs again.
+        code, out, _ = call("plan", str(self.dag), "--dir", str(folder))
+        self.assertIn("2 jobs are current", out)
+
+    def test_the_replaced_flags_are_gone(self):
+        for argv in (("run", "--state", "s.jsonl"), ("run", "--logs", "logs"), ("plan", "--job", "1"),
+                     ("run", "--only", "id=final")):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                call(argv[0], self.write(), *argv[1:])
+
     def test_plan_then_run_then_plan(self):
         code, out, _ = call("plan", self.write(), "--verbose")
         self.assertEqual(code, 0)
@@ -150,14 +167,14 @@ class CliTests(unittest.TestCase):
 
     def test_only_runs_the_chosen_jobs_and_what_they_need(self):
         self.data["jobs"][1]["outputs"]["output"]["entities"] = {"id": "final"}
-        code, out, err = call("run", self.write(), "--only", "id=final")
+        code, out, err = call("run", self.write(), "--entity", "id=final")
         self.assertEqual(code, 0, err)
         self.assertIn("chose 1 of 2 jobs, and 1 they need", err)
         self.assertEqual((self.root / "final.txt").read_text(), "HELLO!")
-        code, _, err = call("plan", str(self.dag), "--only", "id=other")
+        code, _, err = call("plan", str(self.dag), "--entity", "id=other")
         self.assertEqual(code, 2)
         self.assertIn("no output has id=other; id takes final", err)
-        code, _, err = call("plan", str(self.dag), "--only", "id")
+        code, _, err = call("plan", str(self.dag), "--entity", "id")
         self.assertEqual(code, 2)
         self.assertIn("expected DIMENSION=VALUE", err)
 
@@ -167,7 +184,7 @@ class CliTests(unittest.TestCase):
         upstream = self.root / "work/upper.txt"
         upstream_stamp = upstream.stat().st_mtime_ns
 
-        code, out, err = call("run", str(self.dag), "--only", "id=final", "--force")
+        code, out, err = call("run", str(self.dag), "--entity", "id=final", "--force")
 
         self.assertEqual(code, 0, err)
         self.assertIn("1 job can start, 1 job is current", out)
@@ -179,7 +196,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(call("run", self.write())[0], 0)
         (self.root / "source.txt").write_text("goodbye")
 
-        code, out, err = call("run", str(self.dag), "--only", "id=final", "--force")
+        code, out, err = call("run", str(self.dag), "--entity", "id=final", "--force")
 
         self.assertEqual(code, 0, err)
         self.assertIn("1 job can start, 1 job will wait for it", out)

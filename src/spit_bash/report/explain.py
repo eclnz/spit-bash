@@ -1,4 +1,4 @@
-"""The evidence behind one job's planning decision, as `plan --job` prints it."""
+"""The evidence behind one job's planning decision, as `explain` prints it."""
 
 from __future__ import annotations
 
