@@ -1,7 +1,10 @@
 name: CI
 
 on:
+  # A pull request runs on `pull_request` alone, so a branch is checked once;
+  # `dev` and `main` are checked as each merge lands.
   push:
+    branches: [dev, main]
   pull_request:
   schedule:
     # Weekly, so a change to SPIT's DAG format shows up even when this repository is quiet.
@@ -9,7 +12,7 @@ on:
     # `main`, which holds the last release and lags behind SPIT's `dev`.
     - cron: '17 6 * * 1'
 
-# Cancel superseded checks for the same branch across push and pull_request events.
+# Cancel superseded checks for the same branch.
 # Keep unrelated branches and scheduled runs independent.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
