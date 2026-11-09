@@ -26,6 +26,7 @@ exit 0
       "operation": "op1",
       "status": "run",
       "reason": "input changed",
+      "code": "input_changed",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 0
@@ -35,6 +36,7 @@ exit 0
       "operation": "op2",
       "status": "maybe",
       "reason": "runs if an upstream output changes",
+      "code": "upstream_may_run",
       "waits_for": [
         1
       ],
@@ -46,6 +48,7 @@ exit 0
       "operation": "op3",
       "status": "maybe",
       "reason": "runs if an upstream output changes",
+      "code": "upstream_may_run",
       "waits_for": [
         2
       ],

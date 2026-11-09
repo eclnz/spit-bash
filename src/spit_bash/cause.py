@@ -7,33 +7,37 @@ from enum import Enum
 
 
 class Why(Enum):
-    """The rule that settled a job's decision."""
+    """The rule that settled a job's decision.
+
+    Each value is the code `plan --json` gives the reason, which scripts may match: rename a value
+    only as a breaking change.
+    """
 
     # A command job: what its files and record say.
-    OUTPUT_MISSING = "output missing"
-    INPUT_MISSING = "input missing"
+    OUTPUT_MISSING = "output_missing"
+    INPUT_MISSING = "input_missing"
     FORCED = "forced"
-    NO_RECORD = "no record"
-    WORK_CHANGED = "work changed"
-    INPUT_CHANGED = "input changed"
-    OUTPUT_CHANGED = "output changed"
-    CHECKS_CHANGED = "checks changed"
-    CHECKS_NOT_RUN = "checks not run"
+    NO_RECORD = "no_record"
+    WORK_CHANGED = "work_changed"
+    INPUT_CHANGED = "input_changed"
+    OUTPUT_CHANGED = "output_changed"
+    CHECKS_CHANGED = "checks_changed"
+    CHECKS_NOT_RUN = "checks_not_run"
     CURRENT = "current"
     # A command job below one that will or may run.
-    DEPENDENCY_WILL_RUN = "dependency will run"
-    UPSTREAM_MAY_RUN = "upstream may run"
+    DEPENDENCY_WILL_RUN = "dependency_will_run"
+    UPSTREAM_MAY_RUN = "upstream_may_run"
     # A job with no command, which can only be current or blocked.
-    NO_COMMAND_OUTPUT_MISSING = "no command, output missing"
-    NO_COMMAND_DEPENDENCY_WILL_RUN = "no command, dependency will run"
-    NO_COMMAND_DEPENDENCY_MAY_RUN = "no command, dependency may run"
-    NO_COMMAND_OUTPUT_OLDER = "no command, output older"
-    NO_COMMAND_CHECKING = "no command, checking"
-    NO_COMMAND_OUTPUTS_EXIST = "no command, outputs exist"
+    NO_COMMAND_OUTPUT_MISSING = "no_command_output_missing"
+    NO_COMMAND_DEPENDENCY_WILL_RUN = "no_command_dependency_will_run"
+    NO_COMMAND_DEPENDENCY_MAY_RUN = "no_command_dependency_may_run"
+    NO_COMMAND_OUTPUT_OLDER = "no_command_output_older"
+    NO_COMMAND_CHECKING = "no_command_checking"
+    NO_COMMAND_OUTPUTS_EXIST = "no_command_outputs_exist"
     # What blocks any job before its files are looked at.
-    MISSING_EXTERNAL = "missing external"
-    PROGRAM_NOT_FOUND = "program not found"
-    DEPENDENCY_BLOCKED = "dependency blocked"
+    MISSING_EXTERNAL = "missing_external"
+    PROGRAM_NOT_FOUND = "program_not_found"
+    DEPENDENCY_BLOCKED = "dependency_blocked"
 
 
 @dataclass(frozen=True)

@@ -137,7 +137,7 @@ class CliTests(unittest.TestCase):
         plan = json.loads(out)
         self.assertEqual(plan["left_out"], ["report[id=1]"])
         self.assertEqual(plan["jobs"][0], {"id": 1, "operation": "op1", "status": "run", "reason": "output missing",
-                                           "waits_for": [], "caused_by": None, "holds_up": 0})
+                                           "code": "output_missing", "waits_for": [], "caused_by": None, "holds_up": 0})
 
     def test_adopt(self):
         (self.root / "work").mkdir()
