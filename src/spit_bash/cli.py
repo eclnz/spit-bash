@@ -26,6 +26,7 @@ from .report.explain import explain
 from .report.plan_json import document
 from .report.plan_text import adoption_line, listing, nothing_run
 from .report.summary import Summary, left_out
+from .leftovers import leftovers, lines as leftover_lines, remove as remove_leftovers
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
 
@@ -116,6 +117,9 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--timestamp-logs", action="store_true",
                                  help="start each line of a job's log with the date, time and UTC offset at which\n"
                                       "the runner received it; a tool that buffers its output may have written it earlier")
+            command.add_argument("--remove-leftovers", action="store_true",
+                                 help="delete the outputs earlier runs made for jobs the pipeline no longer has,\n"
+                                      "where they are as those runs left them, and forget their records")
             command.add_argument("--keep-failed", action="store_true",
                                  help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
@@ -229,7 +233,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             for line in listing(dag, decisions, args.verbose):
                 print(line)
+        # A partial DAG leaves jobs out, whose records would look like those of jobs the pipeline lost.
+        found = () if everything.left_out else leftovers(everything, state.jobs)
+        removing = args.action is Action.RUN and args.remove_leftovers
         if args.action is Action.PLAN:
+            for line in leftover_lines(found, args.verbose, False):
+                print(line, file=sys.stderr)
             return 1 if blocked else 0
         if blocked and not args.partial:
             print(nothing_run(decisions), file=sys.stderr)
@@ -244,6 +253,11 @@ def main(argv: list[str] | None = None) -> int:
                 print("lower the job's `resources` line, give more with --memory, "
                       "or pass --no-enforce-memory to run it alone", file=sys.stderr)
                 return 2
+
+        for line in leftover_lines(found, args.verbose, removing):
+            print(line, file=sys.stderr)
+        if removing and found:
+            state.apply(remove_leftovers(everything, found))
 
         logs = Path(args.logs).expanduser().resolve() if args.logs else dag.layout.logs
         options = Options(logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,

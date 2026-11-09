@@ -277,6 +277,20 @@ outputs were moved to the paths the pipeline now gives them; a tool that wrote t
 0 done, 1 moved, 0 checked, 0 failed, 1 current, 0 blocked
 ```
 
+When the pipeline loses a step or a subject, the outputs earlier runs made for its jobs stay on disk, and `plan` and `run` say so: they count the outputs that a record of a job the DAG no longer has names, that still exist, and that no job of the DAG makes or reads, with their total size, and `--verbose` lists them. A renamed product, dimension or source is not counted, since its job takes over the old record first. `run --remove-leftovers` deletes those that are as the run that made them left them, and forgets the records left with no output on disk; one changed since is kept and said to be. Nothing is deleted without the flag, and a run that starts nothing because a job is blocked deletes nothing either. A partial DAG reports none, as the jobs it leaves out would look lost.
+
+```text
+$ spit-bash plan pipeline.spitdag --verbose
+1 job is current
+[1] current op1: current
+1 output (6 bytes) left over from jobs the pipeline no longer has; run --remove-leftovers to delete those unchanged since their run
+  final.txt (6 bytes)
+$ spit-bash run pipeline.spitdag --remove-leftovers
+1 job is current
+1 output (6 bytes) left over from jobs the pipeline no longer has; removing those unchanged since their run
+0 done, 0 checked, 0 failed, 1 current, 0 blocked
+```
+
 Existing outputs with no successful record are run again; use `plan` to inspect this before `run`. For a dataset whose outputs were made before spit-bash was used, `spit-bash adopt` records every job whose inputs and outputs all exist as current, without running it. It trusts the files as they are, so adopt only outputs you know were made by the commands in the DAG.
 
 Jobs with no command can only be skipped, or checked, when all their outputs already exist and are at least as new as their inputs; a missing or stale output blocks them. Failed verification, failed commands, failed checks and missing outputs fail the job and its dependents, and a failure once the command has started [removes the job's outputs](#when-a-job-fails). A partial DAG reports its `left_out` count while still planning and running its complete jobs.
