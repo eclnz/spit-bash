@@ -235,6 +235,27 @@ class IncrementalTests(unittest.TestCase):
         self.assertEqual([path.read_text() for path in kept], ["tampered\n"])
         self.assertEqual((self.root / "out/sorted/sub=s1.txt").read_text(), "a\nb\n")
 
+    # What a plan says changed since the last run, before its counts.
+
+    def changes(self):
+        self.compile()
+        lines = [line for line in spit_bash(self.root, "plan").stdout.splitlines() if line.startswith("since the last run")]
+        return lines[0] if lines else None
+
+    def test_a_plan_with_nothing_changed_says_nothing(self):
+        self.assertIsNone(self.changes())
+
+    def test_a_plan_names_new_changed_and_gone_sources(self):
+        (self.root / "input/s3.txt").write_text("m\n")
+        (self.root / "input/s1.txt").write_text("q\nq\nw\n")
+        (self.root / "input/s2.txt").unlink()
+        self.assertEqual(self.changes(), "since the last run: +1 raw (sub=s3); 1 raw changed (sub=s1); "
+                                         "2 jobs from earlier runs no longer in the DAG (sub=s2)")
+
+    def test_a_plan_names_an_operation_whose_command_changed(self):
+        self.edit("command tally_lines: uniq -c", "command tally_lines: uniq -ci")
+        self.assertEqual(self.changes(), "since the last run: tally_lines: command changed (2 jobs)")
+
     # Renames of what a job makes or reads: the recorded work is reused.
 
     def test_renaming_a_product_reuses_its_outputs_with_move_files(self):

@@ -24,6 +24,7 @@ from .execute.options import Options
 from .execute.scheduler import execute
 from .report import run_text
 from .report.causes import decided
+from .report.changes import change_lines
 from .report.explain import explain
 from .report.plan_json import document
 from .report.plan_text import adoption_line, listing, move_hint, nothing_run
@@ -250,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.PLAN and args.json:
             print(document(dag, decisions))
         else:
+            for line in change_lines(dag, everything, decisions, state.jobs):
+                print(line)
             for line in listing(dag, decisions, args.verbose):
                 print(line)
         if movable:
