@@ -185,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         selection = _selection(args)
         dag = _load(args)
+        if dag.pipeline_changed:
+            print(f"warning: the pipeline changed since this DAG was written: {', '.join(dag.pipeline_changed)}; "
+                  "run the recipe or pipeline instead, or write the DAG again with `spit dag`", file=sys.stderr)
         everything = dag
         total = len(dag.jobs)
         selected = select(dag, selection)

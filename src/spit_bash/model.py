@@ -213,6 +213,8 @@ class Dag:
     left_out: tuple[str, ...]
     # The paths of artifacts of kind `Kind.FOLDER`, for the membership tests that reading a stamp makes.
     folders: frozenset[str] = frozenset()
+    # Each of the DAG's pipeline files that is no longer as the DAG was written from, as `_changed_pipeline_files` finds them.
+    pipeline_changed: tuple[str, ...] = ()
     # Each artifact's path under the root, joined and checked once by `load_dag`.
     absolute: dict[str, Path] = field(default_factory=dict, compare=False)
 

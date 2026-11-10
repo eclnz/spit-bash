@@ -33,6 +33,8 @@ spit-bash run jobs.spitdag -j 4
 spit dag dataset.spitin --json | spit-bash run - -j 4
 ```
 
+A saved DAG records the git blob id of each pipeline file it was written from, under `pipeline_folder`. When one has changed or is gone, `plan` and `run` warn before planning, as ``warning: the pipeline changed since this DAG was written: digits.spit; run the recipe or pipeline instead, or write the DAG again with `spit dag` ``, and then plan the saved DAG as it is.
+
 ## Choosing jobs
 
 `--only`, `--product` and `--stage` choose part of the DAG: the jobs whose outputs match, and every job upstream that they need. Nothing downstream is chosen. Try a pipeline on one subject before running every subject:

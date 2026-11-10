@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path, PurePosixPath
 from typing import Iterator, TextIO
 
@@ -20,6 +21,29 @@ def _here(part: HerePart, folder: str | None) -> str:
     if inside.is_absolute() or ".." in inside.parts:
         raise DagError(f"`here` names {part.here}, which is not a folder under the pipeline's")
     return str(PurePosixPath(folder) / inside)
+
+
+def _blob(data: bytes) -> str:
+    """The git blob id of `data`, as `git hash-object` prints it and `pipeline_files` records it."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def _changed_pipeline_files(document: SpitDag) -> tuple[str, ...]:
+    """Each pipeline file whose text differs from the one the DAG was written from, or that is missing, as
+    `digits.spit` or `libs/lib.spit (missing)`. A DAG with no `pipeline_folder` names nowhere to look, so none."""
+    if document.pipeline_folder is None:
+        return ()
+    folder = Path(document.pipeline_folder)
+    changed = []
+    for file in document.pipeline_files:
+        try:
+            data = folder.joinpath(*PurePosixPath(file.path).parts).read_bytes()
+        except OSError:
+            changed.append(f"{file.path} (missing)")
+            continue
+        if _blob(data) != file.blob:
+            changed.append(file.path)
+    return tuple(changed)
 
 
 def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
@@ -209,6 +233,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         tuple(document.executables),
         tuple(item.identity for item in document.left_out),
         folders,
+        pipeline_changed=_changed_pipeline_files(document),
     )
     for path in (*external_paths, *(path for job in jobs for path in (*job.input_paths, *job.output_paths))):
         if path not in dag.absolute:

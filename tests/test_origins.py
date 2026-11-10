@@ -90,3 +90,53 @@ class OriginTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StalePipelineTests(unittest.TestCase):
+    """A saved DAG checks the pipeline files it was written from against the files as they are now."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "source.txt").write_text("hello")
+        (self.root / "libs").mkdir()
+        self.main = self.root / "main.spit"
+        self.main.write_text("pipeline text\n")
+        (self.root / "libs" / "lib.spit").write_text("library text\n")
+
+    def saved(self):
+        """The sample DAG written from main.spit and libs/lib.spit as they are now, saved to a file."""
+        data = sample(self.root)
+        data["pipeline_folder"] = str(self.root)
+        data["pipeline_files"] = [
+            {"path": "main.spit", "blob": blob(self.main.read_bytes())},
+            {"path": "libs/lib.spit", "blob": blob((self.root / "libs" / "lib.spit").read_bytes())},
+        ]
+        path = self.root / "jobs.spitdag"
+        path.write_text(json.dumps(data))
+        return str(path)
+
+    def test_a_dag_from_the_files_as_they_are_gives_no_warning(self):
+        code, _, err = call("plan", self.saved())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("pipeline changed", err)
+
+    def test_a_changed_or_missing_file_is_named(self):
+        path = self.saved()
+        self.main.write_text("pipeline text, edited\n")
+        (self.root / "libs" / "lib.spit").unlink()
+        code, _, err = call("plan", path)
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: the pipeline changed since this DAG was written: main.spit, libs/lib.spit (missing); "
+                      "run the recipe or pipeline instead, or write the DAG again with `spit dag`\n", err)
+
+    def test_a_dag_with_no_pipeline_folder_is_not_checked(self):
+        data = called(self.root)
+        self.assertEqual(read(data).pipeline_changed, ())
+
+
+def blob(data):
+    """`git hash-object` of `data`, worked out here so the test does not depend on git."""
+    import hashlib
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
