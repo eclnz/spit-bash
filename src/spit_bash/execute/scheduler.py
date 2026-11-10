@@ -34,6 +34,9 @@ class Result:
     log: Path | None = None
     # What a job planned `maybe` turned out to be, once its upstream jobs had finished.
     settled: Status | None = None
+    # The job ran its recorded work on the inputs its record holds, and made outputs that differ
+    # from the record's: its tool doesn't give the same bytes twice.
+    varied: bool = False
 
     @property
     def caused_by(self) -> int | None:
@@ -125,6 +128,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
             if decision.needs_checks:
                 return await check_one(job, log)
             progress.started(job)
+            earlier = state.jobs.get(job.work.key)
             # The job's record stays until it succeeds and is replaced: a failure or a cancellation
             # puts the earlier run's outputs back, and the record still describes them. A runner
             # killed mid-job leaves files at the job's paths that do not match it, so the next plan
@@ -154,7 +158,11 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
                                                      ran.seconds))
         progress.finished(job, ran.seconds)
         on_event(events.Done(job, ran.seconds, progress.report()))
-        return Result(job, None, log)
+        varied = (earlier is not None and earlier.fingerprint == job.work.fingerprint
+                  and earlier.input_hashes is not None and earlier.output_hashes is not None
+                  and input_hashes == earlier.input_hashes and output_hashes is not None
+                  and output_hashes != earlier.output_hashes)
+        return Result(job, None, log, varied=varied)
 
     async def check_one(job: Job, log: Path) -> Result:
         """Run a current job's checks alone, on the files it already has."""
