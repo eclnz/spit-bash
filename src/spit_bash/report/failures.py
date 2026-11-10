@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..logs import log_tail
+from ..model import Dag
 from . import LISTED
 
 if TYPE_CHECKING:
@@ -13,9 +13,9 @@ if TYPE_CHECKING:
     from .run_text import Shown as Result
 
 
-def _normalised(job_files: tuple[str, ...], root: Path, lines: list[str]) -> tuple[str, ...]:
+def _normalised(job_files: tuple[str, ...], dag: Dag, lines: list[str]) -> tuple[str, ...]:
     """A log's last lines without what is particular to the job: its command line and the paths of its files."""
-    names = sorted({*job_files, *(str(root / path) for path in job_files)}, key=len, reverse=True)
+    names = sorted({*job_files, *(str(dag.path(path)) for path in job_files)}, key=len, reverse=True)
     kept = []
     for line in lines:
         if line.lstrip().startswith("$ "):
@@ -26,13 +26,13 @@ def _normalised(job_files: tuple[str, ...], root: Path, lines: list[str]) -> tup
     return tuple(kept)
 
 
-def failure_groups(root: Path, failures: list[Result]) -> list[list[Result]]:
+def failure_groups(dag: Dag, failures: list[Result]) -> list[list[Result]]:
     """The failed jobs grouped by what went wrong: the same error and the same last lines of the log."""
     groups: dict[tuple, list[Result]] = {}
     for result in failures:
         files = (*result.job.input_paths, *result.job.output_paths)
         tail = log_tail(result.log) if result.log is not None else []
-        groups.setdefault((result.error, _normalised(files, root, tail)), []).append(result)
+        groups.setdefault((result.error, _normalised(files, dag, tail)), []).append(result)
     return list(groups.values())
 
 

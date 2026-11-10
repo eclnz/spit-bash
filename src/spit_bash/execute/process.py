@@ -68,7 +68,7 @@ def partial(dag: Dag, stdout: str) -> Path:
 
 async def run_command(dag: Dag, args: tuple[str, ...], log: IO[bytes] | StampedLog,
                       stdin: str | None = None, stdout: str | None = None, limit: int | None = None) -> CommandEnd:
-    """Run one command from the root and say how it ended.
+    """Run one command from the output root and say how it ended.
 
     The command reads the input file `stdin` on its standard input, or nothing.
     Its standard output goes to the temporary file for the output `stdout`, or
@@ -93,7 +93,7 @@ async def run_command(dag: Dag, args: tuple[str, ...], log: IO[bytes] | StampedL
             # A session of its own lets a cancelled job's whole process group be
             # stopped, and keeps a terminal's Ctrl-C from reaching it directly.
             process = await asyncio.create_subprocess_exec(
-                *args, cwd=dag.root, stdin=source, stdout=target, stderr=piped if stamped else log,
+                *args, cwd=dag.outputs, stdin=source, stdout=target, stderr=piped if stamped else log,
                 start_new_session=True,
             )
         except OSError as exc:

@@ -22,8 +22,13 @@ def _here(part: HerePart, folder: str | None) -> str:
     return str(PurePosixPath(folder) / inside)
 
 
-def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
-    """A command's arguments as text; `folder` is the pipeline's, which a `here` part is under."""
+def _command(command: Command, folder: str | None = None, shown: dict[str, str] | None = None) -> tuple[str, ...]:
+    """A command's arguments as text; `folder` is the pipeline's, which a `here` part is under.
+
+    `shown` gives the text of each path under a dataset root apart from the
+    output root, which commands run from: its absolute path.
+    """
+    shown = shown or {}
     arguments = []
     for argument in command:
         parts = []
@@ -31,9 +36,9 @@ def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
             if isinstance(part, str):
                 parts.append(part)
             elif isinstance(part, PathPart):
-                parts.append(part.path)
+                parts.append(shown.get(part.path, part.path))
             elif isinstance(part, DirPart):
-                parts.append(part.dir)
+                parts.append(_dir(part, shown))
             elif isinstance(part, StemPart):
                 parts.append(part.stem)
             elif isinstance(part, HerePart):
@@ -42,6 +47,13 @@ def _command(command: Command, folder: str | None = None) -> tuple[str, ...]:
     if not arguments[0]:
         raise DagError("command has no executable")
     return tuple(arguments)
+
+
+def _dir(part: DirPart, shown: dict[str, str]) -> str:
+    """A `dir` part's text: the folder as written, or under a dataset root apart from the output root, its absolute path."""
+    full = shown.get(part.of_path)
+    # SPIT writes a `dir` part as the folder its file is in.
+    return part.dir if full is None else str(PurePosixPath(full).parent)
 
 
 def _artifact(declared: schema.Artifact, slots: dict[str, str]) -> Artifact:
@@ -126,8 +138,8 @@ def _check_streams(job: SpitJob, folders: frozenset[str]) -> None:
                 raise DagError(f"job {job.id}: `{field_name}` names {path}, which is a folder, not a file")
 
 
-def _run(command: JobCommand, folder: str | None) -> Run:
-    return Run(_command(command.command, folder), command.stdin, command.stdout)
+def _run(command: JobCommand, folder: str | None, shown: dict[str, str]) -> Run:
+    return Run(_command(command.command, folder, shown), command.stdin, command.stdout)
 
 
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
@@ -141,12 +153,25 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
     root = Path(root_value).expanduser().resolve()
     if not root.is_dir():
         raise DagError(f"dataset root is not a directory: {root}")
+    # Outputs go under the dataset root unless the DAG names another folder; a
+    # root given on the command line moves them with it.
+    output_root = None
+    if document.output_root is not None and document.output_root != document.root:
+        output_root = Path(document.output_root).expanduser().resolve()
+        if output_root == root:
+            output_root = None
 
     _check_origins(document)
     folders = frozenset(artifact.path for artifact in _artifacts(document) if artifact.kind == "folder")
     for artifact in _artifacts(document):
         if (artifact.kind == "folder") != (artifact.path in folders):
             raise DagError(f"path is both a file and a folder: {artifact.path}")
+    unders: dict[str, str] = {}
+    for artifact in _artifacts(document):
+        if unders.setdefault(artifact.path, artifact.under) != artifact.under:
+            raise DagError(f"path is under both roots: {artifact.path}")
+    in_dataset = frozenset(path for path, under in unders.items() if under == "root") if output_root else frozenset()
+    shown = {path: str(root.joinpath(*PurePosixPath(path).parts)) for path in in_dataset}
     external_paths = tuple(artifact.path for artifact in document.external_inputs)
     external_set = set(external_paths)
     jobs = []
@@ -165,10 +190,11 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             producers[path] = item.id
         slots = identity.slots(item)
         inputs, produced = _ports(item, slots)
-        commands = tuple(_run(command, document.pipeline_folder) for command in item.commands)
-        verify = tuple(_command(command, document.pipeline_folder) for command in item.verify)
+        commands = tuple(_run(command, document.pipeline_folder, shown) for command in item.commands)
+        verify = tuple(_command(command, document.pipeline_folder, shown) for command in item.verify)
         checks = tuple(
-            Check(Side(check.when), check.check, check.port, check.path, _command(check.command, document.pipeline_folder))
+            Check(Side(check.when), check.check, check.port, check.path,
+                  _command(check.command, document.pipeline_folder, shown))
             for check in item.checks
         )
         origin = _origin(document, item)
@@ -182,7 +208,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
             id=item.id,
             operation=item.operation,
             stage=tuple(item.stage),
-            work=identity.work(item, slots, checks, tuple(a for port in produced for a in port.artifacts)),
+            work=identity.work(item, slots, checks, tuple(a for port in produced for a in port.artifacts), shown),
             inputs=inputs,
             outputs=produced,
             depends_on=tuple(item.depends_on),
@@ -209,6 +235,8 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         tuple(document.executables),
         tuple(item.identity for item in document.left_out),
         folders,
+        output_root=output_root,
+        in_dataset=in_dataset,
     )
     for path in (*external_paths, *(path for job in jobs for path in (*job.input_paths, *job.output_paths))):
         if path not in dag.absolute:

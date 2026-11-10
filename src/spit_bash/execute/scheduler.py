@@ -54,6 +54,8 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
     about to do and each job's progress; the run itself prints nothing.
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
+    # Commands run from the output root, which nothing may have made yet.
+    dag.outputs.mkdir(parents=True, exist_ok=True)
     options.logs.mkdir(parents=True, exist_ok=True)
     compare = options.compare
 

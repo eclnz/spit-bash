@@ -25,11 +25,11 @@ from spit_bash.report.explain import explain
 from spit_bash.report.run_text import failure_words as error_words
 from spit_bash.reuse.evidence import Compare
 from spit_bash.reuse.relocate import MoveCause
-from support import EXCLAIM, command, error, job_entry, document, read, run, sample, state_at
+from support import EXCLAIM, command, error, job_entry, document, read, run, sample, state_at, placed
 
 
 def artifact_of(path):
-    return {"product": path, "entities": {}, "type": None, "path": path, "kind": "file"}
+    return {"product": path, "entities": {}, "type": None, "path": path, "under": "root", "kind": "file"}
 
 
 def moved(node, rename):
@@ -415,7 +415,7 @@ class CommandLineTests(unittest.TestCase):
         self.before = (self.root / "final.txt").stat().st_mtime_ns
         relocated = moved(data, lambda p: p if p == "source.txt" else "derivatives/" + p)
         self.file = self.root / "moved.spitdag"
-        self.file.write_text(json.dumps(relocated))
+        self.file.write_text(json.dumps(placed(relocated)))
 
     def main(self, action, *flags):
         out, err = io.StringIO(), io.StringIO()

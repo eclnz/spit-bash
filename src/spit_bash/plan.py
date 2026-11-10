@@ -62,9 +62,9 @@ def _missing_programs(dag: Dag) -> set[str]:
         runs = (run.arguments for run in job.commands)
         for command in (*runs, *job.verify, *(check.command for check in job.checks)):
             # SPIT leaves a program named by a path out of `executables`. It is
-            # run from the root, so check it there.
+            # run from the output root, so check it there.
             if "/" in command[0] and command[0] not in missing:
-                program = dag.root / command[0]
+                program = dag.outputs / command[0]
                 if not (program.is_file() and os.access(program, os.X_OK)):
                     missing.add(command[0])
     return missing

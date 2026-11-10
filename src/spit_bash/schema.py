@@ -1,4 +1,4 @@
-"""The version 11 SPIT DAG schema, before filesystem checks or execution."""
+"""The version 12 SPIT DAG schema, before filesystem checks or execution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 # The one version of the format spit-bash reads.
-VERSION = 11
+VERSION = 12
 
 
 class SchemaModel(BaseModel):
@@ -43,6 +43,8 @@ class Artifact(SchemaModel):
     entities: dict[NonEmpty, str]
     artifact_type: NamedType | VariableType | None = Field(alias="type")
     path: RelativePath
+    # The top-level field holding the folder `path` is relative to.
+    under: Literal["root", "output_root"]
     kind: Literal["file", "folder"]
 
 
@@ -171,6 +173,9 @@ class SpitDag(SchemaModel):
     version: int
     generator: Generator
     root: str | None
+    # The folder the jobs' outputs are under and commands run from; `root` when the
+    # pipeline names no other, null when neither is known.
+    output_root: str | None
     external_inputs: list[Artifact]
     targets: list[Artifact]
     executables: list[str]

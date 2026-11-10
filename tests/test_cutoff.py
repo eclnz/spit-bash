@@ -12,7 +12,7 @@ from spit_bash.cause import Cause, Why
 from spit_bash.cli import main
 from spit_bash.plan import Status, plan
 from spit_bash.reuse.evidence import Compare
-from support import EXCLAIM, error, job_entry, read, run, sample, state_at
+from support import EXCLAIM, error, job_entry, read, run, sample, state_at, placed
 
 
 def chain(root):
@@ -98,7 +98,7 @@ class CutoffTests(unittest.TestCase):
     def test_plan_and_run_say_how_many_may_run_and_how_many_were_cut_off(self):
         self.edit_source("Hello")
         path = self.root / "jobs.spitdag"
-        path.write_text(json.dumps(self.data))
+        path.write_text(json.dumps(placed(self.data)))
         code, out, err = call("plan", str(path), "--verbose")
         self.assertEqual(code, 0)
         self.assertIn("[2] may run op2: runs if an upstream output changes", out)
@@ -111,7 +111,7 @@ class CutoffTests(unittest.TestCase):
     def test_the_estimate_counts_a_maybe_job_until_it_is_skipped(self):
         self.edit_source("Hello")
         path = self.root / "jobs.spitdag"
-        path.write_text(json.dumps(self.data))
+        path.write_text(json.dumps(placed(self.data)))
         code, out, err = call("run", str(path))
         self.assertEqual(code, 0, err)
         # Every job has a time from the first run, so there is an estimate at once.

@@ -68,13 +68,19 @@ def _parts(item: SpitJob, slots: dict[str, str]) -> dict[str, object]:
     }
 
 
-def checks_key(checks: tuple[Check, ...], slots: dict[str, str]) -> str | None:
-    """What a successful run records of the checks it passed; None without checks."""
+def checks_key(checks: tuple[Check, ...], slots: dict[str, str], shown: dict[str, str] | None = None) -> str | None:
+    """What a successful run records of the checks it passed; None without checks.
+
+    `shown` gives the text a path has in a command when it is not the path itself,
+    as `load._command` writes it.
+    """
     if not checks:
         return None
+    shown = shown or {}
     # The tested artifact stands as its slot and its path in the command as a
     # placeholder, so moving the file does not change what was checked.
-    text = json.dumps([[c.side.value, c.name, slots[c.path], [a.replace(c.path, "{@path}") for a in c.command]]
+    text = json.dumps([[c.side.value, c.name, slots[c.path],
+                        [a.replace(shown.get(c.path, c.path), "{@path}") for a in c.command]]
                        for c in checks], separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
@@ -88,9 +94,11 @@ def key(outputs: tuple[Artifact, ...]) -> str:
     return json.dumps(made, separators=(",", ":"))
 
 
-def work(item: SpitJob, slots: dict[str, str], checks: tuple[Check, ...], outputs: tuple[Artifact, ...]) -> Work:
-    """The job's `Work`, from its wire form, its slots, and its checks and outputs as loaded."""
+def work(item: SpitJob, slots: dict[str, str], checks: tuple[Check, ...], outputs: tuple[Artifact, ...],
+         shown: dict[str, str] | None = None) -> Work:
+    """The job's `Work`, from its wire form, its slots, and its checks and outputs as loaded, with
+    `shown` as `checks_key` takes it."""
     parts = _parts(item, slots)
     # The parts are hashed apart so that a record can say which of them changed.
     return Work(_digest(parts), {name: _digest(value) for name, value in parts.items()},
-                checks_key(checks, slots), key(outputs))
+                checks_key(checks, slots, shown), key(outputs))

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.cli import main
-from support import artifact, job_entry, sample, UPPER
+from support import artifact, job_entry, sample, UPPER, placed
 
 
 def call(*argv, stdin=None):
@@ -29,7 +29,7 @@ class CliTests(unittest.TestCase):
         self.dag = self.root / "jobs.spitdag"
 
     def write(self):
-        self.dag.write_text(json.dumps(self.data))
+        self.dag.write_text(json.dumps(placed(self.data)))
         return str(self.dag)
 
     def test_plan_then_run_then_plan(self):
@@ -69,10 +69,10 @@ class CliTests(unittest.TestCase):
 
     def test_reads_stdin_and_needs_root_when_dag_has_none(self):
         self.data["root"] = None
-        code, _, err = call("plan", "-", stdin=json.dumps(self.data))
+        code, _, err = call("plan", "-", stdin=json.dumps(placed(self.data)))
         self.assertEqual(code, 2)
         self.assertIn("pass --root", err)
-        code, out, _ = call("plan", "-", "--root", str(self.root), stdin=json.dumps(self.data))
+        code, out, _ = call("plan", "-", "--root", str(self.root), stdin=json.dumps(placed(self.data)))
         self.assertEqual(code, 0)
         self.assertIn("1 job can start, 1 job will wait for it", out)
 

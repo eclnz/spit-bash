@@ -142,7 +142,7 @@ def _remove_outputs(dag: Dag, job: Job, log: Log, keep: bool = False) -> None:
         temporary = partial(dag, job.stdout)
         if keep:
             if temporary.exists():
-                log.write(f"spit-bash: kept failed standard output {temporary.relative_to(dag.root)}\n".encode())
+                log.write(f"spit-bash: kept failed standard output {temporary.relative_to(dag.base(job.stdout))}\n".encode())
             log.flush()
             return
         try:
