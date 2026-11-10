@@ -235,6 +235,25 @@ class IncrementalTests(unittest.TestCase):
         self.edit("@vary(sub)", "@vary(id)")
         self.assertReruns({"place": 4, "skip": 1}, 0, "--move-files")
 
+    def test_renaming_a_dimension_moves_jobs_whose_inputs_hold_the_same_bytes(self):
+        # Different sources that sort to the same lines, so each `tally_lines` reads
+        # the same bytes and its records are interchangeable by content. Each job must
+        # still take the record of what it made under the old name, though the jobs
+        # come in numeric order, 9 before 10, and the records in text order.
+        for name in ("s1", "s2"):
+            (self.root / f"input/{name}.txt").unlink()
+        for name, text in (("9", "a\nb\n"), ("10", "b\na\n"), ("11", "b\nb\na\n")):
+            (self.root / f"input/{name}.txt").write_text(text)
+        self.compile()
+        self.assertIn("0 failed", spit_bash(self.root, "run").stderr)
+        self.edit("[sub]", "[id]")
+        self.edit("input/{sub}", "input/{id}")
+        self.edit("@vary(sub)", "@vary(id)")
+        self.assertReruns({"place": 6, "skip": 1}, 0, "--move-files")
+        for name in ("9", "10", "11"):
+            self.assertFalse((self.root / f"out/tally/sub={name}.txt").exists())
+            self.assertTrue((self.root / f"out/tally/id={name}.txt").exists())
+
     def test_renaming_a_source_family_reuses_its_outputs_with_move_files(self):
         self.edit("source raw", "source scans")
         self.edit("path raw:", "path scans:")
