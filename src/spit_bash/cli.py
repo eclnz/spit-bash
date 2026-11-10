@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 
 from .load import changed_pipeline_files, load_dag
+from .cause import Why
 from .model import Dag, DagError, Layout
 from .plan import Status, adopt, explained, plan, writes
 from .reuse.evidence import Compare
@@ -24,7 +25,7 @@ from .report import run_text
 from .report.causes import decided
 from .report.explain import explain
 from .report.plan_json import document
-from .report.plan_text import adoption_line, listing, nothing_run
+from .report.plan_text import adoption_line, listing, move_hint, nothing_run
 from .report.summary import Summary, left_out
 from .leftovers import leftovers, lines as leftover_lines, remove as remove_leftovers
 from .schedule import over_memory
@@ -231,6 +232,13 @@ def main(argv: list[str] | None = None) -> int:
                 state.assume(handed)
         # Under --force, no outputs are moved: the forced jobs run, and the rest are judged as they stand.
         decisions = plan(dag, state, forced, compare, args.move_files and not args.force)
+        movable = 0
+        if not args.move_files and not args.force and any(
+                decision.status is Status.RUN and decision.cause.why is Why.OUTPUT_MISSING and decision.cause.paths
+                for decision in decisions):
+            # Planning writes and moves nothing, so a second plan only asks what moving would save.
+            moved = plan(dag, state, forced, compare, True)
+            movable = sum(decision.status is Status.PLACE for decision in moved)
         if args.action is Action.RUN:
             state.apply(writes(decisions))
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
@@ -243,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             for line in listing(dag, decisions, args.verbose):
                 print(line)
+        if movable:
+            print(move_hint(movable), file=sys.stderr)
         # A partial DAG leaves jobs out, whose records would look like those of jobs the pipeline lost.
         found = () if everything.left_out else leftovers(everything, state.jobs)
         removing = args.action is Action.RUN and args.remove_leftovers

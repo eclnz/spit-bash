@@ -133,6 +133,12 @@ def not_moved_lines(decisions: tuple[Decision, ...]) -> list[str]:
     return lines
 
 
+def move_hint(movable: int) -> str:
+    """Without `--move-files`, what the flag would save: the jobs that rerun only because their outputs are at other paths."""
+    return (f"{jobs(movable)} {'reruns' if movable == 1 else 'rerun'} only because {'its outputs are' if movable == 1 else 'their outputs are'} "
+            "recorded at other paths; --move-files moves them instead")
+
+
 def listing(dag: Dag, decisions: tuple[Decision, ...], verbose: bool) -> list[str]:
     """What `plan` and `run` print of a plan: the counts, a line for each cause that blocks jobs, and with `verbose`
     every job, or without it why jobs will replace outputs on disk and each job whose outputs are not moved."""
