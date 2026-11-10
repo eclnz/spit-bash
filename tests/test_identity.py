@@ -29,7 +29,7 @@ from support import EXCLAIM, command, error, job_entry, document, read, run, sam
 
 
 def artifact_of(path):
-    return {"product": path, "entities": {}, "type": None, "path": path, "kind": "file"}
+    return {"product": path, "entities": {}, "type": None, "path": path, "under": "root", "kind": "file"}
 
 
 def moved(node, rename):

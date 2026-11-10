@@ -21,7 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.cli import main
-from support import EXCLAIM, artifact, command, document, job_entry, sample, UPPER
+from support import EXCLAIM, artifact, command, document, job_entry, placed, sample, UPPER
 
 MISSING = "no-such-spit-bash-program"
 FAILS = "import sys; print('boom'); sys.exit(3)"
@@ -163,12 +163,12 @@ HOLDS = "from pathlib import Path; import sys; sys.exit(Path(sys.argv[1]).read_t
 
 
 def portable(data):
-    """`data` with every command and check started by `PYTHON`."""
+    """`data` with every command and check started by `PYTHON`, and each artifact under its root."""
     for item in data["jobs"]:
         for entry in [*item["commands"], *item["checks"]]:
             if entry["command"][0] == [sys.executable]:
                 entry["command"][0] = [PYTHON]
-    return data
+    return placed(data)
 
 
 def edit(path, text):

@@ -32,7 +32,7 @@ class Artifact:
     # `out{port}` for an output, counting ports in DAG order from 0. A path a job
     # reads at two places takes the first one's slot at both.
     slot: str
-    # Relative to the dataset root.
+    # Relative to the root the DAG puts it under: `Dag.base` gives it.
     path: str
     kind: Kind
     product: str
@@ -175,7 +175,7 @@ class Job:
 
 @dataclass(frozen=True)
 class Layout:
-    """Where the runner keeps its own files: under the dataset root, and beside each output."""
+    """Where the runner keeps its own files: under the output root, and beside each output."""
 
     root: Path
 
@@ -206,6 +206,7 @@ class Layout:
 
 @dataclass(frozen=True)
 class Dag:
+    # The dataset root, which the sources are under.
     root: Path
     jobs: tuple[Job, ...]
     external_inputs: tuple[str, ...]
@@ -213,20 +214,35 @@ class Dag:
     left_out: tuple[str, ...]
     # The paths of artifacts of kind `Kind.FOLDER`, for the membership tests that reading a stamp makes.
     folders: frozenset[str] = frozenset()
-    # Each artifact's path under the root, joined and checked once by `load_dag`.
+    # Each artifact's path under its root, joined and checked once by `load_dag`.
     absolute: dict[str, Path] = field(default_factory=dict, compare=False)
+    # The folder the jobs' outputs are under and commands run from; None for `root`.
+    output_root: Path | None = None
+    # The paths under `root` when `output_root` is another folder: the sources,
+    # and the files jobs write beside them. Every other path is under `output_root`.
+    in_dataset: frozenset[str] = frozenset()
+
+    @property
+    def outputs(self) -> Path:
+        """The output root: where commands run, outputs go, and the runner keeps its files."""
+        return self.root if self.output_root is None else self.output_root
 
     @property
     def layout(self) -> Layout:
-        return Layout(self.root)
+        return Layout(self.outputs)
+
+    def base(self, relative: str) -> Path:
+        """The root that `relative` is under."""
+        return self.root if relative in self.in_dataset else self.outputs
 
     def path(self, relative: str) -> Path:
         path = self.absolute.get(relative)
         return self.checked(relative) if path is None else path
 
     def checked(self, relative: str) -> Path:
-        """The path under the root, resolved now, so a link made since loading cannot lead outside it."""
-        path = self.root.joinpath(*PurePosixPath(relative).parts)
-        if not path.resolve().is_relative_to(self.root):
-            raise DagError(f"path escapes dataset root: {relative}")
+        """The path under its root, resolved now, so a link made since loading cannot lead outside it."""
+        base = self.base(relative)
+        path = base.joinpath(*PurePosixPath(relative).parts)
+        if not path.resolve().is_relative_to(base):
+            raise DagError(f"path escapes {'dataset' if base == self.root else 'output'} root: {relative}")
         return path

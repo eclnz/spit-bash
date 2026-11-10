@@ -163,7 +163,7 @@ def _report_failure(job: Job, error: str, log: Path | None) -> None:
 def report_failures(dag: Dag, summary: Summary, verbose: bool) -> None:
     """Print each distinct failure once, with what it held up, then with `verbose` the jobs that did not run."""
     held = Counter(result.caused_by for result in summary.not_run)
-    for group in failure_groups(dag.root, [_shown(result) for result in summary.failed]):
+    for group in failure_groups(dag, [_shown(result) for result in summary.failed]):
         first, others = group[0], group[1:]
         _report_failure(first.job, first.error, first.log)
         if others:
