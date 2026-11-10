@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..files import stamps, stored_each, hashes
+from ..cause import Why
 from ..model import Dag, Job
 from ..plan import Decision, Status, judge
 from ..progress import Progress
@@ -125,7 +126,8 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
                 on_event(events.Started(job))
                 state.forget(job.work.key)
 
-            ran = await run_job(dag, job, log, options, on_start=started)
+            ran = await run_job(dag, job, log, options, on_start=started,
+                                keep_edited=decision.cause.why is Why.OUTPUT_CHANGED)
             if isinstance(ran, Failed):
                 progress.finished(job, None)
                 return Result(job, ran.failure, ran.log)
