@@ -11,7 +11,7 @@ from pathlib import Path
 
 from spit_bash import cli
 from spit_bash.plan import adopt
-from support import read, run, sample, state_at
+from support import read, run, sample, state_at, placed
 from test_checks import check, checked
 from test_folders import folders_dag, pages
 
@@ -27,7 +27,7 @@ class ExplainTests(unittest.TestCase):
 
     def explain(self, job, data=None, *flags):
         file = self.root / "d.spitdag"
-        file.write_text(json.dumps(data or self.data))
+        file.write_text(json.dumps(placed(data or self.data)))
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(["plan", str(file), "--root", str(self.root), "--job", str(job), *flags])
@@ -103,7 +103,7 @@ class ExplainTests(unittest.TestCase):
         run(read(data), state_at(root))
         (root / "pages/3.txt").write_text("three")
         file = root / "d.spitdag"
-        file.write_text(json.dumps(data))
+        file.write_text(json.dumps(placed(data)))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             cli.main(["plan", str(file), "--root", str(root), "--job", "1"])

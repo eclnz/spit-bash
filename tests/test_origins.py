@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from spit_bash.model import DagError
-from support import read, sample
+from support import read, sample, placed
 from test_cli import call
 
 BLOB = "8f17cbea466ed03fdf66555a6d1de4d645e1d04c"
@@ -54,7 +54,7 @@ class OriginTests(unittest.TestCase):
         data = called(self.root)
         data["jobs"][0]["commands"][0]["command"][2] = ["import sys; sys.exit(3)"]
         path = self.root / "jobs.spitdag"
-        path.write_text(json.dumps(data))
+        path.write_text(json.dumps(placed(data)))
         code, _, err = call("run", str(path))
         self.assertEqual(code, 1)
         self.assertIn(

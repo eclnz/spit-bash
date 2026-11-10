@@ -49,7 +49,7 @@ class OutputTests(unittest.TestCase):
         self.dag = self.root / "jobs.spitdag"
 
     def write(self, data):
-        self.dag.write_text(json.dumps(data))
+        self.dag.write_text(json.dumps(placed(data)))
         return str(self.dag)
 
     def blocked_chain(self, roots=2):

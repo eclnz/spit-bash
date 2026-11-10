@@ -18,8 +18,10 @@ from spit_bash.report import run_text
 FIXTURE = Path(__file__).parent / "fixtures" / "command_demo.spitdag"
 
 
-def artifact(path, under="root"):
-    return {"product": path, "entities": {}, "type": None, "path": path, "under": under, "kind": "file"}
+def artifact(path, under=None):
+    """A file artifact; `placed` gives it its root unless `under` does."""
+    made = {"product": path, "entities": {}, "type": None, "path": path, "kind": "file"}
+    return made if under is None else dict(made, under=under)
 
 
 def command(script, *paths):
@@ -47,14 +49,14 @@ def job(id, depends_on=(), cores=1, memory=None, operation=None, product="p"):
 
 
 def placed(data):
-    """`data` with each artifact under the root SPIT puts it under: a file a job writes under
-    `output_root`, every other under `root`."""
+    """`data` with each artifact that names no root under the one SPIT puts it under: a file a
+    job writes under `output_root`, every other under `root`."""
     made = {artifact["path"] for job in data["jobs"] for artifact in job["outputs"].values()}
     artifacts = [*data["external_inputs"], *data["targets"]]
     for job in data["jobs"]:
         artifacts += [*job["outputs"].values(), *(a for port in job["inputs"].values() for a in port)]
     for artifact in artifacts:
-        artifact["under"] = "output_root" if artifact["path"] in made else "root"
+        artifact.setdefault("under", "output_root" if artifact["path"] in made else "root")
     return data
 
 
