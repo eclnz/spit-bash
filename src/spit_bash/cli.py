@@ -9,6 +9,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from enum import Enum
 from pathlib import Path
 
@@ -280,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
             state.apply(remove_leftovers(everything, found))
 
         options = Options(layout.logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
-                          args.timestamp_logs)
+                          args.timestamp_logs, time.strftime("%Y-%m-%dT%H-%M-%S"))
         try:
             results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag), decided))
         except asyncio.CancelledError:

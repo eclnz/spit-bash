@@ -24,3 +24,5 @@ class Options:
     enforce_memory: bool = True
     # Start each line of a job's log with the time the runner received it.
     timestamp_logs: bool = False
+    # When the run started, as `2026-11-10T14-44-52`, which names the copy of an edited output it keeps.
+    started: str = "run"

@@ -223,6 +223,18 @@ class IncrementalTests(unittest.TestCase):
         (self.root / "out/sorted/sub=s1.txt").write_text("tampered\n")
         self.assertReruns({"run": 3, "skip": 2}, 3)
 
+    def test_an_edited_output_is_kept_beside_the_one_its_rerun_makes(self):
+        (self.root / "out/sorted/sub=s1.txt").write_text("tampered\n")
+        self.compile()
+        plan = spit_bash(self.root, "plan")
+        self.assertIn("1 job reruns because an output was edited since it was made; "
+                      "run keeps what is there as NAME.edited-<time> beside it\n", plan.stdout)
+        self.assertRegex(plan.stdout, r"\[\d+\] edited: out/sorted/sub=s1.txt\n")
+        spit_bash(self.root, "run")
+        kept = list((self.root / "out/sorted").glob("sub=s1.txt.edited-*"))
+        self.assertEqual([path.read_text() for path in kept], ["tampered\n"])
+        self.assertEqual((self.root / "out/sorted/sub=s1.txt").read_text(), "a\nb\n")
+
     # Renames of what a job makes or reads: the recorded work is reused.
 
     def test_renaming_a_product_reuses_its_outputs_with_move_files(self):
