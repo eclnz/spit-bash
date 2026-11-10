@@ -275,6 +275,15 @@ class IncrementalTests(unittest.TestCase):
         self.edit("tally = ", "counts = ")
         self.assertReruns({"run": 2, "skip": 3}, 2)
 
+    def test_a_new_layout_without_move_files_says_moving_would_rerun_nothing(self):
+        self.edit("default path: out/{@product}/{@entities}.txt", "default path: results/{@product}/{@entities}.txt")
+        self.compile()
+        plan = spit_bash(self.root, "plan")
+        self.assertIn("4 jobs rerun only because their outputs are recorded at other paths; "
+                      "--move-files moves them instead\n", plan.stderr)
+        moved = spit_bash(self.root, "plan", "--move-files")
+        self.assertNotIn("--move-files moves them", moved.stderr)
+
     def test_swapping_the_content_of_two_sources_reruns_what_reads_them(self):
         a, b = (self.root / "input/s1.txt"), (self.root / "input/s2.txt")
         first, second = a.read_text(), b.read_text()

@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 
 from .load import load_dag
+from .cause import Why
 from .model import Dag, DagError, Layout
 from .plan import Status, adopt, explained, plan, writes
 from .reuse.evidence import Compare
@@ -23,7 +24,7 @@ from .execute.scheduler import execute
 from .report import run_text
 from .report.explain import explain
 from .report.plan_json import document
-from .report.plan_text import adoption_line, listing, nothing_run
+from .report.plan_text import adoption_line, listing, move_hint, nothing_run
 from .report.summary import Summary, stale
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
@@ -219,6 +220,13 @@ def main(argv: list[str] | None = None) -> int:
                 state.assume(handed)
         # Under --force, no outputs are moved: the forced jobs run, and the rest are judged as they stand.
         decisions = plan(dag, state, forced, compare, args.move_files and not args.force)
+        movable = 0
+        if not args.move_files and not args.force and any(
+                decision.status is Status.RUN and decision.cause.why is Why.OUTPUT_MISSING and decision.cause.paths
+                for decision in decisions):
+            # Planning writes and moves nothing, so a second plan only asks what moving would save.
+            moved = plan(dag, state, forced, compare, True)
+            movable = sum(decision.status is Status.PLACE for decision in moved)
         if args.action is Action.RUN:
             state.apply(writes(decisions))
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
@@ -231,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             for line in listing(dag, decisions, args.verbose):
                 print(line)
+        if movable:
+            print(move_hint(movable), file=sys.stderr)
         if args.action is Action.PLAN:
             return 1 if blocked else 0
         if blocked and not args.partial:
