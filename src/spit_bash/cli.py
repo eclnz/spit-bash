@@ -273,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         run_text.report_failures(dag, summary, args.verbose)
         if summary.placed:
             print(run_text.moved_note(), file=sys.stderr)
+        for note in run_text.varied_notes(results):
+            print(note, file=sys.stderr)
         print(run_text.summary_line(summary), file=sys.stderr)
         left = stale(everything, dag, decisions, results) if selection else 0
         if left:
