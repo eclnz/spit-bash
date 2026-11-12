@@ -67,6 +67,41 @@ class CliTests(unittest.TestCase):
         code, _, err = call("run", str(self.dag))
         self.assertNotIn("outside the selection", err)
 
+    def test_plan_says_why_jobs_will_replace_outputs_on_disk_and_not_for_new_ones(self):
+        _, out, _ = call("plan", self.write())
+        self.assertNotIn("replace", out)
+        call("run", str(self.dag))
+        (self.root / "final.txt").unlink()
+        _, out, _ = call("plan", str(self.dag), "--force")
+        self.assertEqual(out.splitlines(), [
+            "1 job can start, 1 job will wait for it",
+            "1 job will replace existing outputs:",
+            "  op1: forced",
+        ])
+        _, out, _ = call("plan", str(self.dag), "--force", "--verbose")
+        self.assertNotIn("will replace", out)
+
+    def test_a_job_log_starts_with_why_it_ran(self):
+        call("run", self.write())
+        log = self.root / ".spit-bash/logs/1-op1.log"
+        self.assertEqual(log.read_text().splitlines()[0], "spit-bash: planned to run: output missing")
+        call("run", str(self.dag), "--force")
+        self.assertEqual(log.read_text().splitlines()[0], "spit-bash: planned to run: forced")
+
+    def test_a_partial_run_that_rewrites_the_same_bytes_leaves_nothing_out_of_date(self):
+        call("run", self.write())
+        code, _, err = call("run", str(self.dag), "--product", "work/upper.txt", "--force")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 done", err)
+        self.assertIn("1 output was rewritten with the same content; nothing outside the selection needs to run", err)
+        self.assertNotIn("out of date", err)
+        self.assertEqual(call("plan", str(self.dag))[1], "all 2 jobs are current\n")
+
+    def test_a_partial_run_with_compare_stat_counts_every_rewritten_output_as_changed(self):
+        call("run", self.write())
+        _, _, err = call("run", str(self.dag), "--product", "work/upper.txt", "--force", "--compare", "stat")
+        self.assertIn("1 job outside the selection read outputs this run changed", err)
+
     def test_reads_stdin_and_needs_root_when_dag_has_none(self):
         self.data["root"] = None
         code, _, err = call("plan", "-", stdin=json.dumps(placed(self.data)))

@@ -23,7 +23,11 @@ from ..progress import about, duration
 from ..schedule import size
 from .causes import cause
 from .failures import failure_groups, ids
-from .summary import Summary
+from .summary import Left, Summary
+
+
+# How many of the files a job wrote in place of a missing output its failure names.
+WRITTEN_SHOWN = 5
 
 
 def end_words(kind: str, end: CommandEnd) -> str:
@@ -80,8 +84,13 @@ def failure_words(job: Job, failure: Failure) -> str:
             return f"could not move standard output onto {path}: {error}"
         case InputChanged():
             return _input_changes(failure)
-        case OutputsMissing(missing):
-            return "command succeeded but did not create " + ", ".join(f"output {port} {path}" for port, path in missing)
+        case OutputsMissing(missing, written):
+            words = "command succeeded but did not create " + ", ".join(f"output {port} {path}" for port, path in missing)
+            if written:
+                shown = ", ".join(written[:WRITTEN_SHOWN])
+                more = f" and {len(written) - WRITTEN_SHOWN} more" if len(written) > WRITTEN_SHOWN else ""
+                words += f"; it wrote {shown}{more} in the same folder, left in place"
+            return words
         case PlaceFailed(error, True):
             return f"could not move its outputs, so they were put back: {error}"
         case PlaceFailed(error, False):
@@ -205,7 +214,12 @@ def moved_note() -> str:
             "its output is not rerun")
 
 
-def stale_line(stale: int) -> str:
-    """What to do about the jobs outside a selection that read outputs the run changed."""
-    return (f"{stale} job{'' if stale == 1 else 's'} outside the selection read outputs this run changed; "
-            "run without the selection to bring them up to date")
+def left_lines(left: Left) -> list[str]:
+    """What to do about the jobs outside a selection that read outputs the run rewrote: nothing, when none changed."""
+    if left.stale:
+        return [f"{left.stale} job{'' if left.stale == 1 else 's'} outside the selection read outputs this run changed; "
+                "run without the selection to bring them up to date"]
+    if left.unchanged:
+        were = "output was" if left.unchanged == 1 else "outputs were"
+        return [f"{left.unchanged} {were} rewritten with the same content; nothing outside the selection needs to run"]
+    return []

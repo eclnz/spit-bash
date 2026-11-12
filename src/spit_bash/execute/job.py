@@ -49,6 +49,9 @@ class Failed:
 
 Outcome = Union[Made, Failed]
 
+# What starts the first line of a job's log, before why the plan ran it.
+REASON_PREFIX = "spit-bash: planned to run: "
+
 
 def log_path(logs: Path, job: Job) -> Path:
     return logs / f"{job.id}-{job.operation}.log"
@@ -174,6 +177,42 @@ def _set_aside(dag: Dag, job: Job, log: Log) -> list[tuple[str, Path, Path]]:
     return moved
 
 
+Listings = dict[Path, frozenset[str]]
+
+
+def _listings(dag: Dag, job: Job) -> Listings:
+    """The names in the folder of each of the job's outputs, to find what its commands wrote there."""
+    listed = {}
+    for output in job.output_paths:
+        folder = dag.checked(output).parent
+        if folder not in listed:
+            try:
+                listed[folder] = frozenset(os.listdir(folder))
+            except OSError:
+                listed[folder] = frozenset()
+    return listed
+
+
+def _written(dag: Dag, missing: tuple[str, ...], before: Listings) -> tuple[str, ...]:
+    """The files that appeared, since `before`, in the folders of the `missing` outputs, other than the DAG's artifacts
+    and the runner's own files, by path under the output's root."""
+    found = set()
+    for output in missing:
+        folder = dag.checked(output).parent
+        base = dag.base(output)
+        try:
+            now = os.listdir(folder)
+        except OSError:
+            continue
+        for name in set(now) - before.get(folder, frozenset()):
+            if name.endswith((".spit-bash-previous", ".spit-bash-partial")):
+                continue
+            relative = (folder / name).relative_to(base).as_posix()
+            if relative not in dag.absolute:
+                found.add(relative)
+    return tuple(sorted(found))
+
+
 def _settle_aside(moved: list[tuple[str, Path, Path]], log: Log, restore: bool) -> None:
     """Delete the earlier versions after a success, or put them back after a failure.
 
@@ -193,7 +232,8 @@ def _settle_aside(moved: list[tuple[str, Path, Path]], log: Log, restore: bool) 
 
 
 async def _make(dag: Dag, job: Job, before: Stamps, log: Log, limit: int | None,
-                entries: dict[str, FolderEntries], runner: Runner) -> Failure | tuple[Stamps, Stamps]:
+                entries: dict[str, FolderEntries], listed: Listings,
+                runner: Runner) -> Failure | tuple[Stamps, Stamps]:
     """Run a job's commands in order, then its output checks; give a failure, or its inputs' and outputs' stamps.
 
     The first command that fails stops the job, and the commands after it do not run.
@@ -220,7 +260,7 @@ async def _make(dag: Dag, job: Job, before: Stamps, log: Log, limit: int | None,
     missing = tuple((port.name, artifact.path) for port in job.outputs for artifact in port.artifacts
                     if outputs[artifact.path] is None)
     if missing:
-        return OutputsMissing(missing)
+        return OutputsMissing(missing, _written(dag, tuple(path for _, path in missing), listed))
     failure = await _checks(dag, job.after, log, runner)
     if failure is not None:
         return failure
@@ -229,7 +269,7 @@ async def _make(dag: Dag, job: Job, before: Stamps, log: Log, limit: int | None,
 
 async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runner = run_command,
                   on_start: Callable[[], None] = lambda: None,
-                  on_discard: Callable[[], None] = lambda: None) -> Outcome:
+                  on_discard: Callable[[], None] = lambda: None, reason: str | None = None) -> Outcome:
     """Run one job: its input checks and `verify` commands, its commands, then its output checks.
 
     `on_start` is called once the job's inputs are all there and it has a
@@ -237,6 +277,9 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
     first command has started loses its outputs, unless `options.keep_failed`
     keeps them, and gets back what an earlier run left at them; one cancelled
     meanwhile does the same before the cancellation goes on.
+
+    `reason`, why the plan ran the job, is the log's first line, so the log answers why
+    the job ran after its record has been replaced.
 
     `on_discard` is called when a failed or cancelled job keeps its failed
     outputs in place of an earlier run's, so that the earlier run's record no
@@ -254,6 +297,8 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
     limit = job.memory if options.enforce_memory else None
     keep = options.keep_failed
     with open_log(log, options.timestamp_logs) as stream:
+        if reason is not None:
+            stream.write(f"{REASON_PREFIX}{reason}\n".encode())
         failure = await _checks(dag, job.before, stream, runner)
         if failure is not None:
             return Failed(failure, log)
@@ -271,11 +316,12 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
                 written.mkdir(parents=True)
             else:
                 written.parent.mkdir(parents=True, exist_ok=True)
+        listed = _listings(dag, job)
         # From here on, a failure removes what the command left at the job's
         # outputs, unless they are kept. A cancelled command's process group is stopped before
         # the cancellation reaches this point.
         try:
-            made = await _make(dag, job, before, stream, limit, entries, runner)
+            made = await _make(dag, job, before, stream, limit, entries, listed, runner)
         except asyncio.CancelledError:
             _remove_outputs(dag, job, stream, keep)
             _settle_aside(moved, stream, not keep)

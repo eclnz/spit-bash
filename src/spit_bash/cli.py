@@ -21,10 +21,11 @@ from .state.store import Store
 from .execute.options import Options
 from .execute.scheduler import execute
 from .report import run_text
+from .report.causes import decided
 from .report.explain import explain
 from .report.plan_json import document
 from .report.plan_text import adoption_line, listing, nothing_run
-from .report.summary import Summary, stale
+from .report.summary import Summary, left_out
 from .schedule import over_memory
 from .selection import Selection, parse_only, parse_stage, select
 
@@ -248,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         options = Options(logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
                           args.timestamp_logs)
         try:
-            results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag)))
+            results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag), decided))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM
@@ -260,9 +261,9 @@ def main(argv: list[str] | None = None) -> int:
         if summary.placed:
             print(run_text.moved_note(), file=sys.stderr)
         print(run_text.summary_line(summary), file=sys.stderr)
-        left = stale(everything, dag, decisions, results) if selection else 0
-        if left:
-            print(run_text.stale_line(left), file=sys.stderr)
+        if selection:
+            for line in run_text.left_lines(left_out(everything, dag, decisions, results, state, compare)):
+                print(line, file=sys.stderr)
         failed = summary.failed or summary.not_run
         return 1 if failed or blocked else 0
     except (DagError, OSError) as exc:
