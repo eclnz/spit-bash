@@ -114,6 +114,8 @@ def printer(dag: Dag) -> Callable[[Event], None]:
                 print(f"\nRunning {runs} job{'' if runs == 1 else 's'}{more}{estimate}{moving}", flush=True)
             case events.Started(job):
                 say(job, "start")
+            case events.Hashing(job):
+                say(job, "hashing")
             case events.Done(job, seconds, progress):
                 say(job, "done", f" in {duration(seconds)}; {progress}")
             case events.Placed(job, moves):
