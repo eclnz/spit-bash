@@ -238,7 +238,19 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         output_root=output_root,
         in_dataset=in_dataset,
     )
-    for path in (*external_paths, *(path for job in jobs for path in (*job.input_paths, *job.output_paths))):
-        if path not in dag.absolute:
-            dag.absolute[path] = dag.checked(path)
+    for path, use in _uses(external_set, jobs).items():
+        dag.absolute[path] = dag.checked(path, use)
     return dag
+
+
+def _uses(sources: set[str], jobs: list[Job]) -> dict[str, str]:
+    """Each artifact's path, in DAG order, with the first job that reads or writes it, for an error to name."""
+    uses: dict[str, str] = {}
+    for job in jobs:
+        for path in job.input_paths:
+            uses.setdefault(path, f"Job {job.id} ({job.operation}) reads it{' as a source' if path in sources else ''}")
+        for path in job.output_paths:
+            uses.setdefault(path, f"Job {job.id} ({job.operation}) writes it")
+    for path in sorted(sources - uses.keys()):
+        uses[path] = "It is a source no job reads"
+    return uses

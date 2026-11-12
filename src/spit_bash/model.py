@@ -239,10 +239,34 @@ class Dag:
         path = self.absolute.get(relative)
         return self.checked(relative) if path is None else path
 
-    def checked(self, relative: str) -> Path:
-        """The path under its root, resolved now, so a link made since loading cannot lead outside it."""
+    def checked(self, relative: str, use: str | None = None) -> Path:
+        """The path under its root, resolved now, so a link made since loading cannot lead outside it.
+
+        `use` says what reads or writes the path, for the error when it does lead outside.
+        """
         base = self.base(relative)
         path = base.joinpath(*PurePosixPath(relative).parts)
-        if not path.resolve().is_relative_to(base):
-            raise DagError(f"path escapes {'dataset' if base == self.root else 'output'} root: {relative}")
+        resolved = path.resolve()
+        if not resolved.is_relative_to(base):
+            raise DagError(_escape(base, relative, resolved, "dataset" if base == self.root else "output", use))
         return path
+
+
+def _escape(base: Path, relative: str, resolved: Path, which: str, use: str | None) -> str:
+    """Why `relative` is refused: the link on its way that leads to `resolved`, outside `base`."""
+    parts = PurePosixPath(relative).parts
+    link = next((PurePosixPath(*parts[:end]) for end in range(1, len(parts) + 1)
+                 if base.joinpath(*parts[:end]).is_symlink()), None)
+    if link is None:
+        # A root with `..` in it, or a link that changed while it was read.
+        lead = f"{relative} leads to {resolved}"
+    elif str(link) == relative:
+        lead = f"{relative} is a link to {resolved}"
+    else:
+        lead = f"{relative} leads through the link {link} to {resolved}"
+    lines = [f"{lead}, outside the {which} root {base}."]
+    if use is not None:
+        lines.append(f"  {use}.")
+    lines.append("  spit-bash reads and writes only under its roots, so no link may lead out of one: "
+                 "move or copy what it links to under the root.")
+    return "\n".join(lines)
