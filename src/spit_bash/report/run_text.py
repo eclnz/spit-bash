@@ -124,8 +124,13 @@ def printer(dag: Dag) -> Callable[[Event], None]:
                 say(job, "checked")
             case events.SkippedUnchanged(job):
                 say(job, "skip", ": upstream output unchanged")
-            # Failures are reported together once the run ends, grouped by cause.
-            case events.JobFailed() | events.NotRun():
+            # One line as it happens, so a run can be stopped early; the error, the log's end and
+            # the jobs it held up are reported once the run ends, grouped by cause.
+            case events.JobFailed(result):
+                assert result.failure is not None, "a failed job has its failure"
+                say(result.job, "failed", ": " + failure_words(result.job, result.failure))
+            # Its cause has a line of its own.
+            case events.NotRun():
                 pass
 
     return on_event

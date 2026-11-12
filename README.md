@@ -203,7 +203,7 @@ A job that fails before its first command starts, at a missing input, an input c
 
 ## Output and logs
 
-Each job's output, from its checks, its `verify` commands and its commands, goes to `.spit-bash/logs/ID-OPERATION.log` under the output root, except a command's standard output when it is [one of the job's outputs](#standard-input-and-output), which each run of the job replaces. The terminal shows only when each job starts and finishes, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
+Each job's output, from its checks, its `verify` commands and its commands, goes to `.spit-bash/logs/ID-OPERATION.log` under the output root, except a command's standard output when it is [one of the job's outputs](#standard-input-and-output), which each run of the job replaces. The terminal shows only when each job starts, finishes or fails, so parallel jobs do not mix their output. When a job fails, `run` prints the last lines of its log. `--logs DIR` puts the logs elsewhere.
 
 `--timestamp-logs` starts every line of a job's log with the date, time and UTC offset at which the runner received it, to the millisecond, such as `2026-11-07T15:12:03.142+13:00 $ bet ...`. The runner's own `$` command lines, its notes, and every line of a command's output are stamped; a command's output written to a declared artifact is not touched. A tool that buffers its output may have written a line earlier than its stamp, and lines that arrive in one read share a time. A last line with no newline is ended with one. Without the flag, a log holds the lines as the command wrote them.
 
@@ -211,7 +211,7 @@ Each job's output, from its checks, its `verify` commands and its commands, goes
 spit-bash run pipeline.spit --timestamp-logs
 ```
 
-`run` prints the plan's counts, then a blank line and `Running`, with how many jobs will run and how long it expects to take, then a line as each job starts and finishes, how long it took and how many jobs are left. A job is named by its operation and by what it works on: the entities of its first output, such as `sub=02 task=rest run=01`, in name order, or the group a group job makes. Where those leave two jobs of one operation looking alike, as for jobs with no entities, the product is shown too, and a long value is cut short with `…`. The job id stays the reference to its log and to a failure.
+`run` prints the plan's counts, then a blank line and `Running`, with how many jobs will run and how long it expects to take, then a line as each job starts and finishes, how long it took and how many jobs are left, and a line as a job fails, with its error, so a run can be stopped as soon as a failure shows it needs fixing. A job is named by its operation and by what it works on: the entities of its first output, such as `sub=02 task=rest run=01`, in name order, or the group a group job makes. Where those leave two jobs of one operation looking alike, as for jobs with no entities, the product is shown too, and a long value is cut short with `…`. The job id stays the reference to its log and to a failure.
 
 ```text
 12 jobs can start, 40 jobs will wait for them
@@ -220,9 +220,10 @@ Running 12 jobs, about 4s
   [ 1] start   anat sub=01
   [ 4] start   motion run=01 sub=01 task=rest
   [ 1] done    anat sub=01 in 2s; 11 left, about 2s
+  [ 4] failed  motion run=01 sub=01 task=rest: command exited with status 1
 ```
 
-A failed job's error and the end of its log are printed once. Jobs that failed the same way, with the same last lines once the paths of their own files are left out, are printed once and named: `[1] the same failure in 2 other jobs: 2, 3`. Each failure says how many jobs it held up. A job that did not run because a job it needs failed is not a failure of its own: it is counted as `not run`, and `run --verbose` names it, as `[2] not run: job 1 failed`. The summary counts them apart, as `0 done, 0 checked, 13 failed, 68 not run (an upstream job failed), 0 current, 12 blocked`. No tool is started for a job below a failed or blocked one.
+Once the run ends, a failed job's error and the end of its log are printed once. Jobs that failed the same way, with the same last lines once the paths of their own files are left out, are printed once and named: `[1] the same failure in 2 other jobs: 2, 3`. Each failure says how many jobs it held up. A job that did not run because a job it needs failed is not a failure of its own: it is counted as `not run`, and `run --verbose` names it, as `[2] not run: job 1 failed`. The summary counts them apart, as `0 done, 0 checked, 13 failed, 68 not run (an upstream job failed), 0 current, 12 blocked`. No tool is started for a job below a failed or blocked one.
 
 Lines come in the order the scheduler starts and finishes jobs, not by id.
 

@@ -57,6 +57,7 @@ exit 1
 
 Running 2 jobs
   [1] start   op1
+  [1] failed  op1: command exited with status 3
 --- stderr
 [1] failed: command exited with status 3
 [1] last lines of <root>/.spit-bash/logs/1-op1.log:
@@ -74,6 +75,7 @@ exit 1
 
 Running 2 jobs
   [1] start   op1
+  [1] failed  op1: command exited with status 3
 --- stderr
 [1] failed: command exited with status 3
 [1] last lines of <root>/.spit-bash/logs/1-op1.log:
