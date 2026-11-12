@@ -213,17 +213,23 @@ def _written(dag: Dag, missing: tuple[str, ...], before: Listings) -> tuple[str,
     return tuple(sorted(found))
 
 
-def _settle_aside(moved: list[tuple[str, Path, Path]], log: Log, restore: bool) -> None:
+def _settle_aside(moved: list[tuple[str, Path, Path]], log: Log, restore: bool, kept: str | None = None) -> None:
     """Delete the earlier versions after a success, or put them back after a failure.
 
     Call after `_remove_outputs`, so that nothing is at the paths a version goes back to.
     Without `restore`, as for `--keep-failed`, the failed output stays and the earlier version goes.
+    With `kept`, a stamp, an earlier version is kept as `Layout.edited` gives it instead of deleted:
+    for a job that reran because someone edited its output.
     """
     for output, path, waiting in moved:
         try:
             if restore and not (path.is_symlink() or path.exists()):
                 waiting.rename(path)
                 log.write(f"spit-bash: restored the earlier {output}\n".encode())
+            elif kept is not None and not restore:
+                edited = Layout.edited(path, kept)
+                waiting.rename(edited)
+                log.write(f"spit-bash: kept the edited {output} as {edited.name}\n".encode())
             else:
                 _clear(waiting)
         except OSError as exc:
@@ -269,7 +275,8 @@ async def _make(dag: Dag, job: Job, before: Stamps, log: Log, limit: int | None,
 
 async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runner = run_command,
                   on_start: Callable[[], None] = lambda: None,
-                  on_discard: Callable[[], None] = lambda: None, reason: str | None = None) -> Outcome:
+                  on_discard: Callable[[], None] = lambda: None, reason: str | None = None,
+                  keep_edited: bool = False) -> Outcome:
     """Run one job: its input checks and `verify` commands, its commands, then its output checks.
 
     `on_start` is called once the job's inputs are all there and it has a
@@ -285,6 +292,9 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
     outputs in place of an earlier run's, so that the earlier run's record no
     longer describes what is at its paths. Otherwise, whatever the outcome, the
     earlier run's files are at the job's paths until the job succeeds.
+
+    With `keep_edited`, for a job that reruns because its output was edited,
+    a success keeps what was at its outputs beside them.
     """
     before = stamps(dag, job.input_paths)
     if any(value is None for value in before.values()):
@@ -334,6 +344,6 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
             if keep:
                 on_discard()
             return Failed(made, log)
-        _settle_aside(moved, stream, False)
+        _settle_aside(moved, stream, False, options.started if keep_edited else None)
     after, outputs = made
     return Made(after, outputs, time.monotonic() - started)

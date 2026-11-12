@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from ..cause import Why
 from ..display import id_width, labels, name
 from ..model import Dag
 from ..plan import Adoption, Decision, Status
@@ -133,10 +134,30 @@ def not_moved_lines(decisions: tuple[Decision, ...]) -> list[str]:
     return lines
 
 
+def edited_lines(decisions: tuple[Decision, ...]) -> list[str]:
+    """A line for each job that reruns because its output was edited since it was made, which `run` keeps."""
+    edited = [decision.job for decision in decisions
+              if decision.status is Status.RUN and decision.cause.why is Why.OUTPUT_CHANGED]
+    if not edited:
+        return []
+    lines = [f"{jobs(len(edited))} {'reruns' if len(edited) == 1 else 'rerun'} because an output was edited since it was made; "
+             "run keeps what is there as NAME.edited-<time> beside it"]
+    lines += [f"[{job.id}] edited: {', '.join(job.output_paths)}" for job in edited[:LISTED]]
+    if len(edited) > LISTED:
+        lines.append(f"... and {len(edited) - LISTED} more")
+    return lines
+
+
+def move_hint(movable: int) -> str:
+    """Without `--move-files`, what the flag would save: the jobs that rerun only because their outputs are at other paths."""
+    return (f"{jobs(movable)} {'reruns' if movable == 1 else 'rerun'} only because {'its outputs are' if movable == 1 else 'their outputs are'} "
+            "recorded at other paths; --move-files moves them instead")
+
+
 def listing(dag: Dag, decisions: tuple[Decision, ...], verbose: bool) -> list[str]:
     """What `plan` and `run` print of a plan: the counts, a line for each cause that blocks jobs, and with `verbose`
     every job, or without it why jobs will replace outputs on disk and each job whose outputs are not moved."""
-    lines = [counts(decisions), *blocked_lines(decisions)]
+    lines = [counts(decisions), *blocked_lines(decisions), *edited_lines(decisions)]
     if verbose:
         work, width = labels(dag.jobs), id_width(dag.jobs)
         lines += [job_line(decision, work, width) for decision in decisions]

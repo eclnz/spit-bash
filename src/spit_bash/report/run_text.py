@@ -208,6 +208,15 @@ def summary_line(summary: Summary) -> str:
     return line
 
 
+def varied_notes(results: tuple[Result, ...]) -> list[str]:
+    """A note for each operation whose jobs ran their recorded work on the same input bytes and made different
+    output bytes: what reads its outputs reruns every time, and stopping at an unchanged output never applies."""
+    by_operation = Counter(result.job.operation for result in results if result.varied)
+    return [f"note: {operation} gave different output from the same inputs ({count} job{'' if count == 1 else 's'}); "
+            "what reads it will rerun every time"
+            for operation, count in sorted(by_operation.items())]
+
+
 def moved_note() -> str:
     """What a run that moved outputs leaves unchecked."""
     return ("outputs were moved to the paths the pipeline now gives them; a tool that wrote those paths into "

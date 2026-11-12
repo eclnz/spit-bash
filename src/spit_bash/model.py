@@ -198,6 +198,11 @@ class Layout:
         """Where an output's earlier version waits while its job runs, beside it so a move keeps it on one disk."""
         return output.with_name(f".{output.name}.spit-bash-previous")
 
+    @staticmethod
+    def edited(output: Path, stamp: str) -> Path:
+        """Where an output edited since its job made it is kept when the job reruns, beside it, as `NAME.edited-<stamp>`."""
+        return output.with_name(f"{output.name}.edited-{stamp}")
+
 
 @dataclass(frozen=True)
 class Dag:

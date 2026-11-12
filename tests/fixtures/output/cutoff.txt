@@ -1,6 +1,7 @@
 $ spit-bash plan jobs.spitdag
 exit 0
 --- stdout
+since the last run: 1 source.txt changed
 1 job can start, 2 jobs may run if an upstream output changes
 1 job will replace existing outputs:
   op1: input changed
@@ -9,6 +10,7 @@ exit 0
 $ spit-bash plan jobs.spitdag --verbose
 exit 0
 --- stdout
+since the last run: 1 source.txt changed
 1 job can start, 2 jobs may run if an upstream output changes
 [1] ready   op1: input changed
 [2] may run op2: runs if an upstream output changes
@@ -76,6 +78,7 @@ Job 2: op2
 $ spit-bash run jobs.spitdag --cores 1
 exit 0
 --- stdout
+since the last run: 1 source.txt changed
 1 job can start, 2 jobs may run if an upstream output changes
 1 job will replace existing outputs:
   op1: input changed
@@ -91,6 +94,7 @@ Running 1 job, and 2 more that may, <time>
 $ spit-bash run jobs.spitdag --cores 1 --verbose
 exit 0
 --- stdout
+since the last run: 1 source.txt changed
 1 job can start, 2 jobs may run if an upstream output changes
 [1] ready   op1: input changed
 [2] may run op2: runs if an upstream output changes

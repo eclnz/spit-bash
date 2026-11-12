@@ -223,6 +223,39 @@ class IncrementalTests(unittest.TestCase):
         (self.root / "out/sorted/sub=s1.txt").write_text("tampered\n")
         self.assertReruns({"run": 3, "skip": 2}, 3)
 
+    def test_an_edited_output_is_kept_beside_the_one_its_rerun_makes(self):
+        (self.root / "out/sorted/sub=s1.txt").write_text("tampered\n")
+        self.compile()
+        plan = spit_bash(self.root, "plan")
+        self.assertIn("1 job reruns because an output was edited since it was made; "
+                      "run keeps what is there as NAME.edited-<time> beside it\n", plan.stdout)
+        self.assertRegex(plan.stdout, r"\[\d+\] edited: out/sorted/sub=s1.txt\n")
+        spit_bash(self.root, "run")
+        kept = list((self.root / "out/sorted").glob("sub=s1.txt.edited-*"))
+        self.assertEqual([path.read_text() for path in kept], ["tampered\n"])
+        self.assertEqual((self.root / "out/sorted/sub=s1.txt").read_text(), "a\nb\n")
+
+    # What a plan says changed since the last run, before its counts.
+
+    def changes(self):
+        self.compile()
+        lines = [line for line in spit_bash(self.root, "plan").stdout.splitlines() if line.startswith("since the last run")]
+        return lines[0] if lines else None
+
+    def test_a_plan_with_nothing_changed_says_nothing(self):
+        self.assertIsNone(self.changes())
+
+    def test_a_plan_names_new_changed_and_gone_sources(self):
+        (self.root / "input/s3.txt").write_text("m\n")
+        (self.root / "input/s1.txt").write_text("q\nq\nw\n")
+        (self.root / "input/s2.txt").unlink()
+        self.assertEqual(self.changes(), "since the last run: +1 raw (sub=s3); 1 raw changed (sub=s1); "
+                                         "2 jobs from earlier runs no longer in the DAG (sub=s2)")
+
+    def test_a_plan_names_an_operation_whose_command_changed(self):
+        self.edit("command tally_lines: uniq -c", "command tally_lines: uniq -ci")
+        self.assertEqual(self.changes(), "since the last run: tally_lines: command changed (2 jobs)")
+
     # Renames of what a job makes or reads: the recorded work is reused.
 
     def test_renaming_a_product_reuses_its_outputs_with_move_files(self):
@@ -234,6 +267,25 @@ class IncrementalTests(unittest.TestCase):
         self.edit("input/{sub}", "input/{id}")
         self.edit("@vary(sub)", "@vary(id)")
         self.assertReruns({"place": 4, "skip": 1}, 0, "--move-files")
+
+    def test_renaming_a_dimension_moves_jobs_whose_inputs_hold_the_same_bytes(self):
+        # Different sources that sort to the same lines, so each `tally_lines` reads
+        # the same bytes and its records are interchangeable by content. Each job must
+        # still take the record of what it made under the old name, though the jobs
+        # come in numeric order, 9 before 10, and the records in text order.
+        for name in ("s1", "s2"):
+            (self.root / f"input/{name}.txt").unlink()
+        for name, text in (("9", "a\nb\n"), ("10", "b\na\n"), ("11", "b\nb\na\n")):
+            (self.root / f"input/{name}.txt").write_text(text)
+        self.compile()
+        self.assertIn("0 failed", spit_bash(self.root, "run").stderr)
+        self.edit("[sub]", "[id]")
+        self.edit("input/{sub}", "input/{id}")
+        self.edit("@vary(sub)", "@vary(id)")
+        self.assertReruns({"place": 6, "skip": 1}, 0, "--move-files")
+        for name in ("9", "10", "11"):
+            self.assertFalse((self.root / f"out/tally/sub={name}.txt").exists())
+            self.assertTrue((self.root / f"out/tally/id={name}.txt").exists())
 
     def test_renaming_a_source_family_reuses_its_outputs_with_move_files(self):
         self.edit("source raw", "source scans")
@@ -255,6 +307,15 @@ class IncrementalTests(unittest.TestCase):
     def test_a_renamed_product_without_move_files_reruns_only_it(self):
         self.edit("tally = ", "counts = ")
         self.assertReruns({"run": 2, "skip": 3}, 2)
+
+    def test_a_new_layout_without_move_files_says_moving_would_rerun_nothing(self):
+        self.edit("default path: out/{@product}/{@entities}.txt", "default path: results/{@product}/{@entities}.txt")
+        self.compile()
+        plan = spit_bash(self.root, "plan")
+        self.assertIn("4 jobs rerun only because their outputs are recorded at other paths; "
+                      "--move-files moves them instead\n", plan.stderr)
+        moved = spit_bash(self.root, "plan", "--move-files")
+        self.assertNotIn("--move-files moves them", moved.stderr)
 
     def test_swapping_the_content_of_two_sources_reruns_what_reads_them(self):
         a, b = (self.root / "input/s1.txt"), (self.root / "input/s2.txt")

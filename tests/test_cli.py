@@ -9,7 +9,7 @@ from unittest import mock
 
 from spit_bash.cli import main
 from spit_bash.load import blob_id
-from support import artifact, job_entry, sample, UPPER, placed
+from support import artifact, document, job_entry, sample, UPPER, placed
 
 
 def call(*argv, stdin=None):
@@ -297,3 +297,33 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VariedOutputTests(unittest.TestCase):
+    """A tool that gives different bytes from the same inputs is named once its job reruns on them."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "source.txt").write_text("hello")
+
+    def dag(self, script):
+        path = self.root / "jobs.spitdag"
+        path.write_text(json.dumps(document(self.root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"])))
+        return str(path)
+
+    def test_a_forced_rerun_that_changes_its_output_is_noted(self):
+        dag = self.dag("import os, sys; open(sys.argv[2], 'wb').write(os.urandom(16))")
+        self.assertEqual(call("run", dag)[0], 0)
+        code, _, err = call("run", dag, "--force")
+        self.assertEqual(code, 0, err)
+        self.assertIn("note: op1 gave different output from the same inputs (1 job); what reads it will rerun every time\n",
+                      err)
+
+    def test_a_forced_rerun_that_repeats_its_output_is_not(self):
+        dag = self.dag(UPPER)
+        self.assertEqual(call("run", dag)[0], 0)
+        code, _, err = call("run", dag, "--force")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("different output", err)
