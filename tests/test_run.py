@@ -24,7 +24,7 @@ from spit_bash.execute.options import Options
 from spit_bash.execute import scheduler as scheduler_module
 from spit_bash.execute.scheduler import execute
 from spit_bash.report.run_text import failure_words
-from support import FIXTURE, artifact, command, document, error, job, job_entry, read, run, sample, state_at
+from support import FIXTURE, artifact, command, document, error, job, job_entry, read, run, sample, state_at, job_log, new_run
 
 # Each job writes its own marker, then waits for the other's: they finish only
 # if both run at once.
@@ -281,8 +281,8 @@ class RunTests(unittest.TestCase):
             data = sample(root)
             data["jobs"][0]["commands"][0]["command"][2] = ["import sys; print('to stdout'); print('to stderr', file=sys.stderr); " + data["jobs"][0]["commands"][0]["command"][2][0]]
             _, results = run(read(data), state_at(root))
-            log = (root / ".spit-bash/logs/1-op1.log").read_text()
-            self.assertEqual(results[0].log, root / ".spit-bash/logs/1-op1.log")
+            log = job_log(root / ".spit-bash", "work/upper.txt").read_text()
+            self.assertEqual(results[0].log, job_log(root / ".spit-bash", "work/upper.txt"))
             self.assertIn("to stdout", log)
             self.assertIn("to stderr", log)
             self.assertIn("$ " + sys.executable, log)
@@ -314,7 +314,7 @@ class RunTests(unittest.TestCase):
             pid_file = root / "out.txt.pid"
 
             async def cancel_once_started():
-                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(root / "logs")))
+                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(new_run(root / ".spit-bash/runs"))))
                 while not pid_file.exists() or not pid_file.read_text():
                     await asyncio.sleep(0.01)
                 task.cancel()
@@ -328,7 +328,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(state_at(root).jobs, {})
             # The half-written output went with the stopped command.
             self.assertFalse((root / "out.txt").exists())
-            self.assertIn("removed failed output out.txt", (root / "logs/1-op1.log").read_text())
+            self.assertIn("removed failed output out.txt", job_log(root / ".spit-bash", "out.txt").read_text())
 
     def test_cancelling_kills_a_command_that_ignores_sigterm(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -348,7 +348,7 @@ class RunTests(unittest.TestCase):
             pid_file = root / "out.txt.pid"
 
             async def cancel_once_started():
-                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(root / "logs")))
+                task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(new_run(root / ".spit-bash/runs"))))
                 while not pid_file.exists() or not pid_file.read_text():
                     await asyncio.sleep(0.01)
                 started = time.monotonic()
@@ -450,7 +450,7 @@ class EarlierOutputTests(unittest.TestCase):
         state = Store(self.root / "state.jsonl")
         decisions = plan(dag, state, False)
         with contextlib.redirect_stdout(io.StringIO()):
-            return asyncio.run(execute(dag, decisions, state, Options(self.root / "logs", keep_failed=keep_failed)))
+            return asyncio.run(execute(dag, decisions, state, Options(new_run(self.root / ".spit-bash/runs"), keep_failed=keep_failed)))
 
     def test_a_tool_that_refuses_to_overwrite_runs_again(self):
         (result,) = self.run_job(self.REFUSE)
@@ -512,7 +512,7 @@ class RecordAfterFailureTests(unittest.TestCase):
                 if isinstance(event, events.Started):
                     asyncio.get_running_loop().call_later(0.2, task.cancel)
 
-            await execute(dag, decisions, state, Options(dag.layout.logs), on_event)
+            await execute(dag, decisions, state, Options(new_run(dag.layout.runs)), on_event)
 
         with self.assertRaises(asyncio.CancelledError):
             asyncio.run(cancelled())
@@ -550,7 +550,7 @@ class HashingTests(unittest.TestCase):
                 return slow(*args)
 
             with mock.patch.object(scheduler_module, "_hash_both", delayed):
-                asyncio.run(execute(dag, decisions, state, Options(dag.layout.logs, cores=1),
+                asyncio.run(execute(dag, decisions, state, Options(new_run(dag.layout.runs), cores=1),
                                     lambda event: seen.append((type(event).__name__, getattr(event, "job", None)))))
             state.close()
             order = [(kind, job.id) for kind, job in seen if job is not None]

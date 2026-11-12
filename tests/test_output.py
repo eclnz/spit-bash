@@ -21,7 +21,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.cli import main
-from support import EXCLAIM, artifact, command, document, job_entry, placed, sample, UPPER
+from support import EXCLAIM, artifact, command, document, job_entry, placed, sample, UPPER, job_log
 
 MISSING = "no-such-spit-bash-program"
 FAILS = "import sys; print('boom'); sys.exit(3)"
@@ -126,7 +126,7 @@ class OutputTests(unittest.TestCase):
         (self.root / "out2.txt").write_text("edited")
         (self.root / "fail").write_text("")
         _, _, err = call("run", str(self.dag))
-        reasons = [(self.root / f".spit-bash/logs/{n}-import.log").read_text().splitlines()[0] for n in (1, 2)]
+        reasons = [job_log(self.root / ".spit-bash", f"out{n}.txt").read_text().splitlines()[0] for n in (1, 2)]
         self.assertEqual(reasons, ["spit-bash: planned to run: input changed",
                                    "spit-bash: planned to run: output changed"])
         self.assertIn("[1] the same failure in 1 other job: 2", err)
@@ -155,7 +155,8 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(err, "nothing was run: 4 jobs are blocked. Fix the cause, or pass --partial "
                               "to run the jobs that are not.\n")
         self.assertFalse((self.root / "a.txt").exists())
-        self.assertFalse((self.root / ".spit-bash/logs").exists())
+        # The run's folder holds what it printed, and no job's log.
+        self.assertEqual([path.name for path in (self.root / ".spit-bash/runs").glob("*/jobs")], [])
 
 
 
@@ -176,6 +177,8 @@ VARYING = [
     (re.compile(rf"(?<= in ){DURATION}(?=;)"), "<time>"),
     (re.compile(rf"(?<=, ){DURATION}$", re.M), "<time>"),
     (re.compile(r"(?<=mtime_ns )\d+"), "<mtime>"),
+    # A run's folder is named by when it started.
+    (re.compile(r"\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d(?:-\d+)?"), "<run>"),
 ]
 HOLDS = "from pathlib import Path; import sys; sys.exit(Path(sys.argv[1]).read_text() != sys.argv[2])"
 

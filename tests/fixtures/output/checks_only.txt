@@ -47,6 +47,7 @@ exit 0
 --- stdout
 Job 1: op1
   decision: check, checks not yet run on these files
+  made by run <run>; log at <root>/.spit-bash/runs/<run>/jobs/work/upper.txt.log
   fingerprint: same (recorded 866c75df1f9c974b, now 866c75df1f9c974b)
   checks: differ (recorded none, now 02b64f49c8fab7ee)
   inputs that differ from the record:

@@ -185,8 +185,9 @@ class Layout:
         return self.folder / "state.jsonl"
 
     @property
-    def logs(self) -> Path:
-        return self.folder / "logs"
+    def runs(self) -> Path:
+        """The folder of run folders, as `runs.Run` describes one."""
+        return self.folder / "runs"
 
     @staticmethod
     def partial(output: Path) -> Path:

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from ..reuse.evidence import Compare
+from ..runs import Run
 
 
 @dataclass(frozen=True)
 class Options:
-    # The folder each job's log is written to.
-    logs: Path
+    # The run's folder, which holds each job's log and the outputs it replaces.
+    run: Run
     # Cores to share among the jobs that run at once.
     cores: int = 1
     # Memory in bytes to share among them, or None for no limit.
@@ -24,5 +24,10 @@ class Options:
     enforce_memory: bool = True
     # Start each line of a job's log with the time the runner received it.
     timestamp_logs: bool = False
-    # When the run started, as `2026-11-10T14-44-52`, which names the copy of an edited output it keeps.
-    started: str = "run"
+    # Keep the outputs a job replaces in the run's folder, rather than deleting them.
+    keep_replaced: bool = True
+
+    @property
+    def started(self) -> str:
+        """When the run started, as `2026-11-10T14-44-52`, which names the copy of an edited output it keeps."""
+        return self.run.name

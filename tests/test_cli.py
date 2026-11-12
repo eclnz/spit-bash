@@ -9,7 +9,7 @@ from unittest import mock
 
 from spit_bash.cli import main
 from spit_bash.load import blob_id
-from support import artifact, document, job_entry, sample, UPPER, placed
+from support import artifact, document, job_entry, sample, UPPER, placed, job_log
 
 
 def call(*argv, stdin=None):
@@ -61,7 +61,7 @@ class CliTests(unittest.TestCase):
         code, _, err = call("run", self.write(), "--dir", str(folder))
         self.assertEqual(code, 0, err)
         self.assertTrue((folder / "state.jsonl").exists())
-        self.assertTrue(any((folder / "logs").iterdir()))
+        self.assertTrue(any((folder / "runs").iterdir()))
         self.assertFalse((self.root / ".spit-bash").exists())
         # The state there is the one a later plan reads, so nothing runs again.
         code, out, _ = call("plan", str(self.dag), "--dir", str(folder))
@@ -124,10 +124,14 @@ class CliTests(unittest.TestCase):
 
     def test_a_job_log_starts_with_why_it_ran(self):
         call("run", self.write())
-        log = self.root / ".spit-bash/logs/1-op1.log"
+        log = job_log(self.root / ".spit-bash", "work/upper.txt")
         self.assertEqual(log.read_text().splitlines()[0], "spit-bash: planned to run: output missing")
         call("run", str(self.dag), "--force")
-        self.assertEqual(log.read_text().splitlines()[0], "spit-bash: planned to run: forced")
+        # The rerun writes a log of its own, in its own run's folder, and the first is kept.
+        rerun = job_log(self.root / ".spit-bash", "work/upper.txt")
+        self.assertNotEqual(rerun, log)
+        self.assertEqual(rerun.read_text().splitlines()[0], "spit-bash: planned to run: forced")
+        self.assertEqual(log.read_text().splitlines()[0], "spit-bash: planned to run: output missing")
 
     def test_a_partial_run_that_rewrites_the_same_bytes_leaves_nothing_out_of_date(self):
         call("run", self.write())

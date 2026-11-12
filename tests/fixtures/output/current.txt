@@ -47,6 +47,7 @@ exit 0
 --- stdout
 Job 2: op2
   decision: skip, current
+  made by run <run>; log at <root>/.spit-bash/runs/<run>/jobs/final.txt.log
   fingerprint: same (recorded 3959901bb9a60cd2, now 3959901bb9a60cd2)
   checks: same (recorded none, now none)
   inputs that differ from the record:

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import io
 import os
 import signal
 import subprocess
 import sys
-import time
 from enum import Enum
 from pathlib import Path
 
@@ -30,8 +30,9 @@ from .report.plan_json import document
 from .report.plan_text import adoption_line, listing, move_hint, nothing_run
 from .report.summary import Summary, left_out
 from .leftovers import leftovers, lines as leftover_lines, remove as remove_leftovers
+from . import runs
 from .schedule import over_memory
-from .selection import Selection, parse_entities, parse_stage, select
+from .selection import Selected, Selection, parse_entities, parse_stage, select
 
 SPIT_SUFFIXES = (".spitin", ".spit", ".spitout")
 # The units of --memory, as SPIT's `resources` line takes them.
@@ -51,6 +52,13 @@ class Action(str, Enum):
     EXPLAIN = "explain"
     RUN = "run"
     ADOPT = "adopt"
+    LOG = "log"
+    PRUNE = "prune"
+    RESTORE = "restore"
+
+
+# The actions that plan, and take the options that change a plan.
+PLANS = (Action.PLAN, Action.EXPLAIN, Action.RUN)
 
 
 HELP = {
@@ -59,6 +67,10 @@ HELP = {
                     "the files that differ from the record, and the upstream jobs that will rewrite its inputs",
     Action.RUN: "run every job that is not current or blocked, and check current jobs whose checks changed",
     Action.ADOPT: "record jobs whose files already exist as current, without running them",
+    Action.LOG: "list each chosen job's logs, from every run that kept one, newest first",
+    Action.PRUNE: "remove all but the newest run folders, keeping the log of each job whose current outputs a run made",
+    Action.RESTORE: "put back the outputs a run replaced, with the records they had; the outputs there now are kept\n"
+                    "in a new run folder, so a restore can be undone the same way",
 }
 
 
@@ -89,16 +101,16 @@ def _parser() -> argparse.ArgumentParser:
                             help="jobs in this stage, or a stage inside it, such as preprocess/combine")
         command.add_argument("--dir", metavar="DIR",
                              help=f"the runner's folder, which holds its state and job logs (default: {DEFAULT.folder})")
-        if action is not Action.ADOPT:
+        if action in PLANS:
             command.add_argument("--force", action="store_true",
                                  help="rerun selected command jobs even if current")
-        if action is not Action.ADOPT:
+        if action in PLANS:
             command.add_argument("--compare", choices=[compare.value for compare in Compare], default="content",
                                  help="how a file counts as unchanged since its record: stat, by size and modification\n"
                                       "time alone, with no stop at an unchanged output and no reuse after a rename;\n"
                                       "content, by size and time, then by content where those differ (default);\n"
                                       "full, by content always, trusting no size or time")
-        if action is not Action.ADOPT:
+        if action in PLANS:
             command.add_argument("--move-files", action="store_true",
                                  help="move outputs the state records at other paths to the paths the pipeline now gives,\n"
                                       "instead of rerunning their jobs, which `plan` lists as `place`. A tool that writes\n"
@@ -127,6 +139,15 @@ def _parser() -> argparse.ArgumentParser:
                                       "where they are as those runs left them, and forget their records")
             command.add_argument("--keep-failed", action="store_true",
                                  help="keep what a failed job's command wrote at its outputs, to debug it")
+            command.add_argument("--no-keep-replaced", dest="keep_replaced", action="store_false",
+                                 help="delete the outputs a job replaces, rather than keeping them in the run's folder\n"
+                                      "for `spit-bash restore`; for pipelines whose outputs are too big to keep twice")
+        if action is Action.PRUNE:
+            command.add_argument("--keep-runs", type=int, required=True, metavar="N",
+                                 help="how many of the newest run folders to keep whole")
+        if action is Action.RESTORE:
+            command.add_argument("--run", required=True, metavar="NAME",
+                                 help="the run whose replaced outputs to put back, by its folder's name, as `log` shows it")
     return parser
 
 
@@ -193,6 +214,102 @@ def _selection(args: argparse.Namespace) -> Selection:
         raise DagError(str(exc)) from exc
 
 
+
+def _plan_and_run(args: argparse.Namespace, dag: Dag, everything: Dag, selection: Selection, selected: Selected,
+                  state: Store, layout: Layout, run: runs.Run | None) -> int:
+    """Plan the chosen jobs, then print the plan, explain a job, or run them in `run`'s folder, as `args.action` says."""
+    forced = selected.matched_ids if args.force else False
+    compare = Compare(args.compare)
+    if compare is not Compare.STAT:
+        handed = relabel(dag, state.jobs, everything)
+        # A plan sees the records handed over, but only a run stores them.
+        if args.action is Action.RUN:
+            state.apply(handed)
+        else:
+            state.assume(handed)
+    # Under --force, no outputs are moved: the forced jobs run, and the rest are judged as they stand.
+    decisions = plan(dag, state, forced, compare, args.move_files and not args.force)
+    movable = 0
+    if not args.move_files and not args.force and any(
+            decision.status is Status.RUN and decision.cause.why is Why.OUTPUT_MISSING and decision.cause.paths
+            for decision in decisions):
+        # Planning writes and moves nothing, so a second plan only asks what moving would save.
+        moved = plan(dag, state, forced, compare, True)
+        movable = sum(decision.status is Status.PLACE for decision in moved)
+    if run is not None:
+        state.apply(writes(decisions))
+        run.plan.write_text(document(dag, decisions) + "\n", encoding="utf-8")
+    blocked = any(decision.status is Status.BLOCKED for decision in decisions)
+    if args.action is Action.EXPLAIN:
+        decision, found = explained(dag, state, decisions, args.job, compare)
+        print("\n".join(explain(dag, decisions, decision, found, layout.runs)))
+        return 1 if decision.status is Status.BLOCKED else 0
+    if args.action is Action.PLAN and args.json:
+        print(document(dag, decisions))
+    else:
+        for line in change_lines(dag, everything, decisions, state.jobs):
+            print(line)
+        for line in listing(dag, decisions, args.verbose):
+            print(line)
+    if movable:
+        print(move_hint(movable), file=sys.stderr)
+    # A partial DAG leaves jobs out, whose records would look like those of jobs the pipeline lost.
+    found = () if everything.left_out else leftovers(everything, state.jobs)
+    removing = args.action is Action.RUN and args.remove_leftovers
+    if args.action is Action.PLAN:
+        for line in leftover_lines(found, args.verbose, False):
+            print(line, file=sys.stderr)
+        return 1 if blocked else 0
+    if blocked and not args.partial:
+        print(nothing_run(decisions), file=sys.stderr)
+        runs.finish(run, "blocked", {})
+        return 1
+
+    if args.enforce_memory:
+        running = [d.job for d in decisions if d.status in (Status.RUN, Status.MAYBE)]
+        over = over_memory(running, args.memory)
+        if over:
+            for line in over:
+                print(line, file=sys.stderr)
+            print("lower the job's `resources` line, give more with --memory, "
+                  "or pass --no-enforce-memory to run it alone", file=sys.stderr)
+            runs.finish(run, "over memory", {})
+            return 2
+
+    for line in leftover_lines(found, args.verbose, removing):
+        print(line, file=sys.stderr)
+    if removing and found:
+        state.apply(remove_leftovers(everything, found))
+
+    options = Options(run, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
+                      args.timestamp_logs, args.keep_replaced)
+    try:
+        results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag), decided))
+    except asyncio.CancelledError:
+        print("terminated; running jobs were stopped", file=sys.stderr)
+        runs.finish(run, "terminated", {})
+        return 128 + signal.SIGTERM
+    except KeyboardInterrupt:
+        print("interrupted; running jobs were stopped", file=sys.stderr)
+        runs.finish(run, "interrupted", {})
+        return 128 + signal.SIGINT
+    summary = Summary.of(decisions, results)
+    run_text.report_failures(dag, summary, args.verbose)
+    if summary.placed:
+        print(run_text.moved_note(), file=sys.stderr)
+    for note in run_text.varied_notes(results):
+        print(note, file=sys.stderr)
+    for line in run_text.replaced_lines(run):
+        print(line, file=sys.stderr)
+    print(run_text.summary_line(summary), file=sys.stderr)
+    if selection:
+        for line in run_text.left_lines(left_out(everything, dag, decisions, results, state, compare)):
+            print(line, file=sys.stderr)
+    failed = summary.failed or summary.not_run
+    runs.finish(run, "finished", run_text.counts(summary))
+    return 1 if failed or blocked else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -210,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
             needed = f", and {selected.needed} they need" if selected.needed else ""
             print(f"chose {selected.matched} of {total} jobs{needed}", file=sys.stderr)
         layout = Layout(Path(args.dir).expanduser().resolve()) if args.dir else dag.layout
-        writes_state = args.action in (Action.RUN, Action.ADOPT)
+        writes_state = args.action in (Action.RUN, Action.ADOPT, Action.PRUNE, Action.RESTORE)
         state = Store(layout.state, writes_state)
         if writes_state:
             state.lock()
@@ -222,89 +339,40 @@ def main(argv: list[str] | None = None) -> int:
             for adoption in adoptions:
                 print(adoption_line(adoption))
             return 0
-
-        forced = selected.matched_ids if args.force else False
-        compare = Compare(args.compare)
-        if compare is not Compare.STAT:
-            handed = relabel(dag, state.jobs, everything)
-            # A plan sees the records handed over, but only a run stores them.
-            if args.action is Action.RUN:
-                state.apply(handed)
+        if args.action is Action.LOG:
+            jobs = [job for job in dag.jobs if not selection or job.id in selected.matched_ids]
+            for line in run_text.log_lines(dag, jobs, runs.history(layout.runs), state.jobs):
+                print(line)
+            return 0
+        if args.action is Action.PRUNE:
+            if args.keep_runs < 0:
+                raise DagError("--keep-runs must be at least 0")
+            removed, logs = runs.prune(layout.runs, args.keep_runs, state.jobs)
+            kept = f", keeping {logs} log{'' if logs == 1 else 's'} of current outputs" if logs else ""
+            print(f"removed {removed} run folder{'' if removed == 1 else 's'}{kept}", file=sys.stderr)
+            return 0
+        if args.action is Action.RESTORE:
+            source = layout.runs / args.run
+            if not source.is_dir():
+                raise DagError(f"no run {args.run} under {layout.runs}; `spit-bash log` names the runs")
+            keys = {job.work.key for job in dag.jobs if job.id in selected.matched_ids} if selection else None
+            undo = runs.start(layout.runs, runs.stamp())
+            restored = runs.restore(runs.Run(source), undo, state, keys)
+            for line in run_text.restore_lines(restored, undo):
+                print(line, file=sys.stderr)
+            if any(each.kept for each in restored):
+                runs.finish(undo, "restored", {"from": args.run, "jobs": len(restored)})
             else:
-                state.assume(handed)
-        # Under --force, no outputs are moved: the forced jobs run, and the rest are judged as they stand.
-        decisions = plan(dag, state, forced, compare, args.move_files and not args.force)
-        movable = 0
-        if not args.move_files and not args.force and any(
-                decision.status is Status.RUN and decision.cause.why is Why.OUTPUT_MISSING and decision.cause.paths
-                for decision in decisions):
-            # Planning writes and moves nothing, so a second plan only asks what moving would save.
-            moved = plan(dag, state, forced, compare, True)
-            movable = sum(decision.status is Status.PLACE for decision in moved)
-        if args.action is Action.RUN:
-            state.apply(writes(decisions))
-        blocked = any(decision.status is Status.BLOCKED for decision in decisions)
-        if args.action is Action.EXPLAIN:
-            decision, found = explained(dag, state, decisions, args.job, compare)
-            print("\n".join(explain(dag, decisions, decision, found)))
-            return 1 if decision.status is Status.BLOCKED else 0
-        if args.action is Action.PLAN and args.json:
-            print(document(dag, decisions))
-        else:
-            for line in change_lines(dag, everything, decisions, state.jobs):
-                print(line)
-            for line in listing(dag, decisions, args.verbose):
-                print(line)
-        if movable:
-            print(move_hint(movable), file=sys.stderr)
-        # A partial DAG leaves jobs out, whose records would look like those of jobs the pipeline lost.
-        found = () if everything.left_out else leftovers(everything, state.jobs)
-        removing = args.action is Action.RUN and args.remove_leftovers
-        if args.action is Action.PLAN:
-            for line in leftover_lines(found, args.verbose, False):
-                print(line, file=sys.stderr)
-            return 1 if blocked else 0
-        if blocked and not args.partial:
-            print(nothing_run(decisions), file=sys.stderr)
-            return 1
+                undo.folder.rmdir()
+            return 0
 
-        if args.enforce_memory:
-            running = [d.job for d in decisions if d.status in (Status.RUN, Status.MAYBE)]
-            over = over_memory(running, args.memory)
-            if over:
-                for line in over:
-                    print(line, file=sys.stderr)
-                print("lower the job's `resources` line, give more with --memory, "
-                      "or pass --no-enforce-memory to run it alone", file=sys.stderr)
-                return 2
-
-        for line in leftover_lines(found, args.verbose, removing):
-            print(line, file=sys.stderr)
-        if removing and found:
-            state.apply(remove_leftovers(everything, found))
-
-        options = Options(layout.logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
-                          args.timestamp_logs, time.strftime("%Y-%m-%dT%H-%M-%S"))
-        try:
-            results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag), decided))
-        except asyncio.CancelledError:
-            print("terminated; running jobs were stopped", file=sys.stderr)
-            return 128 + signal.SIGTERM
-        except KeyboardInterrupt:
-            print("interrupted; running jobs were stopped", file=sys.stderr)
-            return 128 + signal.SIGINT
-        summary = Summary.of(decisions, results)
-        run_text.report_failures(dag, summary, args.verbose)
-        if summary.placed:
-            print(run_text.moved_note(), file=sys.stderr)
-        for note in run_text.varied_notes(results):
-            print(note, file=sys.stderr)
-        print(run_text.summary_line(summary), file=sys.stderr)
-        if selection:
-            for line in run_text.left_lines(left_out(everything, dag, decisions, results, state, compare)):
-                print(line, file=sys.stderr)
-        failed = summary.failed or summary.not_run
-        return 1 if failed or blocked else 0
+        with contextlib.ExitStack() as stack:
+            run = None
+            if args.action is Action.RUN:
+                run = runs.start(layout.runs, runs.stamp())
+                # What the run prints from here on goes to its log as well.
+                stack.enter_context(runs.Recording(run))
+            return _plan_and_run(args, dag, everything, selection, selected, state, layout, run)
     except (DagError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

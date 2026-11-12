@@ -7,7 +7,7 @@ from pathlib import Path
 from spit_bash.cause import Cause, Why
 from spit_bash.model import DagError
 from spit_bash.plan import Status, adopt, plan
-from support import command, error, read, run, sample, state_at
+from support import command, error, read, run, sample, state_at, job_log
 
 # A check that passes when its file holds `text`, and fails otherwise.
 HOLDS = "from pathlib import Path; import sys; sys.exit(Path(sys.argv[1]).read_text() != sys.argv[2])"
@@ -41,7 +41,7 @@ class CheckTests(unittest.TestCase):
         dag = read(data)
         decisions, results = run(dag, state_at(self.root))
         self.assertEqual([error(r) for r in results], [None, None])
-        log = (self.root / ".spit-bash/logs/1-op1.log").read_text()
+        log = job_log(self.root / ".spit-bash", "work/upper.txt").read_text()
         self.assertLess(log.index("source.txt"), log.index("work/upper.txt"))
         state = state_at(self.root)
         self.assertEqual([d.status for d in plan(dag, state)], [Status.SKIP, Status.SKIP])

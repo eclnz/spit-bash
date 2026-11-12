@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..display import labels, name
 from ..files import Stamp
 from ..model import Dag
 from ..plan import Decision, UPSTREAM
 from ..reuse.evidence import Content, Evidence, FileDiff
+from ..runs import Run
 from .causes import cause, decided, parts
 
 CONTENT = {
@@ -38,8 +41,10 @@ def _files(paths: tuple[str, ...], diffs: tuple[FileDiff, ...]) -> list[str]:
     return lines or ["    none differs from the record"]
 
 
-def explain(dag: Dag, decisions: tuple[Decision, ...], decision: Decision, found: Evidence) -> list[str]:
-    """Describe why the planner made `decision`, one of `decisions`, from the decision and the evidence `found`."""
+def explain(dag: Dag, decisions: tuple[Decision, ...], decision: Decision, found: Evidence,
+            runs: Path | None = None) -> list[str]:
+    """Describe why the planner made `decision`, one of `decisions`, from the decision and the evidence `found`,
+    and, with `runs`, the runner's folder of runs, the log of the run that made the job's recorded outputs."""
     by_id = {each.job.id: each for each in decisions}
     job = decision.job
     lines = [f"Job {job.id}: {name(job, labels(dag.jobs)[job.id])}",
@@ -50,6 +55,10 @@ def explain(dag: Dag, decisions: tuple[Decision, ...], decision: Decision, found
     if record is None:
         lines.append("  record: none; no successful run is recorded for what this job makes")
     else:
+        if record.run is not None and runs is not None:
+            log = Run(runs / record.run).job_log(job.work.key)
+            where = f"log at {log}" if log.is_file() else "its log was pruned"
+            lines.append(f"  made by run {record.run}; {where}")
         same = "changed" if found.work_changed else "same"
         lines.append(f"  fingerprint: {same} (recorded {record.fingerprint}, now {job.work.fingerprint})")
         if found.work_changed:

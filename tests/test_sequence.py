@@ -11,7 +11,7 @@ from spit_bash.plan import Status, plan
 from spit_bash.execute.options import Options
 from spit_bash.execute.process import partial
 from spit_bash.execute.scheduler import execute
-from support import command, document, error, job_entry, read, run, state_at
+from support import command, document, error, job_entry, read, run, state_at, job_log, new_run
 
 # Write the input upper-cased to the output.
 UPPER = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().upper())"
@@ -36,13 +36,16 @@ def sequenced(root, *commands):
 
 
 class SequenceTests(unittest.TestCase):
+    @property
+    def log(self):
+        return job_log(self.root / ".spit-bash", "work/upper.txt")
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         (self.root / "source.txt").write_text("hello\n")
         self.output = self.root / "work/upper.txt"
-        self.log = self.root / ".spit-bash/logs/1-op1.log"
 
     def test_runs_each_command_in_order_and_logs_each(self):
         dag = read(sequenced(self.root, step(UPPER, "source.txt", "work/upper.txt"), step(APPEND, "work/upper.txt")))
@@ -98,7 +101,7 @@ class SequenceTests(unittest.TestCase):
         state = state_at(self.root)
 
         async def cancel_once_started():
-            task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(self.root / "logs")))
+            task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(new_run(self.root / ".spit-bash/runs"))))
             while not started.exists():
                 await asyncio.sleep(0.01)
             task.cancel()
