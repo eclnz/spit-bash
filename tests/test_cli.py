@@ -67,6 +67,20 @@ class CliTests(unittest.TestCase):
         code, _, err = call("run", str(self.dag))
         self.assertNotIn("outside the selection", err)
 
+    def test_a_partial_run_that_rewrites_the_same_bytes_leaves_nothing_out_of_date(self):
+        call("run", self.write())
+        code, _, err = call("run", str(self.dag), "--product", "work/upper.txt", "--force")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 done", err)
+        self.assertIn("1 output was rewritten with the same content; nothing outside the selection needs to run", err)
+        self.assertNotIn("out of date", err)
+        self.assertEqual(call("plan", str(self.dag))[1], "all 2 jobs are current\n")
+
+    def test_a_partial_run_with_compare_stat_counts_every_rewritten_output_as_changed(self):
+        call("run", self.write())
+        _, _, err = call("run", str(self.dag), "--product", "work/upper.txt", "--force", "--compare", "stat")
+        self.assertIn("1 job outside the selection read outputs this run changed", err)
+
     def test_reads_stdin_and_needs_root_when_dag_has_none(self):
         self.data["root"] = None
         code, _, err = call("plan", "-", stdin=json.dumps(placed(self.data)))

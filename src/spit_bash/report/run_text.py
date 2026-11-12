@@ -23,7 +23,7 @@ from ..progress import about, duration
 from ..schedule import size
 from .causes import cause
 from .failures import failure_groups, ids
-from .summary import Summary
+from .summary import Left, Summary
 
 
 def end_words(kind: str, end: CommandEnd) -> str:
@@ -205,7 +205,12 @@ def moved_note() -> str:
             "its output is not rerun")
 
 
-def stale_line(stale: int) -> str:
-    """What to do about the jobs outside a selection that read outputs the run changed."""
-    return (f"{stale} job{'' if stale == 1 else 's'} outside the selection read outputs this run changed; "
-            "run without the selection to bring them up to date")
+def left_lines(left: Left) -> list[str]:
+    """What to do about the jobs outside a selection that read outputs the run rewrote: nothing, when none changed."""
+    if left.stale:
+        return [f"{left.stale} job{'' if left.stale == 1 else 's'} outside the selection read outputs this run changed; "
+                "run without the selection to bring them up to date"]
+    if left.unchanged:
+        were = "output was" if left.unchanged == 1 else "outputs were"
+        return [f"{left.unchanged} {were} rewritten with the same content; nothing outside the selection needs to run"]
+    return []
