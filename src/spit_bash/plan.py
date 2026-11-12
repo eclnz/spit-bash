@@ -48,6 +48,8 @@ class Decision:
     # Under `--move-files`: for a job planned `place`, its moves; for one whose outputs
     # the record has at other paths but that runs instead, why they are not moved.
     placement: Migration | None = None
+    # For a job planned `run`, whether any of its outputs is on disk, which running it replaces.
+    replaces: bool = False
 
     @property
     def needs_checks(self) -> bool:
@@ -238,6 +240,10 @@ def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, compare: 
 
     for job in dag.jobs:
         decision = _located(_with_programs(decide(job), missing_programs), by_id)
+        if decision.status is Status.RUN:
+            # Read through `seen`, so a file deciding the job already stamped is not read again.
+            on_disk = any(value is not None for value in stamps(dag, job.output_paths, seen).values())
+            decision = replace(decision, replaces=on_disk)
         decisions.append(decision)
         by_id[job.id] = decision
     return tuple(decisions)

@@ -61,6 +61,7 @@ Running 2 jobs
 --- stderr
 [1] failed: command exited with status 3
 [1] last lines of <root>/.spit-bash/logs/1-op1.log:
+    spit-bash: planned to run: output missing
     $ python3 -c 'import sys; print('"'"'boom'"'"'); sys.exit(3)' source.txt work/upper.txt
     boom
 [1] held up 1 other job
@@ -79,6 +80,7 @@ Running 2 jobs
 --- stderr
 [1] failed: command exited with status 3
 [1] last lines of <root>/.spit-bash/logs/1-op1.log:
+    spit-bash: planned to run: output missing
     $ python3 -c 'import sys; print('"'"'boom'"'"'); sys.exit(3)' source.txt work/upper.txt
     boom
 [1] held up 1 other job

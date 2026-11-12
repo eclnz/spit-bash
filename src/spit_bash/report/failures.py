@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..execute.job import REASON_PREFIX
 from ..logs import log_tail
 from ..model import Dag
 from . import LISTED
@@ -18,7 +19,8 @@ def _normalised(job_files: tuple[str, ...], dag: Dag, lines: list[str]) -> tuple
     names = sorted({*job_files, *(str(dag.path(path)) for path in job_files)}, key=len, reverse=True)
     kept = []
     for line in lines:
-        if line.lstrip().startswith("$ "):
+        # Each job ran for a reason of its own, which says nothing of how it failed.
+        if line.lstrip().startswith(("$ ", REASON_PREFIX)):
             continue
         for file in names:
             line = line.replace(file, "<file>")

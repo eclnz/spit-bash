@@ -21,6 +21,7 @@ from .state.store import Store
 from .execute.options import Options
 from .execute.scheduler import execute
 from .report import run_text
+from .report.causes import decided
 from .report.explain import explain
 from .report.plan_json import document
 from .report.plan_text import adoption_line, listing, nothing_run
@@ -248,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         options = Options(logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
                           args.timestamp_logs)
         try:
-            results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag)))
+            results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag), decided))
         except asyncio.CancelledError:
             print("terminated; running jobs were stopped", file=sys.stderr)
             return 128 + signal.SIGTERM

@@ -113,6 +113,23 @@ class OutputTests(unittest.TestCase):
         self.assertIn("[1] the same failure in 2 other jobs: 2, 3", err)
         self.assertIn("3 failed", err)
 
+    def test_failures_that_ran_for_different_reasons_are_grouped(self):
+        # The jobs fail once a file named `fail` is in the output root, where commands run.
+        script = ("import sys; from pathlib import Path; "
+                  "sys.exit(3) if Path('fail').exists() else Path(sys.argv[2]).write_text('made')")
+        (self.root / "other.txt").write_text("other")
+        jobs = [named(job_entry(1, ["source.txt"], "out1.txt", script), "import"),
+                named(job_entry(2, ["other.txt"], "out2.txt", script), "import")]
+        call("run", self.write(document(self.root, jobs, ["source.txt", "other.txt"])))
+        (self.root / "source.txt").write_text("changed")
+        (self.root / "out2.txt").write_text("edited")
+        (self.root / "fail").write_text("")
+        _, _, err = call("run", str(self.dag))
+        reasons = [(self.root / f".spit-bash/logs/{n}-import.log").read_text().splitlines()[0] for n in (1, 2)]
+        self.assertEqual(reasons, ["spit-bash: planned to run: input changed",
+                                   "spit-bash: planned to run: output changed"])
+        self.assertIn("[1] the same failure in 1 other job: 2", err)
+
     def test_verbose_run_says_why_a_job_did_not_run(self):
         data = sample(self.root)
         data["jobs"][0]["commands"][0]["command"][2] = [FAILS]

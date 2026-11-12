@@ -2,6 +2,8 @@ $ spit-bash plan jobs.spitdag
 exit 0
 --- stdout
 1 job can start, 2 jobs may run if an upstream output changes
+1 job will replace existing outputs:
+  op1: input changed
 --- stderr
 
 $ spit-bash plan jobs.spitdag --verbose
@@ -72,6 +74,8 @@ $ spit-bash run jobs.spitdag --cores 1
 exit 0
 --- stdout
 1 job can start, 2 jobs may run if an upstream output changes
+1 job will replace existing outputs:
+  op1: input changed
 
 Running 1 job, and 2 more that may, <time>
   [1] start   op1

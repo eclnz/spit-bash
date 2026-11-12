@@ -81,6 +81,24 @@ def blocked_lines(decisions: tuple[Decision, ...]) -> list[str]:
     return lines
 
 
+def replacing_lines(decisions: tuple[Decision, ...]) -> list[str]:
+    """For the jobs that will run over outputs already on disk, a line for each operation and reason, under a count."""
+    causes: dict[tuple[str, str], int] = {}
+    for decision in decisions:
+        if decision.replaces:
+            key = (decision.job.operation, decided(decision))
+            causes[key] = causes.get(key, 0) + 1
+    if not causes:
+        return []
+    total = sum(causes.values())
+    lines = [f"{jobs(total)} will replace existing outputs:"]
+    for (operation, reason), count in list(causes.items())[:LISTED]:
+        lines.append(f"  {operation}" + (f" x{count}" if count > 1 else "") + f": {reason}")
+    if len(causes) > LISTED:
+        lines.append(f"  ... and {len(causes) - LISTED} more causes; `--verbose` lists every job")
+    return lines
+
+
 def _word(decision: Decision) -> str:
     match decision.status:
         case Status.RUN:
@@ -117,12 +135,13 @@ def not_moved_lines(decisions: tuple[Decision, ...]) -> list[str]:
 
 def listing(dag: Dag, decisions: tuple[Decision, ...], verbose: bool) -> list[str]:
     """What `plan` and `run` print of a plan: the counts, a line for each cause that blocks jobs, and with `verbose`
-    every job, or without it each job whose outputs are not moved."""
+    every job, or without it why jobs will replace outputs on disk and each job whose outputs are not moved."""
     lines = [counts(decisions), *blocked_lines(decisions)]
     if verbose:
         work, width = labels(dag.jobs), id_width(dag.jobs)
         lines += [job_line(decision, work, width) for decision in decisions]
     else:
+        lines += replacing_lines(decisions)
         lines += not_moved_lines(decisions)
     return lines
 

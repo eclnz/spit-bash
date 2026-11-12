@@ -49,6 +49,9 @@ class Failed:
 
 Outcome = Union[Made, Failed]
 
+# What starts the first line of a job's log, before why the plan ran it.
+REASON_PREFIX = "spit-bash: planned to run: "
+
 
 def log_path(logs: Path, job: Job) -> Path:
     return logs / f"{job.id}-{job.operation}.log"
@@ -266,7 +269,7 @@ async def _make(dag: Dag, job: Job, before: Stamps, log: Log, limit: int | None,
 
 async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runner = run_command,
                   on_start: Callable[[], None] = lambda: None,
-                  on_discard: Callable[[], None] = lambda: None) -> Outcome:
+                  on_discard: Callable[[], None] = lambda: None, reason: str | None = None) -> Outcome:
     """Run one job: its input checks and `verify` commands, its commands, then its output checks.
 
     `on_start` is called once the job's inputs are all there and it has a
@@ -274,6 +277,9 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
     first command has started loses its outputs, unless `options.keep_failed`
     keeps them, and gets back what an earlier run left at them; one cancelled
     meanwhile does the same before the cancellation goes on.
+
+    `reason`, why the plan ran the job, is the log's first line, so the log answers why
+    the job ran after its record has been replaced.
 
     `on_discard` is called when a failed or cancelled job keeps its failed
     outputs in place of an earlier run's, so that the earlier run's record no
@@ -291,6 +297,8 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
     limit = job.memory if options.enforce_memory else None
     keep = options.keep_failed
     with open_log(log, options.timestamp_logs) as stream:
+        if reason is not None:
+            stream.write(f"{REASON_PREFIX}{reason}\n".encode())
         failure = await _checks(dag, job.before, stream, runner)
         if failure is not None:
             return Failed(failure, log)

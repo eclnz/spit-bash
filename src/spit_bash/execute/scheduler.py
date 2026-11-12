@@ -45,13 +45,15 @@ def _hash_both(dag: Dag, job: Job) -> tuple[dict[str, str], dict[str, str]]:
 
 
 async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, options: Options,
-                  on_event: Callable[[Event], None] = lambda event: None) -> tuple[Result, ...]:
+                  on_event: Callable[[Event], None] = lambda event: None,
+                  reason: Callable[[Decision], str] | None = None) -> tuple[Result, ...]:
     """Run every job planned to run, check or maybe run, and move the outputs of each planned `place`;
     stop them all if the process gets SIGTERM.
 
     Each job that succeeds is recorded in `state` as it ends, and a placed job
     as soon as its files are moved. `on_event` hears, in order, what the run is
     about to do and each job's progress; the run itself prints nothing.
+    `reason` gives the words for why a job runs, which start its log.
     """
     tasks: dict[int, asyncio.Task[Result]] = {}
     # Commands run from the output root, which nothing may have made yet.
@@ -127,7 +129,8 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
             # killed mid-job leaves files at the job's paths that do not match it, so the next plan
             # runs the job again.
             ran = await run_job(dag, job, log, options, on_start=lambda: on_event(events.Started(job)),
-                                on_discard=lambda: state.forget(job.work.key))
+                                on_discard=lambda: state.forget(job.work.key),
+                                reason=None if reason is None else reason(decision))
             if isinstance(ran, Failed):
                 progress.finished(job, None)
                 return Result(job, ran.failure, ran.log)
