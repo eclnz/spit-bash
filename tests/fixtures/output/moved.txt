@@ -23,6 +23,7 @@ exit 0
       "operation": "op1",
       "status": "place",
       "reason": "moves work/upper.txt -> moved/upper.txt",
+      "code": "current",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 0,
@@ -38,6 +39,7 @@ exit 0
       "operation": "op2",
       "status": "skip",
       "reason": "current",
+      "code": "current",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 0
@@ -46,7 +48,7 @@ exit 0
 }
 --- stderr
 
-$ spit-bash plan jobs.spitdag --job 2 --move-files
+$ spit-bash explain 2 jobs.spitdag --move-files
 exit 0
 --- stdout
 Job 2: op2

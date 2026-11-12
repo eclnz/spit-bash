@@ -26,15 +26,16 @@ from .report.explain import explain
 from .report.plan_json import document
 from .report.plan_text import adoption_line, listing, nothing_run
 from .report.summary import Summary, left_out
+from .leftovers import leftovers, lines as leftover_lines, remove as remove_leftovers
 from .schedule import over_memory
-from .selection import Selection, parse_only, parse_stage, select
+from .selection import Selection, parse_entities, parse_stage, select
 
 SPIT_SUFFIXES = (".spitin", ".spit", ".spitout")
 # The units of --memory, as SPIT's `resources` line takes them.
 UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 
-# The default paths `--state` and `--logs` name in their help.
-DEFAULT = Layout(Path("ROOT"))
+# The runner's folder, as `--dir` names it in its help.
+DEFAULT = Layout(Path("ROOT") / ".spit-bash")
 
 FILES_HELP = """\
 what to run: a .spitdag (or - for one on stdin), or what `spit dag` takes,
@@ -44,12 +45,15 @@ its .spitout (or - for one on stdin), or a .spit pipeline with --root"""
 
 class Action(str, Enum):
     PLAN = "plan"
+    EXPLAIN = "explain"
     RUN = "run"
     ADOPT = "adopt"
 
 
 HELP = {
     Action.PLAN: "report which jobs would run, be checked, skip or be blocked",
+    Action.EXPLAIN: "explain one job's decision: its recorded and current fingerprint and checks,\n"
+                    "the files that differ from the record, and the upstream jobs that will rewrite its inputs",
     Action.RUN: "run every job that is not current or blocked, and check current jobs whose checks changed",
     Action.ADOPT: "record jobs whose files already exist as current, without running them",
 }
@@ -62,6 +66,8 @@ def _parser() -> argparse.ArgumentParser:
         command = subcommands.add_parser(action.value, help=HELP[action], description=HELP[action],
                                          formatter_class=argparse.RawTextHelpFormatter)
         command.set_defaults(action=action)
+        if action is Action.EXPLAIN:
+            command.add_argument("job", type=int, metavar="ID", help="the job to explain, by its id")
         command.add_argument("files", nargs="+", metavar="FILE", help=FILES_HELP)
         command.add_argument("--root", help="dataset root: required when the DAG has no root,\n"
                                             "and the folder `spit dag` scans for a .spit alone")
@@ -73,12 +79,13 @@ def _parser() -> argparse.ArgumentParser:
                                   "while any job is blocked)")
         choose = command.add_argument_group("choosing jobs", "Keep the jobs whose outputs match, and every job upstream of them.\n"
                                             "Repeat an option to match any of its values; different options must all match.")
-        choose.add_argument("--only", action="append", default=[], metavar="DIM=VALUE[,...]",
+        choose.add_argument("--entity", action="append", default=[], metavar="DIM=VALUE[,...]",
                             help="outputs with these entities, such as sub=01 or sub=01,ses=02")
         choose.add_argument("--product", action="append", default=[], metavar="NAME", help="outputs of this product")
         choose.add_argument("--stage", action="append", default=[], metavar="NAME[/NAME...]",
                             help="jobs in this stage, or a stage inside it, such as preprocess/combine")
-        command.add_argument("--state", help=f"state file (default: {DEFAULT.state})")
+        command.add_argument("--dir", metavar="DIR",
+                             help=f"the runner's folder, which holds its state and job logs (default: {DEFAULT.folder})")
         if action is not Action.ADOPT:
             command.add_argument("--force", action="store_true",
                                  help="rerun selected command jobs even if current")
@@ -93,14 +100,11 @@ def _parser() -> argparse.ArgumentParser:
                                  help="move outputs the state records at other paths to the paths the pipeline now gives,\n"
                                       "instead of rerunning their jobs, which `plan` lists as `place`. A tool that writes\n"
                                       "its own paths into its output is not rerun, so use this only if yours do not")
-        if action is not Action.ADOPT:
+        if action in (Action.PLAN, Action.RUN):
             command.add_argument("--verbose", action="store_true",
                                  help="list every job, current ones too, and with `run` each job that did not run\n"
                                       "(default: counts, and a line for each cause that blocks jobs)")
         if action is Action.PLAN:
-            command.add_argument("--job", type=int, metavar="ID",
-                                 help="explain one job's decision: recorded and current fingerprint and checks,\n"
-                                      "the files that differ from the record, and the upstream jobs that will rewrite its inputs")
             command.add_argument("--json", action="store_true", help="print the plan as JSON")
         if action is Action.RUN:
             command.add_argument("-j", "--cores", type=int, default=os.cpu_count() or 1, metavar="CORES",
@@ -109,13 +113,15 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--memory", type=_memory, default=_machine_memory(), metavar="SIZE",
                                  help="memory to use, as 512M or 32G: run jobs at once while\n"
                                       "the memory they declare fits (default: the machine's)")
-            command.add_argument("--logs", help=f"folder for job logs (default: {DEFAULT.logs})")
             command.add_argument("--no-enforce-memory", dest="enforce_memory", action="store_false",
                                  help="let a job hold more memory than it declares, and run a job\n"
                                       "declaring more than --memory alone, rather than refusing it")
             command.add_argument("--timestamp-logs", action="store_true",
                                  help="start each line of a job's log with the date, time and UTC offset at which\n"
                                       "the runner received it; a tool that buffers its output may have written it earlier")
+            command.add_argument("--remove-leftovers", action="store_true",
+                                 help="delete the outputs earlier runs made for jobs the pipeline no longer has,\n"
+                                      "where they are as those runs left them, and forget their records")
             command.add_argument("--keep-failed", action="store_true",
                                  help="keep what a failed job's command wrote at its outputs, to debug it")
     return parser
@@ -169,7 +175,7 @@ def _load(args: argparse.Namespace) -> Dag:
 def _selection(args: argparse.Namespace) -> Selection:
     try:
         return Selection(
-            only=tuple(parse_only(text) for text in args.only),
+            entities=tuple(parse_entities(text) for text in args.entity),
             products=tuple(args.product),
             stages=tuple(parse_stage(text) for text in args.stage),
         )
@@ -193,9 +199,10 @@ def main(argv: list[str] | None = None) -> int:
         if selection:
             needed = f", and {selected.needed} they need" if selected.needed else ""
             print(f"chose {selected.matched} of {total} jobs{needed}", file=sys.stderr)
-        state = Store(Path(args.state).expanduser().resolve() if args.state else dag.layout.state,
-                      args.action is not Action.PLAN)
-        if args.action is not Action.PLAN:
+        layout = Layout(Path(args.dir).expanduser().resolve()) if args.dir else dag.layout
+        writes_state = args.action in (Action.RUN, Action.ADOPT)
+        state = Store(layout.state, writes_state)
+        if writes_state:
             state.lock()
         if dag.left_out:
             print(f"partial DAG: {len(dag.left_out)} output(s) left out", file=sys.stderr)
@@ -220,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.action is Action.RUN:
             state.apply(writes(decisions))
         blocked = any(decision.status is Status.BLOCKED for decision in decisions)
-        if args.action is Action.PLAN and args.job is not None:
+        if args.action is Action.EXPLAIN:
             decision, found = explained(dag, state, decisions, args.job, compare)
             print("\n".join(explain(dag, decisions, decision, found)))
             return 1 if decision.status is Status.BLOCKED else 0
@@ -229,7 +236,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             for line in listing(dag, decisions, args.verbose):
                 print(line)
+        # A partial DAG leaves jobs out, whose records would look like those of jobs the pipeline lost.
+        found = () if everything.left_out else leftovers(everything, state.jobs)
+        removing = args.action is Action.RUN and args.remove_leftovers
         if args.action is Action.PLAN:
+            for line in leftover_lines(found, args.verbose, False):
+                print(line, file=sys.stderr)
             return 1 if blocked else 0
         if blocked and not args.partial:
             print(nothing_run(decisions), file=sys.stderr)
@@ -245,8 +257,12 @@ def main(argv: list[str] | None = None) -> int:
                       "or pass --no-enforce-memory to run it alone", file=sys.stderr)
                 return 2
 
-        logs = Path(args.logs).expanduser().resolve() if args.logs else dag.layout.logs
-        options = Options(logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
+        for line in leftover_lines(found, args.verbose, removing):
+            print(line, file=sys.stderr)
+        if removing and found:
+            state.apply(remove_leftovers(everything, found))
+
+        options = Options(layout.logs, args.cores, args.memory, compare, args.keep_failed, args.enforce_memory,
                           args.timestamp_logs)
         try:
             results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag), decided))

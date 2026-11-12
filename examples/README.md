@@ -20,7 +20,7 @@ The alpha result is `apple`, `banana`, `pear` on separate lines. The beta result
 To run one group first, choose its jobs. This runs the beta sort and merge only:
 
 ```sh
-spit-bash run $EXAMPLES/lines/lines.spitin --only group=beta
+spit-bash run $EXAMPLES/lines/lines.spitin --entity group=beta
 ```
 
 Run the plan command again to see every job marked `skip`. Edit one of the files under `$EXAMPLES/lines/input/` and plan again to see which jobs will rerun.

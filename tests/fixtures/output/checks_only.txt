@@ -23,6 +23,7 @@ exit 0
       "operation": "op1",
       "status": "check",
       "reason": "checks not yet run on these files",
+      "code": "checks_not_run",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 0
@@ -32,6 +33,7 @@ exit 0
       "operation": "op2",
       "status": "skip",
       "reason": "current",
+      "code": "current",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 0
@@ -40,7 +42,7 @@ exit 0
 }
 --- stderr
 
-$ spit-bash plan jobs.spitdag --job 1
+$ spit-bash explain 1 jobs.spitdag
 exit 0
 --- stdout
 Job 1: op1

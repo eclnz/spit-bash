@@ -194,17 +194,17 @@ def report_failures(dag: Dag, summary: Summary, verbose: bool) -> None:
 
 
 def summary_line(summary: Summary) -> str:
-    """How many jobs were done, moved, checked, failed, not run, current and blocked."""
+    """How many jobs were done, moved, checked, failed, not run, current, kept and blocked."""
     not_run = len(summary.not_run)
     line = (
         f"{summary.done} done, "
         + (f"{summary.placed} moved, " if summary.placed else "")
         + f"{summary.checked} checked, {len(summary.failed)} failed, "
         + (f"{not_run} not run (an upstream job failed), " if not_run else "")
-        + f"{summary.current} current, {summary.blocked} blocked"
+        + f"{summary.current} current, "
+        + (f"{summary.kept} kept (upstream reran with unchanged output), " if summary.kept else "")
+        + f"{summary.blocked} blocked"
     )
-    if summary.cutoff:
-        line += f", {summary.cutoff} of the current ones not rerun because upstream output was unchanged"
     return line
 
 

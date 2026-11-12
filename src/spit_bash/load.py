@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gc
+import os
 from pathlib import Path, PurePosixPath
-from typing import Iterator, TextIO
+from typing import Iterable, Iterator, TextIO
 
 from pydantic import ValidationError
 
@@ -142,7 +144,49 @@ def _run(command: JobCommand, folder: str | None, shown: dict[str, str]) -> Run:
     return Run(_command(command.command, folder, shown), command.stdin, command.stdout)
 
 
+def _absolute(dag: Dag, uses: dict[str, str]) -> dict[str, Path]:
+    """Each path joined to its root, with the check `Dag.checked` makes: resolved, it stays under the root.
+
+    Keep in step with `Dag.checked`, which gives the error for a path that leads out. Paths share a few
+    folders, so each folder is resolved once, and a file needs resolving only when it is itself a link.
+    """
+    folders: dict[tuple[str, str], str] = {}
+    absolute: dict[str, Path] = {}
+    for relative, use in uses.items():
+        base = str(dag.base(relative))
+        under = base.rstrip("/") + "/"
+        joined = under + relative
+        if os.path.islink(joined):
+            real = os.path.realpath(joined)
+        else:
+            folder, _, name = relative.rpartition("/")
+            real_folder = folders.get((base, folder))
+            if real_folder is None:
+                real_folder = folders[base, folder] = os.path.realpath(under + folder)
+            real = f"{real_folder.rstrip('/')}/{name}"
+        if real != base and not real.startswith(under):
+            # Resolved again, link by link, to say which link leads out and where.
+            absolute[relative] = dag.checked(relative, use)
+            continue
+        absolute[relative] = Path(joined)
+    return absolute
+
+
 def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
+    """The DAG `source` holds, checked, with its root from `root_override` when given."""
+    # Loading makes millions of objects, nearly all kept for as long as the DAG is. With the cyclic collector
+    # on, each of its passes walks them all, which more than doubles the time to load; what little is garbage
+    # waits for the first pass after.
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        return _load(source, root_override)
+    finally:
+        if enabled:
+            gc.enable()
+
+
+def _load(source: TextIO, root_override: str | None) -> Dag:
     try:
         document = SpitDag.model_validate_json(source.read())
     except (ValidationError, UnicodeError) as exc:
@@ -238,8 +282,7 @@ def load_dag(source: TextIO, root_override: str | None = None) -> Dag:
         output_root=output_root,
         in_dataset=in_dataset,
     )
-    for path, use in _uses(external_set, jobs).items():
-        dag.absolute[path] = dag.checked(path, use)
+    dag.absolute.update(_absolute(dag, _uses(external_set, jobs)))
     return dag
 
 

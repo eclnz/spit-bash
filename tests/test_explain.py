@@ -1,4 +1,4 @@
-"""`plan --job`: the evidence behind one job's decision."""
+"""`explain`: the evidence behind one job's decision."""
 
 import contextlib
 import copy
@@ -30,7 +30,7 @@ class ExplainTests(unittest.TestCase):
         file.write_text(json.dumps(placed(data or self.data)))
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(["plan", str(file), "--root", str(self.root), "--job", str(job), *flags])
+            code = cli.main(["explain", str(job), str(file), "--root", str(self.root), *flags])
         return code, out.getvalue(), err.getvalue()
 
     def test_a_changed_input_shows_both_stamps_and_that_its_content_differs(self):
@@ -106,7 +106,7 @@ class ExplainTests(unittest.TestCase):
         file.write_text(json.dumps(placed(data)))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            cli.main(["plan", str(file), "--root", str(root), "--job", "1"])
+            cli.main(["explain", "1", str(file), "--root", str(root)])
         self.assertIn("pages", out.getvalue())
         self.assertRegex(out.getvalue(), r"recorded: \d+ bytes in 2 files")
         self.assertRegex(out.getvalue(), r"now:      \d+ bytes in 3 files")

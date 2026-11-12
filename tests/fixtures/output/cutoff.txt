@@ -26,6 +26,7 @@ exit 0
       "operation": "op1",
       "status": "run",
       "reason": "input changed",
+      "code": "input_changed",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 0
@@ -35,6 +36,7 @@ exit 0
       "operation": "op2",
       "status": "maybe",
       "reason": "runs if an upstream output changes",
+      "code": "upstream_may_run",
       "waits_for": [
         1
       ],
@@ -46,6 +48,7 @@ exit 0
       "operation": "op3",
       "status": "maybe",
       "reason": "runs if an upstream output changes",
+      "code": "upstream_may_run",
       "waits_for": [
         2
       ],
@@ -56,7 +59,7 @@ exit 0
 }
 --- stderr
 
-$ spit-bash plan jobs.spitdag --job 2
+$ spit-bash explain 2 jobs.spitdag
 exit 0
 --- stdout
 Job 2: op2
@@ -83,7 +86,7 @@ Running 1 job, and 2 more that may, <time>
   [2] skip    op2: upstream output unchanged
   [3] skip    op3: upstream output unchanged
 --- stderr
-1 done, 0 checked, 0 failed, 2 current, 0 blocked, 2 of the current ones not rerun because upstream output was unchanged
+1 done, 0 checked, 0 failed, 0 current, 2 kept (upstream reran with unchanged output), 0 blocked
 
 $ spit-bash run jobs.spitdag --cores 1 --verbose
 exit 0
@@ -99,4 +102,4 @@ Running 1 job, and 2 more that may, <time>
   [2] skip    op2: upstream output unchanged
   [3] skip    op3: upstream output unchanged
 --- stderr
-1 done, 0 checked, 0 failed, 2 current, 0 blocked, 2 of the current ones not rerun because upstream output was unchanged
+1 done, 0 checked, 0 failed, 0 current, 2 kept (upstream reran with unchanged output), 0 blocked

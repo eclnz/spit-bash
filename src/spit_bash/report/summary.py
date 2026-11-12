@@ -22,10 +22,11 @@ class Summary:
     failed: tuple[Result, ...]
     # The jobs that did not run because a job they need failed, in DAG order.
     not_run: tuple[Result, ...]
+    # The jobs that were current, leaving out `kept`.
     current: int
     blocked: int
-    # The current jobs planned `maybe` that were not rerun, as their upstream output was unchanged.
-    cutoff: int
+    # The jobs planned `maybe` that the run left current, as the jobs upstream rewrote what they read unchanged.
+    kept: int
 
     @classmethod
     def of(cls, decisions: tuple[Decision, ...], results: tuple[Result, ...]) -> Summary:
@@ -34,18 +35,20 @@ class Summary:
         failed_ids = {result.job.id for result in failures}
         outcome = {result.job.id: result.settled for result in results}
         count = {status: 0 for status in Status}
-        cutoff = 0
+        kept = 0
         for decision in decisions:
             status = outcome.get(decision.job.id) or decision.status
             if decision.job.id in failed_ids:
                 continue
+            if decision.status is Status.MAYBE and status is Status.SKIP:
+                kept += 1
+                continue
             count[status] += 1
-            cutoff += decision.status is Status.MAYBE and status is not Status.RUN
         return cls(
             done=count[Status.RUN], placed=count[Status.PLACE], checked=count[Status.CHECK],
             failed=tuple(result for result in failures if result.caused_by is None),
             not_run=tuple(result for result in failures if result.caused_by is not None),
-            current=count[Status.SKIP], blocked=count[Status.BLOCKED], cutoff=cutoff,
+            current=count[Status.SKIP], blocked=count[Status.BLOCKED], kept=kept,
         )
 
 

@@ -251,7 +251,7 @@ def plan(dag: Dag, state: Store, force: bool | frozenset[int] = False, compare: 
 
 def explained(dag: Dag, state: Store, decisions: tuple[Decision, ...], job_id: int,
               compare: Compare) -> tuple[Decision, Evidence]:
-    """The decision on job `job_id` and the evidence behind it, every input and output compared, for `plan --job`."""
+    """The decision on job `job_id` and the evidence behind it, every input and output compared, for `explain`."""
     decision = next((decision for decision in decisions if decision.job.id == job_id), None)
     if decision is None:
         raise DagError(f"no job {job_id} among the jobs planned")

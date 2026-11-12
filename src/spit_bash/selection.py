@@ -15,15 +15,15 @@ Entities = tuple[tuple[str, str], ...]
 class Selection:
     # A job is chosen when one of its outputs matches every kind of criterion
     # given, and within a kind matches any one of the values given.
-    only: tuple[Entities, ...] = ()
+    entities: tuple[Entities, ...] = ()
     products: tuple[str, ...] = ()
     stages: tuple[tuple[str, ...], ...] = ()
 
     def __bool__(self) -> bool:
-        return bool(self.only or self.products or self.stages)
+        return bool(self.entities or self.products or self.stages)
 
 
-def parse_only(text: str) -> Entities:
+def parse_entities(text: str) -> Entities:
     """`sub=01,ses=02` as pairs; every pair must hold for an output to match."""
     pairs: dict[str, str] = {}
     for item in text.split(","):
@@ -62,7 +62,7 @@ def _check_names(dag: Dag, selection: Selection) -> None:
     for product in selection.products:
         if product not in products:
             raise DagError(f"no output is of product `{product}`; products: {_listing(products)}")
-    for group in selection.only:
+    for group in selection.entities:
         for dimension, value in group:
             if dimension not in values:
                 raise DagError(f"no output has dimension `{dimension}`; dimensions: {_listing(set(values)) or 'none'}")
@@ -82,7 +82,7 @@ def _matches(job: Job, selection: Selection) -> bool:
     for output in job.output_artifacts:
         if selection.products and output.product not in selection.products:
             continue
-        if selection.only and not any(set(group) <= set(output.entities) for group in selection.only):
+        if selection.entities and not any(set(group) <= set(output.entities) for group in selection.entities):
             continue
         return True
     return False

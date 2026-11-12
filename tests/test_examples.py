@@ -58,7 +58,7 @@ class ExampleTests(unittest.TestCase):
     def test_runs_a_recipe_or_pipeline_and_chooses_jobs(self):
         lines = self.examples / "lines"
         output = lines / "output/merged"
-        result = spit_bash("run", str(lines / "lines.spitin"), "--only", "group=beta")
+        result = spit_bash("run", str(lines / "lines.spitin"), "--entity", "group=beta")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("chose 2 of 5 jobs\n", result.stderr)
         self.assertEqual((output / "group=beta.txt").read_text(), "yak\nzebra\n")

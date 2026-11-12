@@ -30,6 +30,7 @@ exit 1
       "operation": "reader",
       "status": "blocked",
       "reason": "missing external input: absent.txt",
+      "code": "missing_external",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 1
@@ -39,6 +40,7 @@ exit 1
       "operation": "after",
       "status": "blocked",
       "reason": "dependency blocked: 1",
+      "code": "dependency_blocked",
       "waits_for": [],
       "caused_by": 1,
       "holds_up": 0
@@ -48,6 +50,7 @@ exit 1
       "operation": "tool",
       "status": "blocked",
       "reason": "program not found: no-such-spit-bash-program",
+      "code": "program_not_found",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 1
@@ -57,6 +60,7 @@ exit 1
       "operation": "after",
       "status": "blocked",
       "reason": "dependency blocked: 3",
+      "code": "dependency_blocked",
       "waits_for": [],
       "caused_by": 3,
       "holds_up": 0
@@ -66,6 +70,7 @@ exit 1
       "operation": "fine",
       "status": "run",
       "reason": "output missing",
+      "code": "output_missing",
       "waits_for": [],
       "caused_by": null,
       "holds_up": 0
@@ -74,7 +79,7 @@ exit 1
 }
 --- stderr
 
-$ spit-bash plan jobs.spitdag --job 4
+$ spit-bash explain 4 jobs.spitdag
 exit 1
 --- stdout
 Job 4: after after_tool.txt

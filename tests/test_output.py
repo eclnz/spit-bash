@@ -93,6 +93,7 @@ class OutputTests(unittest.TestCase):
         jobs = {item["id"]: item for item in json.loads(out)["jobs"]}
         self.assertEqual((jobs[10]["caused_by"], jobs[10]["holds_up"]), (None, 1))
         self.assertEqual((jobs[11]["caused_by"], jobs[11]["holds_up"]), (10, 0))
+        self.assertEqual((jobs[10]["code"], jobs[11]["code"]), ("program_not_found", "dependency_blocked"))
 
     # Run.
 
@@ -168,7 +169,7 @@ class OutputTests(unittest.TestCase):
 STORED = Path(__file__).parent / "fixtures" / "output"
 BLESS = os.environ.get("SPIT_BASH_BLESS") == "1"
 # A program found by name, rather than `sys.executable`, whose path differs between
-# machines and is part of each job's fingerprint, which `plan --job` prints.
+# machines and is part of each job's fingerprint, which `explain` prints.
 PYTHON = "python3"
 DURATION = r"(?:under 1s|about \d+(?:s|m|h\d\dm)|\d+(?:s|m|h\d\dm))"
 VARYING = [
@@ -260,7 +261,7 @@ class Scenario:
     # Whether a run comes first, and what changes after it.
     ran: bool
     change: Callable[[Path, dict], None] | None
-    # The job `plan --job` explains.
+    # The job `explain` explains.
     explained: int
     # Flags every command takes.
     flags: tuple[str, ...] = ()
@@ -269,7 +270,7 @@ class Scenario:
 
     def commands(self) -> list[tuple[str, ...]]:
         # `run` takes one core, so that its progress lines come in one order.
-        return [("plan",), ("plan", "--verbose"), ("plan", "--json"), ("plan", "--job", str(self.explained)),
+        return [("plan",), ("plan", "--verbose"), ("plan", "--json"), ("explain", str(self.explained)),
                 RUN, (*RUN, "--verbose"), *self.extra]
 
 
@@ -300,7 +301,9 @@ def scenario_output(scenario):
             if scenario.change is not None:
                 scenario.change(root, data)
                 dag.write_text(json.dumps(portable(data)))
-            argv = [command[0], "jobs.spitdag", *command[1:], *scenario.flags]
+            # `explain` takes the job's id before the files.
+            head = 2 if command[0] == "explain" else 1
+            argv = [*command[:head], "jobs.spitdag", *command[head:], *scenario.flags]
             code, out, err = call(*[str(dag) if part == "jobs.spitdag" else part for part in argv])
             sections.append(f"$ spit-bash {' '.join(argv)}\nexit {code}\n"
                             f"--- stdout\n{normalise(out, root, directory)}"
