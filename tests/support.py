@@ -14,6 +14,7 @@ from spit_bash.state.store import Store
 from spit_bash.execute.options import Options
 from spit_bash.execute.scheduler import execute
 from spit_bash.report import run_text
+from spit_bash import runs
 
 FIXTURE = Path(__file__).parent / "fixtures" / "command_demo.spitdag"
 
@@ -97,10 +98,22 @@ def read(data, root=None):
 
 def run(dag, state, cores=2, force=False, memory=None, keep_failed=False, enforce_memory=True, move_files=False):
     decisions = plan(dag, state, force, move_files=move_files)
-    options = Options(dag.layout.logs, cores, memory, keep_failed=keep_failed, enforce_memory=enforce_memory)
+    options = Options(new_run(dag.layout.runs), cores, memory, keep_failed=keep_failed, enforce_memory=enforce_memory)
     results = asyncio.run(execute(dag, decisions, state, options, run_text.printer(dag)))
     state.close()
     return decisions, results
+
+
+def new_run(runs_folder):
+    """A new run's folder under `runs_folder`, as `spit-bash run` makes one."""
+    return runs.start(Path(runs_folder), runs.stamp())
+
+
+def job_log(folder, product):
+    """The newest log of the job whose first output is `product`, with no entities, under the runner's `folder`."""
+    found = sorted(Path(folder).glob(f"runs/*/jobs/{product}.log"))
+    assert found, f"no log of {product} under {folder}"
+    return max(found, key=lambda path: (path.stat().st_mtime_ns, str(path)))
 
 
 def error(result):

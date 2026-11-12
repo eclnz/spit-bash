@@ -62,7 +62,7 @@ Running 2 jobs
   [1] failed  op1: command exited with status 3
 --- stderr
 [1] failed: command exited with status 3
-[1] last lines of <root>/.spit-bash/logs/1-op1.log:
+[1] last lines of <root>/.spit-bash/runs/<run>/jobs/work/upper.txt.log:
     spit-bash: planned to run: output missing
     $ python3 -c 'import sys; print('"'"'boom'"'"'); sys.exit(3)' source.txt work/upper.txt
     boom
@@ -81,7 +81,7 @@ Running 2 jobs
   [1] failed  op1: command exited with status 3
 --- stderr
 [1] failed: command exited with status 3
-[1] last lines of <root>/.spit-bash/logs/1-op1.log:
+[1] last lines of <root>/.spit-bash/runs/<run>/jobs/work/upper.txt.log:
     spit-bash: planned to run: output missing
     $ python3 -c 'import sys; print('"'"'boom'"'"'); sys.exit(3)' source.txt work/upper.txt
     boom

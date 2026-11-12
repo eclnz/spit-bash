@@ -20,7 +20,8 @@ from ..state.store import Store
 from . import events
 from .events import Event
 from .failure import Blocked, DependencyFailed, Failure
-from .job import Failed, check_job, log_path, place_job, run_job
+from ..runs import keep
+from .job import Failed, check_job, place_job, run_job
 from .options import Options
 
 # Files this small, all of a job's together, are hashed on the event loop.
@@ -62,7 +63,7 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
     tasks: dict[int, asyncio.Task[Result]] = {}
     # Commands run from the output root, which nothing may have made yet.
     dag.outputs.mkdir(parents=True, exist_ok=True)
-    options.logs.mkdir(parents=True, exist_ok=True)
+    run = options.run
     compare = options.compare
 
     async def failed_dependency(job: Job) -> int | None:
@@ -123,7 +124,8 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
 
     async def perform(decision: Decision) -> Result:
         job = decision.job
-        log = log_path(options.logs, job)
+        log = run.job_log(job.work.key)
+        log.parent.mkdir(parents=True, exist_ok=True)
         async with queue.slot(job):
             if decision.needs_checks:
                 return await check_one(job, log)
@@ -155,7 +157,9 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
         else:
             input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)
         state.record(job.work.key, records.after_run(job, ran.inputs, ran.outputs, input_hashes, output_hashes,
-                                                     ran.seconds))
+                                                     ran.seconds, run.name))
+        if ran.replaced:
+            keep(run, job.work.key, earlier, ((path, at) for path, at, _ in ran.replaced))
         progress.finished(job, ran.seconds)
         on_event(events.Done(job, ran.seconds, progress.report()))
         varied = (earlier is not None and earlier.fingerprint == job.work.fingerprint

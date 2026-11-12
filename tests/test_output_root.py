@@ -6,7 +6,7 @@ from pathlib import Path
 
 from spit_bash.plan import Status, plan
 from spit_bash.state.store import Store
-from support import UPPER, artifact, error, job_entry, read, run, sample
+from support import UPPER, artifact, error, job_entry, read, run, sample, job_log
 
 # Write the input's text, upper-cased, beside it, as an index tool does.
 BESIDE = "from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().upper())"
@@ -36,7 +36,7 @@ class OutputRootTests(unittest.TestCase):
         self.assertEqual((self.results / "final.txt").read_text(), "HELLO!")
         self.assertEqual(sorted(path.name for path in self.data.iterdir()), ["source.txt"])
         self.assertTrue((self.results / ".spit-bash" / "state.jsonl").is_file())
-        self.assertTrue((self.results / ".spit-bash" / "logs" / "1-op1.log").is_file())
+        self.assertTrue(job_log(self.results / ".spit-bash", "work/upper.txt").is_file())
         decisions = plan(read(self.apart(sample(self.data))), Store(dag.layout.state, False))
         self.assertEqual([decision.status for decision in decisions], [Status.SKIP, Status.SKIP])
 

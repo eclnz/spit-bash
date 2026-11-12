@@ -8,12 +8,13 @@ from ..state.record import Record
 
 
 def after_run(job: Job, inputs: Stamps, outputs: Stamps, input_hashes: dict[str, str] | None,
-              output_hashes: dict[str, str] | None, seconds: float) -> Record:
-    """What a successful run leaves: the files' stamps by path, their hashes by slot, or None when not hashed."""
+              output_hashes: dict[str, str] | None, seconds: float, run: str) -> Record:
+    """What a successful run leaves: the files' stamps by path, their hashes by slot, or None when not hashed,
+    and the run, `run`, whose folder holds its log."""
     return Record(fingerprint=job.work.fingerprint, parts=job.work.parts,
                   inputs=stored_each(job.keyed(inputs)), outputs=stored_each(job.keyed(outputs)),
                   checks=job.work.checks_key, input_hashes=input_hashes, output_hashes=output_hashes,
-                  seconds=round(seconds, 3), output_paths=job.output_paths_by_slot)
+                  seconds=round(seconds, 3), output_paths=job.output_paths_by_slot, run=run)
 
 
 def adopted(job: Job, inputs: Stamps, outputs: Stamps) -> Record:

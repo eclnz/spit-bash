@@ -17,6 +17,7 @@ from ..model import Check, Dag, DagError, Job, Kind, Layout, Side
 from ..reuse.relocate import Migration
 from .failure import (CheckArtifactMissing, CheckFailed, CommandFailed, Failure, InputChanged, InputDisappeared,
                       NoCommand, OutputsMissing, Phase, PlaceFailed, StdoutNotMoved)
+from ..runs import kept_path
 from .options import Options
 from .process import CommandEnd, partial, run_command, succeeded
 
@@ -37,6 +38,9 @@ class Made:
     inputs: Stamps
     outputs: Stamps
     seconds: float
+    # Each output an earlier run left that the job replaced and the run kept: its DAG path, where it was, and where
+    # it is kept.
+    replaced: tuple[tuple[str, Path, Path], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,10 +55,6 @@ Outcome = Union[Made, Failed]
 
 # What starts the first line of a job's log, before why the plan ran it.
 REASON_PREFIX = "spit-bash: planned to run: "
-
-
-def log_path(logs: Path, job: Job) -> Path:
-    return logs / f"{job.id}-{job.operation}.log"
 
 
 async def _checks(dag: Dag, checks: tuple[Check, ...], log: Log, runner: Runner) -> Failure | None:
@@ -213,14 +213,18 @@ def _written(dag: Dag, missing: tuple[str, ...], before: Listings) -> tuple[str,
     return tuple(sorted(found))
 
 
-def _settle_aside(moved: list[tuple[str, Path, Path]], log: Log, restore: bool, kept: str | None = None) -> None:
+def _settle_aside(moved: list[tuple[str, Path, Path]], log: Log, restore: bool, kept: str | None = None,
+                  store: Callable[[str], Path] | None = None) -> tuple[tuple[str, Path, Path], ...]:
     """Delete the earlier versions after a success, or put them back after a failure.
 
     Call after `_remove_outputs`, so that nothing is at the paths a version goes back to.
     Without `restore`, as for `--keep-failed`, the failed output stays and the earlier version goes.
     With `kept`, a stamp, an earlier version is kept as `Layout.edited` gives it instead of deleted:
-    for a job that reran because someone edited its output.
+    for a job that reran because someone edited its output. Otherwise, with `store`, which gives where an
+    output's earlier version is kept, a success moves it there instead of deleting it.
+    Gives each earlier version stored: its output, where it was, and where it is now.
     """
+    stored_at = []
     for output, path, waiting in moved:
         try:
             if restore and not (path.is_symlink() or path.exists()):
@@ -230,11 +234,19 @@ def _settle_aside(moved: list[tuple[str, Path, Path]], log: Log, restore: bool, 
                 edited = Layout.edited(path, kept)
                 waiting.rename(edited)
                 log.write(f"spit-bash: kept the edited {output} as {edited.name}\n".encode())
+            elif store is not None and not restore:
+                destination = store(output)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                # Across disks, as for a --dir elsewhere, a move copies.
+                shutil.move(waiting, destination)
+                stored_at.append((output, path, destination))
+                log.write(f"spit-bash: kept the replaced {output} at {destination}\n".encode())
             else:
                 _clear(waiting)
         except OSError as exc:
             log.write(f"spit-bash: could not settle the earlier {output} at {waiting}: {exc}\n".encode())
     log.flush()
+    return tuple(stored_at)
 
 
 async def _make(dag: Dag, job: Job, before: Stamps, log: Log, limit: int | None,
@@ -344,6 +356,8 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
             if keep:
                 on_discard()
             return Failed(made, log)
-        _settle_aside(moved, stream, False, options.started if keep_edited else None)
+        key = job.work.key
+        store = (lambda output: kept_path(options.run, key, output)) if options.keep_replaced else None
+        replaced = _settle_aside(moved, stream, False, options.started if keep_edited else None, store)
     after, outputs = made
-    return Made(after, outputs, time.monotonic() - started)
+    return Made(after, outputs, time.monotonic() - started, replaced)

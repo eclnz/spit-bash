@@ -177,7 +177,7 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual((output / "merged.txt").read_text(), "APPLES\nCARROTS\nLEEKS\nPEARS\nPLUMS\n")
         self.assertEqual(sorted(path.name for path in (output / "loud").iterdir()),
                          ["plot=allotment.txt", "plot=garden.txt"])
-        log = (self.examples / "streams/.spit-bash/logs/1-shout.log").read_text()
+        log = next((self.examples / "streams/.spit-bash/runs").glob("*/jobs/loud/plot=allotment.log")).read_text()
         self.assertIn("$ tr a-z A-Z < input/allotment.txt > output/loud/plot=allotment.txt\n", log)
 
         # tr prints nothing for an empty list, so its output fails its nonempty check: the failed
@@ -197,7 +197,7 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual((output / "sorted/plot=garden.txt").read_text(), "bean\nbean\ncarrot\ncarrot\ncarrot\npea\n")
         counts = (output / "counts/plot=garden.txt").read_text().split("\n")
         self.assertEqual([line.split() for line in counts if line], [["2", "bean"], ["3", "carrot"], ["1", "pea"]])
-        log = (self.examples / "sequence/.spit-bash/logs/1-tally.log").read_text()
+        log = next((self.examples / "sequence/.spit-bash/runs").glob("*/jobs/counts/plot=allotment.log")).read_text()
         commands = [line for line in log.splitlines() if line.startswith("$ ")]
         self.assertEqual(commands, [
             "$ sort -o output/sorted/plot=allotment.txt input/allotment.txt",

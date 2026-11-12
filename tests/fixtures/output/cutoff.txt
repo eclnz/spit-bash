@@ -66,6 +66,7 @@ exit 0
 --- stdout
 Job 2: op2
   decision: maybe, runs if an upstream output changes
+  made by run <run>; log at <root>/.spit-bash/runs/<run>/jobs/final.txt.log
   fingerprint: same (recorded 3959901bb9a60cd2, now 3959901bb9a60cd2)
   checks: same (recorded none, now none)
   inputs that differ from the record:
@@ -89,6 +90,7 @@ Running 1 job, and 2 more that may, <time>
   [2] skip    op2: upstream output unchanged
   [3] skip    op3: upstream output unchanged
 --- stderr
+kept the 1 output that 1 job replaced (5B) in <root>/.spit-bash/runs/<run>/replaced; `spit-bash restore --run <run>` puts it back
 1 done, 0 checked, 0 failed, 0 current, 2 kept (upstream reran with unchanged output), 0 blocked
 
 $ spit-bash run jobs.spitdag --cores 1 --verbose
@@ -106,4 +108,5 @@ Running 1 job, and 2 more that may, <time>
   [2] skip    op2: upstream output unchanged
   [3] skip    op3: upstream output unchanged
 --- stderr
+kept the 1 output that 1 job replaced (5B) in <root>/.spit-bash/runs/<run>/replaced; `spit-bash restore --run <run>` puts it back
 1 done, 0 checked, 0 failed, 0 current, 2 kept (upstream reran with unchanged output), 0 blocked

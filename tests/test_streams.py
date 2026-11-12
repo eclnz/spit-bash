@@ -10,7 +10,7 @@ from spit_bash.plan import Status, plan
 from spit_bash.execute.options import Options
 from spit_bash.execute.process import partial
 from spit_bash.execute.scheduler import execute
-from support import command, document, error, job_entry, read, run, state_at
+from support import command, document, error, job_entry, read, run, state_at, job_log, new_run
 
 # Upper-case standard input onto standard output, and say so on standard error.
 UPPER = "import sys; sys.stdout.write(sys.stdin.read().upper()); sys.stderr.write('upper-cased\\n')"
@@ -33,13 +33,16 @@ def streamed(root, script, *args, stdin="source.txt"):
 
 
 class StreamTests(unittest.TestCase):
+    @property
+    def log(self):
+        return job_log(self.root / ".spit-bash", "work/upper.txt")
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         (self.root / "source.txt").write_text("hello\n")
         self.output = self.root / "work/upper.txt"
-        self.log = self.root / ".spit-bash/logs/1-op1.log"
 
     def test_reads_stdin_and_writes_stdout_to_the_output(self):
         dag = read(streamed(self.root, UPPER))
@@ -99,7 +102,7 @@ class StreamTests(unittest.TestCase):
         state = state_at(self.root)
 
         async def cancel_once_started():
-            task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(self.root / "logs")))
+            task = asyncio.ensure_future(execute(dag, plan(dag, state), state, Options(new_run(self.root / ".spit-bash/runs"))))
             while not started.exists():
                 await asyncio.sleep(0.01)
             self.assertEqual(partial(dag, "work/upper.txt").read_text(), "half")

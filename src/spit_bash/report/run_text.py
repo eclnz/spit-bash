@@ -18,7 +18,9 @@ from ..execute.process import CommandEnd, Exited, KilledMemory, KilledSignal, No
 from ..execute.scheduler import Result
 from ..files import stored
 from ..logs import log_tail
+from .. import runs
 from ..model import Dag, Job
+from ..state.record import Record
 from ..progress import about, duration
 from ..schedule import size
 from .causes import cause
@@ -232,3 +234,55 @@ def left_lines(left: Left) -> list[str]:
         were = "output was" if left.unchanged == 1 else "outputs were"
         return [f"{left.unchanged} {were} rewritten with the same content; nothing outside the selection needs to run"]
     return []
+
+
+def counts(summary: Summary) -> dict[str, int]:
+    """The summary's counts, as a run's `summary.json` gives them."""
+    return {"done": summary.done, "moved": summary.placed, "checked": summary.checked, "failed": len(summary.failed),
+            "not_run": len(summary.not_run), "current": summary.current, "kept": summary.kept,
+            "blocked": summary.blocked}
+
+
+def replaced_lines(run: runs.Run) -> list[str]:
+    """Where the run kept the outputs its jobs replaced, and how to put them back."""
+    found = runs.kept(run)
+    if not found:
+        return []
+    files = sum(len(each.files) for each in found)
+    taken = size(runs.size(path for each in found for _, _, path in each.files)) + "B"
+    jobs = f"{len(found)} job{'' if len(found) == 1 else 's'}"
+    return [f"kept the {files} output{'' if files == 1 else 's'} that {jobs} replaced ({taken}) in "
+            f"{run.folder / 'replaced'}; `spit-bash restore --run {run.name}` puts {'it' if files == 1 else 'them'} back"]
+
+
+def log_lines(dag: Dag, jobs: list[Job], history: list[runs.Run], records: dict[str, Record]) -> list[str]:
+    """Each job, then each run that kept its log, newest first, marking the run that made its current outputs."""
+    named = labels(dag.jobs)
+    width = id_width(jobs)
+    lines = []
+    for job in jobs:
+        key = job.work.key
+        record = records.get(key)
+        made = None if record is None else record.run
+        lines.append(f"[{job.id:>{width}}] {name(job, named[job.id])}")
+        found = [run for run in history if run.job_log(key).is_file()]
+        for run in found:
+            mark = "  (made its current outputs)" if run.name == made else ""
+            lines.append(f"  {run.name}  {run.job_log(key)}{mark}")
+        if not found:
+            lines.append("  no log kept")
+    return lines
+
+
+def restore_lines(restored: list[runs.Restored], undo: runs.Run) -> list[str]:
+    """What `restore` put back, and how to undo it."""
+    if not restored:
+        return ["nothing to restore: the run kept no outputs of the chosen jobs, or they were restored already"]
+    paths = sum(len(each.paths) for each in restored)
+    lines = [f"restored {paths} output{'' if paths == 1 else 's'} of {len(restored)} "
+             f"job{'' if len(restored) == 1 else 's'}, with the records they had"]
+    aside = sum(len(each.kept) for each in restored)
+    if aside:
+        lines.append(f"kept the {aside} output{'' if aside == 1 else 's'} they replaced in {undo.folder / 'replaced'}; "
+                     f"`spit-bash restore --run {undo.name}` puts {'it' if aside == 1 else 'them'} back")
+    return lines

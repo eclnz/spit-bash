@@ -25,7 +25,7 @@ from spit_bash.report.explain import explain
 from spit_bash.report.run_text import failure_words as error_words
 from spit_bash.reuse.evidence import Compare
 from spit_bash.reuse.relocate import MoveCause
-from support import EXCLAIM, command, error, job_entry, document, read, run, sample, state_at, placed
+from support import EXCLAIM, command, error, job_entry, document, read, run, sample, state_at, placed, job_log, new_run
 
 
 def artifact_of(path):
@@ -230,7 +230,7 @@ class PlaceTests(unittest.TestCase):
         target.parent.mkdir(parents=True)
         target.write_text("someone else's")
         state = state_at(self.root)
-        results = asyncio.run(execute(self.dag, decisions, state, Options(self.root / "logs")))
+        results = asyncio.run(execute(self.dag, decisions, state, Options(new_run(self.root / ".spit-bash/runs"))))
         state.close()
         self.assertEqual(results[0].failure, PlaceFailed("derivatives/work/upper.txt already exists", True))
         self.assertEqual(results[1].failure, DependencyFailed(1))

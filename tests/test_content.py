@@ -12,7 +12,7 @@ from spit_bash.reuse.evidence import Compare
 from spit_bash.state.store import Store
 from spit_bash.execute.options import Options
 from spit_bash.execute.scheduler import execute
-from support import artifact, command, read, run, sample, state_at
+from support import artifact, command, read, run, sample, state_at, job_log, new_run
 
 
 def touch(path, seconds=10):
@@ -84,7 +84,7 @@ class ContentTests(unittest.TestCase):
             (root / "source.txt").write_text("hello")
             dag = read(sample(root))
             state = state_at(root)
-            asyncio.run(execute(dag, plan(dag, state), state, Options(root / ".spit-bash/logs", 2, compare=Compare.STAT)))
+            asyncio.run(execute(dag, plan(dag, state), state, Options(new_run(root / ".spit-bash/runs"), 2, compare=Compare.STAT)))
             state.close()
             self.assertEqual(self.statuses(dag, root), [Status.SKIP, Status.SKIP])
             self.assertEqual(self.statuses(dag, root, compare=Compare.FULL), [Status.RUN, Status.RUN])
@@ -95,7 +95,7 @@ class ContentTests(unittest.TestCase):
             (root / "source.txt").write_text("hello")
             dag = read(sample(root))
             state = state_at(root)
-            asyncio.run(execute(dag, plan(dag, state), state, Options(root / ".spit-bash/logs", 2, compare=Compare.STAT)))
+            asyncio.run(execute(dag, plan(dag, state), state, Options(new_run(root / ".spit-bash/runs"), 2, compare=Compare.STAT)))
             state.close()
             self.assertTrue(all(r.input_hashes is None for r in state_at(root).jobs.values()))
             touch(root / "source.txt")

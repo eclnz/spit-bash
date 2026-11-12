@@ -33,3 +33,6 @@ class Record(BaseModel):
     # Where each output was made, by identity, so a run can find files
     # that a change of path rules left behind; None before the runner kept it.
     output_paths: dict[str, str] | None = None
+    # The run that made the outputs, by its folder's name under `runs`, where its log is; None for a job
+    # adopted without running.
+    run: str | None = None

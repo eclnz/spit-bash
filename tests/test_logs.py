@@ -9,7 +9,7 @@ from pathlib import Path
 from spit_bash.plan import plan
 from spit_bash.execute.options import Options
 from spit_bash.execute.scheduler import execute
-from support import command, document, error, job_entry, read, state_at
+from support import command, document, error, job_entry, read, state_at, job_log, new_run
 
 STAMP = re.compile(rb"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d ")
 # Writes to both streams, the last line with no newline.
@@ -20,7 +20,7 @@ NOISY = ("import sys; print('to stdout'); print('to stderr', file=sys.stderr); s
 def execute_all(root, data, timestamps, **options):
     dag = read(data)
     state = state_at(root)
-    results = asyncio.run(execute(dag, plan(dag, state), state, Options(root / "logs", 2, timestamp_logs=timestamps, **options)))
+    results = asyncio.run(execute(dag, plan(dag, state), state, Options(new_run(root / ".spit-bash/runs"), 2, timestamp_logs=timestamps, **options)))
     state.close()
     return results
 
@@ -39,8 +39,8 @@ class LogTests(unittest.TestCase):
     def one(self, script=NOISY):
         return document(self.root, [job_entry(1, ["source.txt"], "out.txt", script)], ["source.txt"])
 
-    def log(self, name="1-op1.log"):
-        return (self.root / "logs" / name).read_bytes()
+    def log(self, product="out.txt"):
+        return job_log(self.root / ".spit-bash", product).read_bytes()
 
     def test_every_line_starts_with_a_date_time_and_offset(self):
         self.assertEqual([error(r) for r in execute_all(self.root, self.one(), True)], [None])
@@ -90,7 +90,7 @@ class LogTests(unittest.TestCase):
                 for i in (1, 2)]
         execute_all(self.root, document(self.root, jobs, ["source.txt"]), True)
         for i in (1, 2):
-            lines = self.log(f"{i}-op{i}.log").splitlines()
+            lines = self.log(f"out{i}.txt").splitlines()
             self.assertTrue(all(STAMP.match(line) for line in lines), lines)
             self.assertIn(f"job {i}".encode(), [strip(line) for line in lines])
             self.assertNotIn(f"job {3 - i}".encode(), b" ".join(lines))
@@ -128,7 +128,7 @@ class LogTests(unittest.TestCase):
 
         async def cancel_once_started():
             task = asyncio.ensure_future(execute(dag, plan(dag, state), state,
-                                                 Options(self.root / "logs", timestamp_logs=True)))
+                                                 Options(new_run(self.root / ".spit-bash/runs"), timestamp_logs=True)))
             while not ready.exists():
                 await asyncio.sleep(0.01)
             await asyncio.sleep(0.2)
