@@ -33,6 +33,8 @@ spit-bash run jobs.spitdag -j 4
 spit dag dataset.spitin --json | spit-bash run - -j 4
 ```
 
+A saved DAG is a snapshot of the pipeline it was made from. It records each of the pipeline's files with its git blob id, so `plan` and `run` compare them with the files on disk, and warn when one has changed or gone, as `warning: the pipeline changed since this DAG was written: digits.spit. Run the recipe, or spit dag again.` The DAG still runs as written. A DAG made from a recipe in the same command is never stale, so it is not compared.
+
 ## Choosing jobs
 
 `--entity`, `--product` and `--stage` choose part of the DAG: the jobs whose outputs match, and every job upstream that they need. Nothing downstream is chosen. Try a pipeline on one subject before running every subject:

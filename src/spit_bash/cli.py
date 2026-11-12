@@ -12,7 +12,7 @@ import sys
 from enum import Enum
 from pathlib import Path
 
-from .load import load_dag
+from .load import changed_pipeline_files, load_dag
 from .model import Dag, DagError, Layout
 from .plan import Status, adopt, explained, plan, writes
 from .reuse.evidence import Compare
@@ -150,9 +150,16 @@ def _load(args: argparse.Namespace) -> Dag:
         if len(args.files) > 1:
             raise DagError(f"expected one .spitdag, got {len(args.files)} files")
         if args.files[0] == "-":
-            return load_dag(sys.stdin, args.root)
-        with open(args.files[0], encoding="utf-8") as source:
-            return load_dag(source, args.root)
+            dag = load_dag(sys.stdin, args.root)
+        else:
+            with open(args.files[0], encoding="utf-8") as source:
+                dag = load_dag(source, args.root)
+        # A saved DAG is a snapshot of the pipeline; one made from a recipe just now cannot be stale.
+        changed = changed_pipeline_files(dag)
+        if changed:
+            print(f"warning: the pipeline changed since this DAG was written: {', '.join(changed)}. "
+                  "Run the recipe, or spit dag again.", file=sys.stderr)
+        return dag
 
     # `spit dag` finds a recipe's root itself; --root names the folder to scan
     # only for a pipeline given alone.

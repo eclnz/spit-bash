@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from spit_bash.cli import main
+from spit_bash.load import blob_id
 from support import artifact, job_entry, sample, UPPER, placed
 
 
@@ -31,6 +32,29 @@ class CliTests(unittest.TestCase):
     def write(self):
         self.dag.write_text(json.dumps(placed(self.data)))
         return str(self.dag)
+
+    def test_a_saved_dag_warns_when_its_pipeline_files_changed(self):
+        pipeline = self.root / "pipeline"
+        (pipeline / "libs").mkdir(parents=True)
+        (pipeline / "main.spit").write_text("source a : Text .txt\n")
+        (pipeline / "libs/lib.spit").write_text("operation f(x: Text) -> Text\n")
+        self.data["pipeline_folder"] = str(pipeline)
+        self.data["pipeline_files"] = [
+            {"path": "main.spit", "blob": blob_id((pipeline / "main.spit").read_bytes())},
+            {"path": "libs/lib.spit", "blob": blob_id((pipeline / "libs/lib.spit").read_bytes())},
+        ]
+        _, _, err = call("plan", self.write())
+        self.assertNotIn("warning", err)
+        (pipeline / "main.spit").write_text("source a : Text .csv\n")
+        (pipeline / "libs/lib.spit").unlink()
+        code, _, err = call("plan", str(self.dag))
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: the pipeline changed since this DAG was written: main.spit, libs/lib.spit (missing). "
+                      "Run the recipe, or spit dag again.", err)
+
+    def test_blob_id_is_what_git_hash_object_prints(self):
+        # As `printf 'hello\n' | git hash-object --stdin` prints.
+        self.assertEqual(blob_id(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a")
 
     def test_dir_holds_the_state_and_the_logs(self):
         folder = self.root / "elsewhere"
