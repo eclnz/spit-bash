@@ -122,12 +122,12 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
             if decision.needs_checks:
                 return await check_one(job, log)
             progress.started(job)
-
-            def started() -> None:
-                on_event(events.Started(job))
-                state.forget(job.work.key)
-
-            ran = await run_job(dag, job, log, options, on_start=started)
+            # The job's record stays until it succeeds and is replaced: a failure or a cancellation
+            # puts the earlier run's outputs back, and the record still describes them. A runner
+            # killed mid-job leaves files at the job's paths that do not match it, so the next plan
+            # runs the job again.
+            ran = await run_job(dag, job, log, options, on_start=lambda: on_event(events.Started(job)),
+                                on_discard=lambda: state.forget(job.work.key))
             if isinstance(ran, Failed):
                 progress.finished(job, None)
                 return Result(job, ran.failure, ran.log)

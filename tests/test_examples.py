@@ -154,8 +154,9 @@ class ExampleTests(unittest.TestCase):
         pipeline.write_text(pipeline.read_text().replace("contains(today)", "contains(for)"))
         result = spit_bash("plan", recipe, "--verbose")
         self.assertIn("[1] check   copy day=monday: checks changed", result.stdout)
-        # The failed job's record was dropped, so it runs again.
-        self.assertIn("[2] ready   copy day=tuesday: no successful run recorded", result.stdout)
+        # The failed run put back the earlier output and kept its record, so the job runs for the
+        # change that made it fail, not for a record it lost.
+        self.assertIn("[2] ready   copy day=tuesday: input changed", result.stdout)
         result = spit_bash("run", recipe)
         self.assertEqual(result.returncode, 1)
         self.assertIn("0 done, 1 checked, 1 failed", result.stderr)

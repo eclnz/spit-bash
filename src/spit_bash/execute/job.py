@@ -228,7 +228,8 @@ async def _make(dag: Dag, job: Job, before: Stamps, log: Log, limit: int | None,
 
 
 async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runner = run_command,
-                  on_start: Callable[[], None] = lambda: None) -> Outcome:
+                  on_start: Callable[[], None] = lambda: None,
+                  on_discard: Callable[[], None] = lambda: None) -> Outcome:
     """Run one job: its input checks and `verify` commands, its commands, then its output checks.
 
     `on_start` is called once the job's inputs are all there and it has a
@@ -236,6 +237,11 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
     first command has started loses its outputs, unless `options.keep_failed`
     keeps them, and gets back what an earlier run left at them; one cancelled
     meanwhile does the same before the cancellation goes on.
+
+    `on_discard` is called when a failed or cancelled job keeps its failed
+    outputs in place of an earlier run's, so that the earlier run's record no
+    longer describes what is at its paths. Otherwise, whatever the outcome, the
+    earlier run's files are at the job's paths until the job succeeds.
     """
     before = stamps(dag, job.input_paths)
     if any(value is None for value in before.values()):
@@ -273,10 +279,14 @@ async def run_job(dag: Dag, job: Job, log: Path, options: Options, runner: Runne
         except asyncio.CancelledError:
             _remove_outputs(dag, job, stream, keep)
             _settle_aside(moved, stream, not keep)
+            if keep:
+                on_discard()
             raise
         if not isinstance(made, tuple):
             _remove_outputs(dag, job, stream, keep)
             _settle_aside(moved, stream, not keep)
+            if keep:
+                on_discard()
             return Failed(made, log)
         _settle_aside(moved, stream, False)
     after, outputs = made

@@ -18,7 +18,7 @@ from spit_bash.load import load_dag
 from spit_bash.files import Stamp
 from spit_bash.plan import Status, plan
 from spit_bash.state.store import Store
-from spit_bash.execute import process
+from spit_bash.execute import events, process
 from spit_bash.execute.failure import InputChanged
 from spit_bash.execute.options import Options
 from spit_bash.execute.scheduler import execute
@@ -450,3 +450,61 @@ class EarlierOutputTests(unittest.TestCase):
         self.run_job(self.FAIL, keep_failed=True)
         self.assertEqual((self.root / "out.txt").read_text(), "half")
         self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())
+
+
+class RecordAfterFailureTests(unittest.TestCase):
+    """A job's record stays while the earlier run's outputs are at its paths, so a failed or
+    stopped rerun does not make the next run rebuild them."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "source.txt").write_text("hello")
+        self.data = sample(self.root)
+        run(read(self.data), state_at(self.root))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def failing(self, script="import sys; sys.exit(4)"):
+        data = json.loads(json.dumps(self.data))
+        data["jobs"][0]["commands"][0]["command"][2] = [script]
+        return read(data)
+
+    def statuses(self):
+        decisions = plan(read(self.data), state_at(self.root), False)
+        return [decision.status for decision in decisions]
+
+    def test_a_failed_rerun_leaves_the_job_current(self):
+        _, results = run(self.failing(), state_at(self.root))
+        self.assertEqual(error(results[0]), "command exited with status 4")
+        self.assertEqual((self.root / "work/upper.txt").read_text(), "HELLO")
+        self.assertEqual(self.statuses(), [Status.SKIP, Status.SKIP])
+
+    def test_a_cancelled_rerun_leaves_the_job_current(self):
+        dag = self.failing("import time; time.sleep(30)")
+        state = state_at(self.root)
+        decisions = plan(dag, state, False)
+
+        async def cancelled():
+            task = asyncio.current_task()
+            assert task is not None
+
+            def on_event(event):
+                if isinstance(event, events.Started):
+                    asyncio.get_running_loop().call_later(0.2, task.cancel)
+
+            await execute(dag, decisions, state, Options(dag.layout.logs), on_event)
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(cancelled())
+        state.close()
+        self.assertEqual((self.root / "work/upper.txt").read_text(), "HELLO")
+        self.assertEqual(self.statuses(), [Status.SKIP, Status.SKIP])
+
+    def test_keep_failed_forgets_the_record_of_outputs_it_replaced(self):
+        run(self.failing("from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"),
+            state_at(self.root), keep_failed=True)
+        self.assertEqual((self.root / "work/upper.txt").read_text(), "HAL")
+        self.assertNotIn(read(self.data).jobs[0].work.key, state_at(self.root).jobs)
+        self.assertEqual(self.statuses()[0], Status.RUN)
