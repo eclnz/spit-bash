@@ -185,6 +185,23 @@ class RunTests(unittest.TestCase):
             decisions = plan(read(data), state_at(root))
             self.assertEqual([d.status for d in decisions], [Status.RUN, Status.RUN])
 
+    def test_a_missing_output_names_the_files_the_command_wrote_in_its_folder(self):
+        # As dcm2niix does when it adds a suffix of its own, such as `_real`.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("hello")
+            (root / "work").mkdir()
+            (root / "work/earlier.txt").write_text("not this job's")
+            data = sample(root)
+            data["jobs"][0]["commands"][0]["command"][2] = [
+                "from pathlib import Path; import sys; out = Path(sys.argv[2]); "
+                "out.with_name('upper_real.txt').write_text('HELLO'); Path('elsewhere.txt').write_text('')"
+            ]
+            _, results = run(read(data), state_at(root))
+            self.assertEqual(error(results[0]), "command succeeded but did not create output output work/upper.txt; "
+                                                "it wrote work/upper_real.txt in the same folder, left in place")
+            self.assertTrue((root / "work/upper_real.txt").exists())
+
     def test_multiple_outputs_report_each_missing_port_and_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

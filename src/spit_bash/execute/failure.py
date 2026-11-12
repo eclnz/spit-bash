@@ -78,6 +78,10 @@ class OutputsMissing:
     """The commands succeeded but did not make these outputs, each as its port's name and path."""
 
     missing: tuple[tuple[str, str], ...]
+    # The files that appeared in a missing output's folder while the job ran, by path under
+    # the output's root, in name order, and that are no artifact of the DAG: likely the
+    # outputs under names the tool chose itself. A failed job leaves them in place.
+    written: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

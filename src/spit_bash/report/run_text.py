@@ -26,6 +26,10 @@ from .failures import failure_groups, ids
 from .summary import Left, Summary
 
 
+# How many of the files a job wrote in place of a missing output its failure names.
+WRITTEN_SHOWN = 5
+
+
 def end_words(kind: str, end: CommandEnd) -> str:
     """How a command ended, where `kind` names it, as `verify 1`, `command` or `command 2`."""
     match end:
@@ -80,8 +84,13 @@ def failure_words(job: Job, failure: Failure) -> str:
             return f"could not move standard output onto {path}: {error}"
         case InputChanged():
             return _input_changes(failure)
-        case OutputsMissing(missing):
-            return "command succeeded but did not create " + ", ".join(f"output {port} {path}" for port, path in missing)
+        case OutputsMissing(missing, written):
+            words = "command succeeded but did not create " + ", ".join(f"output {port} {path}" for port, path in missing)
+            if written:
+                shown = ", ".join(written[:WRITTEN_SHOWN])
+                more = f" and {len(written) - WRITTEN_SHOWN} more" if len(written) > WRITTEN_SHOWN else ""
+                words += f"; it wrote {shown}{more} in the same folder, left in place"
+            return words
         case PlaceFailed(error, True):
             return f"could not move its outputs, so they were put back: {error}"
         case PlaceFailed(error, False):
