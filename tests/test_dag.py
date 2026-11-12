@@ -25,8 +25,33 @@ class LoadTests(unittest.TestCase):
             dag = read(sample(root))
             self.assertEqual(dag.path("work/upper.txt"), root / "work" / "upper.txt")
             (root / "work").symlink_to(outside)
-            with self.assertRaisesRegex(DagError, "escapes dataset root"):
+            with self.assertRaisesRegex(DagError, "^work/upper.txt leads through the link work to "):
                 dag.checked("work/upper.txt")
+
+    def test_a_source_linked_outside_the_root_names_the_link_where_it_leads_and_its_job(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root, elsewhere = Path(directory).resolve(), Path(outside).resolve()
+            (elsewhere / "source.txt").write_text("hello")
+            (root / "source.txt").symlink_to(elsewhere / "source.txt")
+            with self.assertRaises(DagError) as caught:
+                read(sample(root))
+            self.assertEqual(str(caught.exception).splitlines(), [
+                f"source.txt is a link to {elsewhere / 'source.txt'}, outside the dataset root {root}.",
+                "  Job 1 (op1) reads it as a source.",
+                "  spit-bash reads and writes only under its roots, so no link may lead out of one: "
+                "move or copy what it links to under the root.",
+            ])
+
+    def test_an_output_under_a_linked_folder_names_the_folder_and_its_job(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root, elsewhere = Path(directory).resolve(), Path(outside).resolve()
+            (root / "work").symlink_to(elsewhere)
+            with self.assertRaises(DagError) as caught:
+                read(sample(root))
+            lines = str(caught.exception).splitlines()
+            self.assertEqual(lines[0], f"work/upper.txt leads through the link work to {elsewhere / 'upper.txt'}, "
+                                       f"outside the dataset root {root}.")
+            self.assertEqual(lines[1], "  Job 1 (op1) writes it.")
 
     def test_pydantic_rejects_missing_and_wrong_typed_fields(self):
         with tempfile.TemporaryDirectory() as directory:

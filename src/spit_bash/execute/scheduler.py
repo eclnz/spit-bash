@@ -122,21 +122,26 @@ async def execute(dag: Dag, decisions: tuple[Decision, ...], state: Store, optio
             if decision.needs_checks:
                 return await check_one(job, log)
             progress.started(job)
-
-            def started() -> None:
-                on_event(events.Started(job))
-                state.forget(job.work.key)
-
-            ran = await run_job(dag, job, log, options, on_start=started)
+            # The job's record stays until it succeeds and is replaced: a failure or a cancellation
+            # puts the earlier run's outputs back, and the record still describes them. A runner
+            # killed mid-job leaves files at the job's paths that do not match it, so the next plan
+            # runs the job again.
+            ran = await run_job(dag, job, log, options, on_start=lambda: on_event(events.Started(job)),
+                                on_discard=lambda: state.forget(job.work.key))
             if isinstance(ran, Failed):
                 progress.finished(job, None)
                 return Result(job, ran.failure, ran.log)
+            inline = sum(value.size for value in (*ran.inputs.values(), *ran.outputs.values())) < INLINE_HASH_BYTES
+            if compare is not Compare.STAT and not inline:
+                # Said while the job still holds its slot, so that a run on one core reports the
+                # command's end before the next job starts.
+                on_event(events.Hashing(job))
         # With the job's cores and memory freed. Big files are hashed off the event loop, so they
         # hold up neither another job's start nor the loop; small ones where they are,
         # since a thread hop costs more than hashing a small file.
         if compare is Compare.STAT:
             input_hashes = output_hashes = None
-        elif sum(value.size for value in (*ran.inputs.values(), *ran.outputs.values())) < INLINE_HASH_BYTES:
+        elif inline:
             input_hashes, output_hashes = _hash_both(dag, job)
         else:
             input_hashes, output_hashes = await asyncio.to_thread(_hash_both, dag, job)

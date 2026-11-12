@@ -114,6 +114,8 @@ def printer(dag: Dag) -> Callable[[Event], None]:
                 print(f"\nRunning {runs} job{'' if runs == 1 else 's'}{more}{estimate}{moving}", flush=True)
             case events.Started(job):
                 say(job, "start")
+            case events.Hashing(job):
+                say(job, "hashing")
             case events.Done(job, seconds, progress):
                 say(job, "done", f" in {duration(seconds)}; {progress}")
             case events.Placed(job, moves):
@@ -124,8 +126,13 @@ def printer(dag: Dag) -> Callable[[Event], None]:
                 say(job, "checked")
             case events.SkippedUnchanged(job):
                 say(job, "skip", ": upstream output unchanged")
-            # Failures are reported together once the run ends, grouped by cause.
-            case events.JobFailed() | events.NotRun():
+            # One line as it happens, so a run can be stopped early; the error, the log's end and
+            # the jobs it held up are reported once the run ends, grouped by cause.
+            case events.JobFailed(result):
+                assert result.failure is not None, "a failed job has its failure"
+                say(result.job, "failed", ": " + failure_words(result.job, result.failure))
+            # Its cause has a line of its own.
+            case events.NotRun():
                 pass
 
     return on_event

@@ -40,6 +40,16 @@ class Started:
 
 
 @dataclass(frozen=True)
+class Hashing:
+    """A job's commands and checks have succeeded, and its files are large enough to hash off the event loop.
+
+    `Done` follows once they are hashed and the job is recorded; other jobs may start meanwhile.
+    """
+
+    job: Job
+
+
+@dataclass(frozen=True)
 class Done:
     """The job succeeded in `seconds`; `progress` is what is left of the run, as `Progress.report` gives it."""
 
@@ -89,4 +99,4 @@ class NotRun:
     result: Result
 
 
-Event = Union[RunsAlone, Running, Started, Done, Placed, Checking, Checked, SkippedUnchanged, JobFailed, NotRun]
+Event = Union[RunsAlone, Running, Started, Hashing, Done, Placed, Checking, Checked, SkippedUnchanged, JobFailed, NotRun]

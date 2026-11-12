@@ -18,9 +18,10 @@ from spit_bash.load import load_dag
 from spit_bash.files import Stamp
 from spit_bash.plan import Status, plan
 from spit_bash.state.store import Store
-from spit_bash.execute import process
+from spit_bash.execute import events, process
 from spit_bash.execute.failure import InputChanged
 from spit_bash.execute.options import Options
+from spit_bash.execute import scheduler as scheduler_module
 from spit_bash.execute.scheduler import execute
 from spit_bash.report.run_text import failure_words
 from support import FIXTURE, artifact, command, document, error, job, job_entry, read, run, sample, state_at
@@ -450,3 +451,95 @@ class EarlierOutputTests(unittest.TestCase):
         self.run_job(self.FAIL, keep_failed=True)
         self.assertEqual((self.root / "out.txt").read_text(), "half")
         self.assertFalse((self.root / ".out.txt.spit-bash-previous").exists())
+
+
+class RecordAfterFailureTests(unittest.TestCase):
+    """A job's record stays while the earlier run's outputs are at its paths, so a failed or
+    stopped rerun does not make the next run rebuild them."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "source.txt").write_text("hello")
+        self.data = sample(self.root)
+        run(read(self.data), state_at(self.root))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def failing(self, script="import sys; sys.exit(4)"):
+        data = json.loads(json.dumps(self.data))
+        data["jobs"][0]["commands"][0]["command"][2] = [script]
+        return read(data)
+
+    def statuses(self):
+        decisions = plan(read(self.data), state_at(self.root), False)
+        return [decision.status for decision in decisions]
+
+    def test_a_failed_rerun_leaves_the_job_current(self):
+        _, results = run(self.failing(), state_at(self.root))
+        self.assertEqual(error(results[0]), "command exited with status 4")
+        self.assertEqual((self.root / "work/upper.txt").read_text(), "HELLO")
+        self.assertEqual(self.statuses(), [Status.SKIP, Status.SKIP])
+
+    def test_a_cancelled_rerun_leaves_the_job_current(self):
+        dag = self.failing("import time; time.sleep(30)")
+        state = state_at(self.root)
+        decisions = plan(dag, state, False)
+
+        async def cancelled():
+            task = asyncio.current_task()
+            assert task is not None
+
+            def on_event(event):
+                if isinstance(event, events.Started):
+                    asyncio.get_running_loop().call_later(0.2, task.cancel)
+
+            await execute(dag, decisions, state, Options(dag.layout.logs), on_event)
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(cancelled())
+        state.close()
+        self.assertEqual((self.root / "work/upper.txt").read_text(), "HELLO")
+        self.assertEqual(self.statuses(), [Status.SKIP, Status.SKIP])
+
+    def test_keep_failed_forgets_the_record_of_outputs_it_replaced(self):
+        run(self.failing("from pathlib import Path; import sys; Path(sys.argv[2]).write_text('HAL'); sys.exit(4)"),
+            state_at(self.root), keep_failed=True)
+        self.assertEqual((self.root / "work/upper.txt").read_text(), "HAL")
+        self.assertNotIn(read(self.data).jobs[0].work.key, state_at(self.root).jobs)
+        self.assertEqual(self.statuses()[0], Status.RUN)
+
+
+class HashingTests(unittest.TestCase):
+    """A run on one core says that a job's commands have ended before it starts the next job."""
+
+    def test_a_job_with_large_files_says_it_is_hashing_before_the_next_job_starts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("x")
+            big = "from pathlib import Path; import sys; Path(sys.argv[2]).write_bytes(b'x' * (2 << 20))"
+            dag = read(document(root, [
+                job_entry(1, ["source.txt"], "one.bin", big),
+                job_entry(2, ["source.txt"], "two.bin", big),
+            ], ["source.txt"]))
+            state = state_at(root)
+            decisions = plan(dag, state, False)
+            seen = []
+            slow = scheduler_module._hash_both
+
+            def delayed(*args):
+                time.sleep(0.3)
+                return slow(*args)
+
+            with mock.patch.object(scheduler_module, "_hash_both", delayed):
+                asyncio.run(execute(dag, decisions, state, Options(dag.layout.logs, cores=1),
+                                    lambda event: seen.append((type(event).__name__, getattr(event, "job", None)))))
+            state.close()
+            order = [(kind, job.id) for kind, job in seen if job is not None]
+            first = order[0][1]
+            self.assertEqual(order[:2], [("Started", first), ("Hashing", first)])
+            self.assertEqual(sorted(order), sorted([("Started", 1), ("Hashing", 1), ("Done", 1),
+                                                    ("Started", 2), ("Hashing", 2), ("Done", 2)]))
+            second = 3 - first
+            self.assertLess(order.index(("Hashing", first)), order.index(("Started", second)))
