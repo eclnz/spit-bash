@@ -216,6 +216,9 @@ class Dag:
     # The paths under `root` when `output_root` is another folder: the sources,
     # and the files jobs write beside them. Every other path is under `output_root`.
     in_dataset: frozenset[str] = frozenset()
+    # Each file the pipeline was read from, as its path from the pipeline's folder, its absolute
+    # path, and its git blob id when the DAG was written; empty when SPIT did not read it from a file.
+    pipeline_files: tuple[tuple[str, Path, str], ...] = ()
 
     @property
     def outputs(self) -> Path:

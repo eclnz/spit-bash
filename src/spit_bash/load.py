@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Iterator, TextIO
@@ -281,9 +282,37 @@ def _load(source: TextIO, root_override: str | None) -> Dag:
         folders,
         output_root=output_root,
         in_dataset=in_dataset,
+        pipeline_files=_pipeline_files(document),
     )
     dag.absolute.update(_absolute(dag, _uses(external_set, jobs)))
     return dag
+
+
+def _pipeline_files(document: SpitDag) -> tuple[tuple[str, Path, str], ...]:
+    """Each file the pipeline was read from, with where it is now and its blob id when the DAG was written."""
+    if document.pipeline_folder is None:
+        return ()
+    folder = Path(document.pipeline_folder)
+    return tuple((file.path, folder.joinpath(*PurePosixPath(file.path).parts), file.blob)
+                 for file in document.pipeline_files)
+
+
+def blob_id(data: bytes) -> str:
+    """A file's git blob id, as `git hash-object` prints it and SPIT records it in `pipeline_files`."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def changed_pipeline_files(dag: Dag) -> list[str]:
+    """The pipeline's files that differ from those the DAG was written from, each as its path from the
+    pipeline's folder, with `(missing)` after one that is gone."""
+    changed = []
+    for shown, path, blob in dag.pipeline_files:
+        try:
+            if blob_id(path.read_bytes()) != blob:
+                changed.append(shown)
+        except OSError:
+            changed.append(f"{shown} (missing)")
+    return changed
 
 
 def _uses(sources: set[str], jobs: list[Job]) -> dict[str, str]:
